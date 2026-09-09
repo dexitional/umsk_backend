@@ -635,7 +635,7 @@ export default class AisController {
          await db.update(student).set({ indexno }).where(eq(student.id, studentId));
 
          // Notification & Logging
-         const msg = `Hi ${st.fname}! Your AUCB Index number has been generated: ${indexno}`;
+         const msg = `Hi ${st.fname}! Your AKATSICO Index number has been generated: ${indexno}`;
          if (st.phone) await sms(st.phone, msg);
          
          await db.insert(log).values({ 

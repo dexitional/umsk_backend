@@ -25,6 +25,10 @@ const RESIT_ASSESSOR_ROLES = ['resit::admin', 'resit::assessor'];
 // to real students, so they get an explicit role check as defense-in-depth
 // even though the sibling /sessions/* routes above only require a valid token.
 const CALENDAR_ADMIN_ROLES = ['calendar::admin'];
+// Matches AISAccountCard.tsx's canFinanceAccount gate on the Finance Pardon
+// button — backend-enforced too, since this is a financially-sensitive
+// action and shouldn't rely on frontend button-hiding alone.
+const STUDENT_FINANCE_ROLES = ['student::admin', 'student::finance'];
 class AisRoute {
     constructor() {
         this.router = (0, express_1.Router)();
@@ -65,6 +69,7 @@ class AisRoute {
         this.router.post('/students/photo', [verifyToken], this.controller.changePhoto);
         this.router.post('/students/indexgen', [verifyToken], this.controller.generateIndex);
         this.router.post('/students/mailgen', [verifyToken], this.controller.generateEmail);
+        this.router.post('/students/pardon', [verifyToken, requireRole(STUDENT_FINANCE_ROLES)], this.controller.pardonStudent);
         this.router.post('/students', [verifyToken], this.controller.postStudent);
         this.router.post('/students/publish', [verifyToken], this.controller.publishStudentTranscript);
         this.router.patch('/students/:id', [verifyToken], this.controller.updateStudent);
@@ -240,8 +245,6 @@ class AisRoute {
         this.router.post('/graduates', [verifyToken], this.controller.postGraduate);
         this.router.patch('/graduates/:id', [verifyToken], this.controller.updateGraduate);
         this.router.delete('/graduates/:id', [verifyToken], this.controller.deleteGraduate);
-        /* Graduation Log */
-        this.router.get('/graduate-logs', [verifyToken], this.controller.fetchGraduateLogs);
         this.router.post('/broadsheet', this.controller.fetchBroadsheet);
         /* Circulars */
         this.router.get('/notices', [verifyToken], this.controller.fetchNotices);
@@ -301,7 +304,6 @@ class AisRoute {
         this.router.get('/relations', [verifyToken], this.controller.fetchRelations);
         this.router.get('/marital', [verifyToken], this.controller.fetchMarital);
         this.router.get('/titles', [verifyToken], this.controller.fetchTitles);
-        this.router.get('/vendors', [verifyToken], this.controller.fetchVendors);
         this.router.get('/collectors', [verifyToken], this.controller.fetchCollectors);
         /* Run Scripts */
         this.router.get('/run-data', this.controller.runData);

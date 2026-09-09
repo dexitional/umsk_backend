@@ -15,7 +15,6 @@ import { sql, relations } from "drizzle-orm";
 // Assuming these are imported from your previous consolidated pieces
 import { unit } from "../schema/util.schema";
 import { session, program, student } from "../schema/ais.schema";
-import { fresher, admission } from "../schema/ams.schema";
 import { user } from "../schema/sso.schema";
 
 // ==========================================
@@ -202,7 +201,6 @@ export const billRelations = relations(bill, ({ one, many }) => ({
   bankacc: one(bankacc, { fields: [bill.bankaccId], references: [bankacc.id] }),
   program: one(program, { fields: [bill.programId], references: [program.id] }),
   studentAccounts: many(studentAccount),
-  freshers: many(fresher),
   activities: many(activityBill),
 }));
 

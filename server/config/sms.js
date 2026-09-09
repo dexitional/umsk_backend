@@ -16,7 +16,7 @@ module.exports = function (phone, msg, from) {
             //key : 'pgC2DPZTwdbe68qPkuo4G36bV', // Bulksmsgh
             //key : 'B8pRALyxDgt4l5nRLOYVPoIm1', // Mnotify Kobby
             key: 'TFkrdSQimG3aMBcBmCqaiwhsH', // Mnotify AUCC
-            from: from || 'AUCB',
+            from: from || 'AKATSICO',
             to: phone,
             content: msg,
         };

@@ -925,49 +925,6 @@ class FmsController {
             }
         });
     }
-    fetchPaymentVouchers(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
-            const { page = 1, pageSize = 9, keyword = '' } = req.query;
-            const offset = (page - 1) * pageSize;
-            let searchCondition = { where: { transtypeId: { in: [1] } } };
-            try {
-                if (keyword)
-                    searchCondition = {
-                        where: {
-                            OR: [
-                                { transtag: { contains: keyword } },
-                                { student: { id: { contains: keyword } } },
-                                { student: { indexno: { contains: keyword } } },
-                                { student: { fname: { contains: keyword } } },
-                                { student: { lname: { contains: keyword } } },
-                            ],
-                            AND: [
-                                { transtypeId: { in: [1] } }
-                            ]
-                        }
-                    };
-                const resp = yield fms.$transaction([
-                    fms.transaction.count(Object.assign({}, (searchCondition))),
-                    fms.transaction.findMany(Object.assign(Object.assign({}, (searchCondition)), { include: { transtype: true, activityFinanceVoucher: true }, skip: offset, take: Number(pageSize), orderBy: { createdAt: 'desc' } }))
-                ]);
-                if (resp && ((_a = resp[1]) === null || _a === void 0 ? void 0 : _a.length)) {
-                    res.status(200).json({
-                        totalPages: (_b = Math.ceil(resp[0] / pageSize)) !== null && _b !== void 0 ? _b : 0,
-                        totalData: (_c = resp[1]) === null || _c === void 0 ? void 0 : _c.length,
-                        data: resp[1],
-                    });
-                }
-                else {
-                    res.status(204).json({ message: `no records found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
     fetchPayment(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
@@ -1085,10 +1042,7 @@ class FmsController {
                 delete req.body.transtypeId;
                 delete req.body.bankaccId;
                 delete req.body.collectorId;
-                let voucher;
                 const narrative = `Payment of ${transtypeId == 8 ? 'Graduation' : transtypeId == 3 ? 'Resit' : transtypeId == 8 ? 'Late Registration' : 'Academic'} Fees`;
-                if (transtypeId == '1')
-                    voucher = yield fms.voucher.findFirst({ where: {}, include: { admission: true } });
                 const resp = yield fms.transaction.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
                     data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), collectorId && ({ collector: { connect: { id: collectorId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), studentId && ({ student: { connect: { id: studentId } } })), transtypeId && ({ transtype: { connect: { id: transtypeId } } })), transtypeId && ['2', '3', '4', '8'].includes(transtypeId) && ({ studentAccount: { updateMany: { data: { studentId, narrative, amount: (-1 * ((_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.amount)), type: 'PAYMENT', currency: (_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.currency } } } }))
@@ -1117,8 +1071,7 @@ class FmsController {
                 const bs = yield fms.transaction.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
                     data: {
-                        studentAccount: { deleteMany: { transactId: (0, paramStr_1.paramStr)(req.params.id) } },
-                        activityFinanceVoucher: { deleteMany: { transactId: (0, paramStr_1.paramStr)(req.params.id) } }
+                        studentAccount: { deleteMany: { transactId: (0, paramStr_1.paramStr)(req.params.id) } }
                     }
                 });
                 if (bs) {
@@ -1208,16 +1161,6 @@ class FmsController {
                         return res.status(200).json({ success: false, data: null, msg: "Invalid Student ID or Index Number" });
                     }
                 }
-                else if (type == 1) {
-                    // LOAD_VOUCHER_FORMS
-                    const pr = yield fms.amsPrice.findMany({ where: { status: true } });
-                    const sm = yield fms.admission.findFirst({ where: { default: true } });
-                    if (pr && sm) {
-                        const forms = pr === null || pr === void 0 ? void 0 : pr.map((r) => ({ formId: r.id, formName: r.title, currency: r.currency, serviceCharge: r.amount }));
-                        return res.status(200).json({ success: true, data: { serviceId: type, sessionId: sm === null || sm === void 0 ? void 0 : sm.id, title: sm === null || sm === void 0 ? void 0 : sm.title, forms } });
-                    }
-                    return res.status(403).json({ success: false, data: null, msg: "Invalid request" });
-                }
                 else {
                     return res.status(403).json({ success: false, data: null, msg: "Invalid request" });
                 }
@@ -1232,9 +1175,13 @@ class FmsController {
         return __awaiter(this, void 0, void 0, function* () {
             var _a, _b, _c, _d, _e;
             try {
-                const api = req.query.api;
-                const cl = yield fms.vendor.findFirst();
-                let { serviceId, amountPaid, currency, studentId, refNote, transRef, buyerName, buyerPhone, formId, sessionId } = req.body;
+                // Previously fms.vendor.findFirst() — vendor was an admissions-only
+                // table removed along with the rest of the admission system.
+                // transaction.collectorId's actual relation points at collector
+                // (apiToken/apiEnabled fields, built for exactly this automated
+                // Bank API payment flow), so this was corrected to use it.
+                const cl = yield fms.collector.findFirst();
+                let { serviceId, amountPaid, currency, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
                 serviceId = Number(serviceId);
                 amountPaid = parseFloat((_a = amountPaid === null || amountPaid === void 0 ? void 0 : amountPaid.toString()) === null || _a === void 0 ? void 0 : _a.replace(",", ""));
                 const tr = yield fms.transaction.findFirst({ where: { transtag: transRef } });
@@ -1247,68 +1194,9 @@ class FmsController {
                     studentId: studentId,
                     transtag: transRef,
                 };
-                /* BUY VOUCHER */
+                /* Voucher purchases (serviceId 1) were removed along with the admission system/portal. */
                 if (serviceId == 1) {
-                    if (!sessionId || sessionId == "")
-                        return res.status(200).json({ success: false, data: null, msg: `No Admission Session indicated!` }); // Check for Required but Empty field and return error
-                    // Create Transaction
-                    console.log("TR: ", tr);
-                    if (!tr) {
-                        const pr = yield fms.amsPrice.findUnique({ where: { id: formId } });
-                        if (!pr)
-                            return res.status(200).json({ success: false, data: null, msg: `No Form Category indicated!` });
-                        // const vc: any = await fms.voucher.findFirst({ where: { admissionId: sessionId, vendorId: cl?.id, categoryId: pr?.categoryId, sellType: pr?.sellType, soldAt: null, sold: false } });
-                        // if (!vc) return res.status(200).json({ success: false, data: null, msg: `Voucher quota exhausted` });
-                        const vs = yield fms.$queryRaw `SELECT * FROM ams_voucher WHERE admissionId = ${sessionId} AND vendorId = ${cl === null || cl === void 0 ? void 0 : cl.id} AND categoryId = ${pr === null || pr === void 0 ? void 0 : pr.categoryId} AND sellType = ${pr === null || pr === void 0 ? void 0 : pr.sellType} AND soldAt IS NULL AND sold = 0 order by createdAt asc LIMIT 1`;
-                        console.log("Bank API Key: ", api);
-                        console.log("VS: ", vs);
-                        if (!(vs === null || vs === void 0 ? void 0 : vs.length))
-                            return res.status(200).json({ success: false, data: null, msg: `Voucher quota exhausted` });
-                        const vc = vs[0] || null;
-                        // Send SMS to Buyer
-                        const msg = `Hi! Your AUCB Applicant Voucher info are SERIAL: ${vc === null || vc === void 0 ? void 0 : vc.serial}, PIN: ${vc === null || vc === void 0 ? void 0 : vc.pin} Goto https://portal.aucb.edu.gh to apply!`;
-                        const send = yield sms(buyerPhone, msg);
-                        console.log("Send: ", send);
-                        // let send = { code: 1001 };
-                        const ins = yield fms.transaction.create({
-                            data: Object.assign(Object.assign({}, data), { activityFinanceVoucher: {
-                                    createMany: {
-                                        data: { serial: vc.serial, pin: vc === null || vc === void 0 ? void 0 : vc.pin, buyerName, buyerPhone, admissionId: sessionId, smsCode: (send === null || send === void 0 ? void 0 : send.code) ? Number(send === null || send === void 0 ? void 0 : send.code) : 0 }
-                                    }
-                                } })
-                        });
-                        console.log("Voucher Transaction Created: ", ins);
-                        if (ins) {
-                            // Update Voucher with details
-                            const vs = yield fms.$queryRaw `UPDATE ams_voucher SET applicantName = ${buyerName}, applicantPhone = ${buyerPhone}, soldAt = now(), sold = 1, soldBy = ${'API'} WHERE serial = ${vc === null || vc === void 0 ? void 0 : vc.serial}`;
-                            // Send Response
-                            return res.status(200).json({ success: true, data: { voucherSerial: vc === null || vc === void 0 ? void 0 : vc.serial, voucherPin: vc === null || vc === void 0 ? void 0 : vc.pin, buyerName, buyerPhone, transId: ins === null || ins === void 0 ? void 0 : ins.id, serviceId } });
-                        }
-                    }
-                    else {
-                        const vc = yield fms.activityFinanceVoucher.findFirst({ where: { transactId: tr.id } });
-                        if (vc) {
-                            // Delete same serials not belonging to same transactId
-                            yield fms.$executeRaw `DELETE FROM fms_activity_voucher WHERE serial = ${vc === null || vc === void 0 ? void 0 : vc.serial} AND transactId <> ${tr === null || tr === void 0 ? void 0 : tr.id}`;
-                            // Resend Already Generated Voucher
-                            const msg = `Hi! AUCB Voucher info are, Serial: ${vc === null || vc === void 0 ? void 0 : vc.serial}, Pin: ${vc === null || vc === void 0 ? void 0 : vc.pin} Goto https://portal.aucb.edu.gh to apply!`;
-                            const send = yield sms(buyerPhone, msg);
-                            //let send = { code: 1001 };
-                            yield fms.activityFinanceVoucher.update({ where: { id: vc.id }, data: { smsCode: (send === null || send === void 0 ? void 0 : send.code) ? Number(send === null || send === void 0 ? void 0 : send.code) : 0 } });
-                            return res.status(200).json({
-                                success: true,
-                                data: {
-                                    voucherSerial: vc === null || vc === void 0 ? void 0 : vc.serial,
-                                    voucherPin: vc === null || vc === void 0 ? void 0 : vc.pin,
-                                    buyerName,
-                                    buyerPhone,
-                                    transId: tr === null || tr === void 0 ? void 0 : tr.id,
-                                    serviceId,
-                                },
-                            });
-                        }
-                        return res.status(200).json({ success: false, data: null, msg: `Transaction failed` });
-                    }
+                    return res.status(200).json({ success: false, data: null, msg: `Voucher service no longer available` });
                     /* OTHER PAYMENT SERVICE (ACADEMIC FEES, RESIT, GRADUATION, ATTESTATION, PROFICIENCY, TRANSCRIPT, LATE FINE ) */
                 }
                 else {
@@ -1348,7 +1236,7 @@ class FmsController {
                                     update: {}
                                 });
                                 // Send Follow-up SMS to Student
-                                const msg = `Hi! Your document request has been processed, Please go into your portal [https://portal.aucb.edu.gh] to update receipient and required information. Thank you.`;
+                                const msg = `Hi! Your document request has been processed, Please go into your portal [https://portal.akatsico.edu.gh] to update receipient and required information. Thank you.`;
                                 const send = yield sms(st === null || st === void 0 ? void 0 : st.phone, msg);
                             }
                             /* Index Number Generation For Freshers  */
@@ -1380,7 +1268,7 @@ class FmsController {
                                     }
                                     yield fms.student.update({ where: { id: studentId }, data: { indexno } });
                                     // Send Notfication
-                                    const msg = `Hi ${st.fname}! Your AUCB Index number has been generated: ${indexno}, Thank you!`;
+                                    const msg = `Hi ${st.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
                                     yield sms(st === null || st === void 0 ? void 0 : st.phone, msg);
                                 }
                             }
@@ -1705,123 +1593,6 @@ class FmsController {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const resp = yield fms.transtype.delete({ where: { id: Number((0, paramStr_1.paramStr)(req.params.id)) } });
-                if (resp) {
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(204).json({ message: `No records deleted` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    /* Voucher Costs */
-    fetchVsales(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
-            const { page = 1, pageSize = 9, keyword = '' } = req.query;
-            const offset = (page - 1) * pageSize;
-            let searchCondition = {};
-            try {
-                if (keyword)
-                    searchCondition = {
-                        where: {
-                            OR: [
-                                { title: { contains: keyword } },
-                                { category: { title: { contains: keyword } } },
-                            ],
-                        }
-                    };
-                const resp = yield fms.$transaction([
-                    fms.amsPrice.count(Object.assign({}, (searchCondition))),
-                    fms.amsPrice.findMany(Object.assign(Object.assign({}, (searchCondition)), { include: { category: true }, skip: offset, take: Number(pageSize), orderBy: { createdAt: 'desc' } }))
-                ]);
-                if (resp && ((_a = resp[1]) === null || _a === void 0 ? void 0 : _a.length)) {
-                    res.status(200).json({
-                        totalPages: (_b = Math.ceil(resp[0] / pageSize)) !== null && _b !== void 0 ? _b : 0,
-                        totalData: (_c = resp[1]) === null || _c === void 0 ? void 0 : _c.length,
-                        data: resp[1],
-                    });
-                }
-                else {
-                    res.status(204).json({ message: `no records found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    fetchVsale(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const resp = yield fms.amsPrice.findUnique({
-                    where: { id: (0, paramStr_1.paramStr)(req.params.id) }
-                });
-                if (resp) {
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(204).json({ message: `no record found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    postVsale(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const { categoryId } = req.body;
-                delete req.body.categoryId;
-                const resp = yield fms.amsPrice.create({
-                    data: Object.assign(Object.assign({}, req.body), categoryId && ({ category: { connect: { id: categoryId } } }))
-                });
-                if (resp) {
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(204).json({ message: `no records found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    updateVsale(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const { categoryId } = req.body;
-                delete req.body.categoryId;
-                const resp = yield fms.amsPrice.update({
-                    where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign({}, req.body), categoryId && ({ category: { connect: { id: categoryId } } }))
-                });
-                if (resp) {
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(204).json({ message: `No records found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    deleteVsale(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const resp = yield fms.amsPrice.delete({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
                 if (resp) {
                     res.status(200).json(resp);
                 }

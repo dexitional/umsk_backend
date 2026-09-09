@@ -25,7 +25,6 @@ class AuthRoute {
         this.router.post('/password', this.controller.changePassword);
         this.router.post('/forget', this.controller.forgetPassword);
         /* Photo Management */
-        this.router.get('/file', this.controller.fetchAmsFile);
         this.router.get('/mobile', this.controller.fetchAmsApk);
         this.router.get('/pixo', this.controller.fetchEvsPhoto);
         this.router.get('/photos', this.controller.fetchPhoto);

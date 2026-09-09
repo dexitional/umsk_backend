@@ -32,7 +32,7 @@ const Auth = new authModel_1.default();
 class AuthController {
     authenticateWithCredential(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
+            var _a, _b, _c;
             try {
                 let { username, password } = req.body;
                 if (!username)
@@ -41,8 +41,8 @@ class AuthController {
                     throw new Error('No password provided!');
                 // Trim only — case is already handled below without normalizing here.
                 // Normalizing case on this end (e.g. .toLowerCase()) would be
-                // redundant at best, since sso_user.username/tag and ams_voucher.serial
-                // all use the utf8mb4_unicode_ci collation, which makes MySQL's own
+                // redundant at best, since sso_user.username/tag uses the
+                // utf8mb4_unicode_ci collation, which makes MySQL's own
                 // `=` comparison case-insensitive already; it'd also risk masking a
                 // real mismatch if that collation ever changes. Trimming stray
                 // whitespace (a common copy/paste artifact) is the one thing actually
@@ -50,9 +50,6 @@ class AuthController {
                 username = username.trim();
                 const userByName = yield sso.user.findFirst({ where: { username }, include: { group: { select: { title: true } } } });
                 const isUser = userByName && ((0, password_1.verifyPassword)(userByName.password, password) || userByName.unlockPin === password) ? userByName : null;
-                const isApplicant = yield sso.voucher.findFirst({ where: { serial: username, pin: password }, include: { admission: true } });
-                console.log(isUser);
-                console.log(isApplicant);
                 if (isUser) {
                     let { id, tag, groupId, group: { title: groupName } } = isUser;
                     let user = {};
@@ -112,30 +109,6 @@ class AuthController {
                     yield sso.log.create({ data: Object.assign({ action: `${groupName === null || groupName === void 0 ? void 0 : groupName.toUpperCase()}_LOGIN_SUCCESS`, user: tag, meta: userdata }, groupId == 1 && ({ student: tag })) });
                     // Send Response to Client
                     // console.log({ success: true, data: userdata, token });
-                    return res.status(200).json({ success: true, data: userdata, token });
-                }
-                else if (isApplicant) {
-                    const data = yield sso.stepProfile.findFirst({ where: { serial: username }, include: { applicant: { select: { photo: true } } } });
-                    let user;
-                    if (data) {
-                        user = { tag: username, fname: data === null || data === void 0 ? void 0 : data.fname, mname: data === null || data === void 0 ? void 0 : data.mname, lname: data.lname, mail: data.email, descriptor: "Applicant", department: "None", group_id: 3, group_name: "Applicant" };
-                    }
-                    else {
-                        user = { tag: username, fname: "Admission", mname: "", lname: "Applicant", mail: "", descriptor: "Applicant", department: "None", group_id: 3, group_name: "Applicant" };
-                    }
-                    const photo = data ? (_d = data === null || data === void 0 ? void 0 : data.applicant) === null || _d === void 0 ? void 0 : _d.photo : `https://cdn.ucc.edu.gh/photos/?tag=${encodeURIComponent(username)}`;
-                    // Construct UserData
-                    const userdata = {
-                        user,
-                        roles: [],
-                        photo
-                    };
-                    // Generate Session Token &
-                    const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
-                    // Log Login Response
-                    yield sso.log.create({ data: { action: 'APPLICANT_LOGIN_SUCCESS', user: username, meta: userdata } });
-                    // Send Response to Client
-                    console.log({ success: true, data: userdata, token });
                     return res.status(200).json({ success: true, data: userdata, token });
                 }
                 else {
@@ -229,13 +202,12 @@ class AuthController {
     // authenticated caller (see the verifyToken guard on this route).
     authenticateWithKey(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
+            var _a, _b, _c;
             try {
                 const { tag: username } = req.body;
                 if (!username)
                     throw new Error('No username provided!');
                 const isUser = yield sso.user.findFirst({ where: { tag: username }, include: { group: { select: { title: true } } } });
-                const isApplicant = !isUser ? yield sso.voucher.findFirst({ where: { serial: username }, include: { admission: true } }) : null;
                 if (isUser) {
                     let { id, tag, groupId, group: { title: groupName } } = isUser;
                     let user = {};
@@ -288,21 +260,6 @@ class AuthController {
                         ];
                     const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
                     yield sso.log.create({ data: { action: `SWITCH_USER`, user: req === null || req === void 0 ? void 0 : req.userId, meta: Object.assign({ switchedTo: tag }, userdata) } });
-                    return res.status(200).json({ success: true, data: userdata, token });
-                }
-                else if (isApplicant) {
-                    const data = yield sso.stepProfile.findFirst({ where: { serial: username }, include: { applicant: { select: { photo: true } } } });
-                    let user;
-                    if (data) {
-                        user = { tag: username, fname: data === null || data === void 0 ? void 0 : data.fname, mname: data === null || data === void 0 ? void 0 : data.mname, lname: data.lname, mail: data.email, descriptor: "Applicant", department: "None", group_id: 3, group_name: "Applicant" };
-                    }
-                    else {
-                        user = { tag: username, fname: "Admission", mname: "", lname: "Applicant", mail: "", descriptor: "Applicant", department: "None", group_id: 3, group_name: "Applicant" };
-                    }
-                    const photo = data ? (_d = data === null || data === void 0 ? void 0 : data.applicant) === null || _d === void 0 ? void 0 : _d.photo : `${process.env.UMS_DOMAIN}/api/auth/photos/?tag=${encodeURIComponent(username)}`;
-                    const userdata = { user, roles: [], photo };
-                    const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
-                    yield sso.log.create({ data: { action: `SWITCH_USER`, user: req === null || req === void 0 ? void 0 : req.userId, meta: Object.assign({ switchedTo: username }, userdata) } });
                     return res.status(200).json({ success: true, data: userdata, token });
                 }
                 else {
@@ -390,7 +347,7 @@ class AuthController {
                 const user = yield sso.user.findFirst({ where: { groupId: 1, status: true, tag } });
                 if (user) {
                     const st = yield sso.student.findUnique({ where: { id: tag } });
-                    const msg = `Please Access https://portal.aucb.edu.gh with USERNAME: ${user.username}, PIN: ${user.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`;
+                    const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${user.username}, PIN: ${user.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`;
                     let resp;
                     if (st && (st === null || st === void 0 ? void 0 : st.phone)) {
                         resp = yield sms(st === null || st === void 0 ? void 0 : st.phone, msg);
@@ -425,7 +382,7 @@ class AuthController {
                             var _a, _b, _c, _d, _e, _f;
                             // if(i == 0){
                             const fname = (_b = (_a = row === null || row === void 0 ? void 0 : row.name) === null || _a === void 0 ? void 0 : _a.split(' ')[0]) === null || _b === void 0 ? void 0 : _b.toLowerCase();
-                            const msg = `Hi ${((_c = fname === null || fname === void 0 ? void 0 : fname.charAt(0)) === null || _c === void 0 ? void 0 : _c.toUpperCase()) + fname.slice(1)}! ${(_f = (_e = (_d = en === null || en === void 0 ? void 0 : en.title) === null || _d === void 0 ? void 0 : _d.toLowerCase()) === null || _e === void 0 ? void 0 : _e.split(' ').map((word) => { var _a; return ((_a = word === null || word === void 0 ? void 0 : word.charAt(0)) === null || _a === void 0 ? void 0 : _a.toUpperCase()) + (word === null || word === void 0 ? void 0 : word.slice(1)); })) === null || _f === void 0 ? void 0 : _f.join(' ')} is currently on-going. Please log into https://portal.aucb.edu.gh to cast vote under the [Elections Portal], Election closes in ${(0, moment_1.default)(en === null || en === void 0 ? void 0 : en.endAt).fromNow()}. Thank you!!`;
+                            const msg = `Hi ${((_c = fname === null || fname === void 0 ? void 0 : fname.charAt(0)) === null || _c === void 0 ? void 0 : _c.toUpperCase()) + fname.slice(1)}! ${(_f = (_e = (_d = en === null || en === void 0 ? void 0 : en.title) === null || _d === void 0 ? void 0 : _d.toLowerCase()) === null || _e === void 0 ? void 0 : _e.split(' ').map((word) => { var _a; return ((_a = word === null || word === void 0 ? void 0 : word.charAt(0)) === null || _a === void 0 ? void 0 : _a.toUpperCase()) + (word === null || word === void 0 ? void 0 : word.slice(1)); })) === null || _f === void 0 ? void 0 : _f.join(' ')} is currently on-going. Please log into https://portal.akatsico.edu.gh to cast vote under the [Elections Portal], Election closes in ${(0, moment_1.default)(en === null || en === void 0 ? void 0 : en.endAt).fromNow()}. Thank you!!`;
                             if (row === null || row === void 0 ? void 0 : row.phone)
                                 return yield sms(row === null || row === void 0 ? void 0 : row.phone, msg);
                             // if (row?.phone) return await sms('0277675089', msg);
@@ -458,7 +415,7 @@ class AuthController {
                     const users = en === null || en === void 0 ? void 0 : en.voterData;
                     if (users === null || users === void 0 ? void 0 : users.length) {
                         const resp = yield Promise.all(users === null || users === void 0 ? void 0 : users.map((row) => __awaiter(this, void 0, void 0, function* () {
-                            const msg = `Please Access https://portal.aucb.edu.gh with USERNAME: ${row.username}, PIN: ${row.pin}. Note that you can use 4-digit PIN as PASSWORD`;
+                            const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${row.username}, PIN: ${row.pin}. Note that you can use 4-digit PIN as PASSWORD`;
                             if (row === null || row === void 0 ? void 0 : row.phone)
                                 return yield sms(row === null || row === void 0 ? void 0 : row.phone, msg);
                             return { code: 1002 };
@@ -485,7 +442,7 @@ class AuthController {
                 if (users === null || users === void 0 ? void 0 : users.length) {
                     const resp = yield Promise.all(users === null || users === void 0 ? void 0 : users.map((row) => __awaiter(this, void 0, void 0, function* () {
                         const st = yield sso.student.findUnique({ where: { id: row === null || row === void 0 ? void 0 : row.tag } });
-                        const msg = `Please Access https://portal.aucb.edu.gh with USERNAME: ${row.username}, PIN: ${row.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`;
+                        const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${row.username}, PIN: ${row.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`;
                         if (st && (st === null || st === void 0 ? void 0 : st.phone))
                             return yield sms(st.phone, msg);
                         return { code: 1002 };
@@ -585,30 +542,6 @@ class AuthController {
     //       res.status(200).sendFile(path.join(__dirname, "/../../public/cdn", "none.png"));
     //   }
     // }
-    fetchAmsFile(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b;
-            try {
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.setHeader("Cross-Origin-Opener-Policy", "cross-origin");
-                res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
-                res.header("Access-Control-Allow-Headers", "x-access-token, Origin, Content-Type, Accept");
-                let type = (_a = req === null || req === void 0 ? void 0 : req.query) === null || _a === void 0 ? void 0 : _a.type;
-                let mtag = (_b = req === null || req === void 0 ? void 0 : req.query) === null || _b === void 0 ? void 0 : _b.tag;
-                if (mtag && type && fs.existsSync(path.join(__dirname, `/../../public/ams/${mtag}.jpg`)))
-                    return res.status(200).sendFile(path.join(__dirname, `/../../public/ams/${mtag}.jpg`));
-                else if (mtag && fs.existsSync(path.join(__dirname, `/../../public/ams/${mtag}.pdf`)))
-                    return res.status(200).sendFile(path.join(__dirname, `/../../public/ams/${mtag}.pdf`));
-                else
-                    return res.status(200).sendFile(path.join(__dirname, "/../../public/ams/") + `none.png`);
-            }
-            catch (err) {
-                console.log(err);
-                return res.status(200).sendFile(path.join(__dirname, "/../../public/ams", "none.png"));
-            }
-        });
-    }
     fetchAmsApk(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             var _a;
@@ -688,8 +621,6 @@ class AuthController {
                     return res.status(200).sendFile(path.join(__dirname, "/../../public/cdn/photo/support/", `${tag}.jpg`));
                 else if (fs.existsSync(path.join(__dirname, "/../../public/cdn/photo/support/", `${tag}.jpeg`)))
                     return res.status(200).sendFile(path.join(__dirname, "/../../public/cdn/photo/support/", `${tag}.jpeg`));
-                else if (fs.existsSync(path.join(__dirname, "/../../public/cdn/photo/applicant/", `${tag}.jpg`)))
-                    return res.status(200).sendFile(path.join(__dirname, "/../../public/cdn/photo/applicant/", `${tag}.jpg`));
                 else
                     res.status(200).sendFile(path.join(__dirname, "/../../public/cdn/") + `/none.jpg`);
             }
@@ -721,50 +652,6 @@ class AuthController {
                     break;
                 case 2:
                     mpath = "staff";
-                    break;
-                case 3:
-                    mpath = "applicant";
-                    break;
-                case 4:
-                    mpath = "support";
-                    break;
-                default:
-                    mpath = "student";
-                    break;
-            }
-            const dest = path.join(__dirname, "/../../public/cdn/photo/" + mpath, (tag && ((_e = (_d = (_c = tag === null || tag === void 0 ? void 0 : tag.toString()) === null || _c === void 0 ? void 0 : _c.replaceAll("/", "")) === null || _d === void 0 ? void 0 : _d.trim()) === null || _e === void 0 ? void 0 : _e.toLowerCase())) + ".jpg");
-            photo.mv(dest, function (err) {
-                if (err)
-                    return res.status(500).send(err);
-                const stphoto = `${req.protocol}://${req.get("host")}/api/auth/photos/?tag=${tag.toString().toLowerCase()}&cache=${Math.random() * 1000}`;
-                return res.status(200).json({ success: true, data: stphoto });
-            });
-        });
-    }
-    postAmsFile(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d, _e;
-            if (!req.files || Object.keys(req.files).length === 0) {
-                return res.status(400).send('No files were uploaded.');
-            }
-            const photo = (_a = req === null || req === void 0 ? void 0 : req.files) === null || _a === void 0 ? void 0 : _a.photo;
-            const { tag } = req.body;
-            const isUser = yield sso.user.findFirst({ where: { tag } });
-            if (!isUser) {
-                const stphoto = `${req.protocol}://${req.get("host")}/api/auth/photos/?tag=${(_b = tag === null || tag === void 0 ? void 0 : tag.toString()) === null || _b === void 0 ? void 0 : _b.toLowerCase()}&cache=${Math.random() * 1000}`;
-                return res.status(200).json({ success: true, data: stphoto });
-            }
-            let { groupId } = isUser;
-            var mpath;
-            switch (groupId) {
-                case 1:
-                    mpath = "student";
-                    break;
-                case 2:
-                    mpath = "staff";
-                    break;
-                case 3:
-                    mpath = "applicant";
                     break;
                 case 4:
                     mpath = "support";
@@ -829,9 +716,6 @@ class AuthController {
                 case 2:
                     spath = `${spath}/staff/`;
                     break;
-                case 3:
-                    spath = `${spath}/applicant/`;
-                    break;
                 case 4:
                     spath = `${spath}/support/`;
                     break;
@@ -868,9 +752,6 @@ class AuthController {
                     break;
                 case 2:
                     spath = `${spath}/staff/`;
-                    break;
-                case 3:
-                    spath = `${spath}/applicant/`;
                     break;
                 case 4:
                     spath = `${spath}/support/`;

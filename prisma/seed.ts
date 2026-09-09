@@ -31,6 +31,12 @@ async function main() {
 
   console.log('Seeded evaluation options successfully!');
 
+  const courseForm = await prisma.evaluationForm.upsert({
+    where: { key: 'course' },
+    update: {},
+    create: { key: 'course', name: 'Course Evaluation' },
+  });
+
   // Seed questions
   const questions = [
     // Course Content
@@ -76,7 +82,7 @@ async function main() {
 
   for (const q of questions) {
     await prisma.evaluationQuestion.create({
-      data: q
+      data: { ...q, formId: courseForm.id }
     });
   }
 

@@ -115,12 +115,10 @@ model major {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  program    program?     @relation(fields: [programId], references: [id])
+  program    program? @relation(fields: [programId], references: [id])
   student    student[]
   structure  structure[]
   sheet      sheet[]
-  fresher    fresher[]
-  stepChoice stepChoice[]
   structmeta structmeta[]
 
   @@map("ais_major")
@@ -157,8 +155,6 @@ model program {
   newprogram activityProgchange[] @relation("newprogram")
   sheet      sheet[]
   bill       bill[]
-  fresher    fresher[]
-  stepChoice stepChoice[]
   major      major[]
 
   @@map("ais_program")
@@ -226,7 +222,6 @@ model student {
   transaction        transaction[]
   studentAccount     studentAccount[]
   assessment         assessment[]
-  fresher            fresher[]
   marital            marital?             @relation(fields: [maritalId], references: [id])
   graduate           graduate?
   courseEvaluations  courseEvaluation[]
@@ -280,8 +275,6 @@ model session {
   registerSession    resit[]              @relation("registerSession")
   bill               bill[]
   studentAccount     studentAccount[]
-  admission          admission[]
-  fresher            fresher[]
   activityBacklog    activityBacklog[]
   courseEvaluations  courseEvaluation[]
 
@@ -645,6 +638,46 @@ model resit {
 }
 
 // Evaluation Option Model
+// Evaluation Form Model
+// A questionnaire definition — 'course' (course evaluation), 'sts' (Supported
+// Teaching in School coach appraisal), 'ims' (institutional monitoring), or
+// any new form created via the Evaluation Manager admin UI. Owns its own
+// enable/disable toggle, open/close date window and year-group allow-list.
+model evaluationForm {
+  id          String    @id @default(uuid())
+  key         String    @unique @db.VarChar(50)
+  name        String    @db.VarChar(150)
+  description String?   @db.Text
+  status      Boolean   @default(true)
+  // Form-level open window. Independent of session.evaluationStart/End,
+  // which is a separate, course-evaluation-only gate used by fetchForms.
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  questions         evaluationQuestion[]
+  guides            evaluationGuide[]
+  yearGroups        evaluationFormYearGroup[]
+  courseEvaluations courseEvaluation[]
+
+  @@map("evaluation_form")
+}
+
+// Which year groups may access a given evaluation form at all. No rows for
+// a form means it is open to every year group (same "null/empty = all"
+// convention used by evaluationQuestion.yearGroup / evaluationGuide.yearGroup).
+model evaluationFormYearGroup {
+  id        String @id @default(uuid())
+  formId    String
+  yearGroup Int
+
+  form evaluationForm @relation(fields: [formId], references: [id], onDelete: Cascade)
+
+  @@unique([formId, yearGroup])
+  @@map("evaluation_form_year_group")
+}
+
 model evaluationOption {
   id        String   @id @default(uuid())
   option    String   @db.VarChar(100)
@@ -664,6 +697,14 @@ model evaluationQuestion {
   id        String   @id @default(uuid())
   question  String   @db.VarChar(500)
   category  String   @db.VarChar(100)
+  // Which questionnaire this belongs to — see evaluationForm.
+  formId    String
+  // Restricts which students can see this question, computed the same way
+  // "level" is derived everywhere else in this codebase — Math.ceil(student
+  // .semesterNum / 2) (year 1/2/3/...). Null means visible to every student
+  // regardless of year — used by course-evaluation questions, which apply
+  // to any student taking that course.
+  yearGroup Int?
   type      String   @db.VarChar(50) // 'likert' or 'text'
   orderNum  Int
   required  Boolean  @default(true)
@@ -671,15 +712,48 @@ model evaluationQuestion {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  form      evaluationForm       @relation(fields: [formId], references: [id])
   responses evaluationResponse[]
 
   @@map("evaluation_question")
 }
 
+// Evaluation Guide Model — instructional/rubric text shown alongside a
+// questionnaire's questions (e.g. the STS Likert-scale legend, or the
+// per-year-group rubric paragraph explaining what that year's appraisal
+// covers). Kept separate from evaluationQuestion rather than duplicating
+// the same paragraph across every question row in a section.
+model evaluationGuide {
+  id          String   @id @default(uuid())
+  formId      String
+  // Null = applies to the whole form (e.g. general instructions + scale
+  // legend); set = specific to that year group only, subject to the same
+  // visibility rule as evaluationQuestion.yearGroup.
+  yearGroup   Int?
+  title       String?  @db.VarChar(200)
+  description String   @db.Text
+  orderNum    Int      @default(0)
+  status      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  form evaluationForm @relation(fields: [formId], references: [id])
+
+  @@map("evaluation_guide")
+}
+
 // Course Evaluation Model
 model courseEvaluation {
   id          String    @id @default(uuid())
-  courseId    String
+  // Every evaluation form (course/sts/ims/any future one) is tied to a
+  // registered course and an assessor (staff) for that course — courseId
+  // stays optional at the schema level only for a hypothetical future
+  // course-agnostic form; the API currently requires it for every form.
+  // formId + courseId together identify one form's submission for one
+  // course, so the same course can be evaluated separately under different
+  // forms without colliding (see the compound unique index below).
+  courseId    String?
+  formId      String
   staffNo     String?
   indexno     String?
   sessionId   String?
@@ -689,13 +763,14 @@ model courseEvaluation {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  course    course               @relation(fields: [courseId], references: [id])
+  course    course?              @relation(fields: [courseId], references: [id])
+  form      evaluationForm       @relation(fields: [formId], references: [id])
   staff     staff?               @relation(fields: [staffNo], references: [staffNo])
   student   student?             @relation(fields: [indexno], references: [indexno])
   session   session?             @relation(fields: [sessionId], references: [id])
   responses evaluationResponse[]
 
-  @@unique([indexno, sessionId, courseId])
+  @@unique([indexno, sessionId, courseId, formId])
   @@map("evaluation")
 }
 

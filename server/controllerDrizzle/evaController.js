@@ -250,19 +250,21 @@ class EvaController {
                 const student = yield eva.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno } });
                 // Get Active Sessions Info
                 const sessions = yield eva.session.findMany({ where: { default: true } });
-                // Get Session, for AUCC Only
+                // Get Session, for AKATSICO Only
                 const session = sessions.find((row) => { var _a, _b; return ((0, moment_1.default)(student === null || student === void 0 ? void 0 : student.entryDate).format("MM") == '01' && (student === null || student === void 0 ? void 0 : student.semesterNum) <= 2) ? ((_a = row === null || row === void 0 ? void 0 : row.tag) === null || _a === void 0 ? void 0 : _a.toUpperCase()) == 'SUB' : ((_b = row === null || row === void 0 ? void 0 : row.tag) === null || _b === void 0 ? void 0 : _b.toUpperCase()) == 'MAIN'; });
                 sessionId = session.id;
                 indexno = '41329275';
                 // Check if evaluation already exists
                 let evaluation;
-                if (indexno && sessionId && courseId) {
+                const courseForm = yield eva.evaluationForm.findUnique({ where: { key: 'course' } });
+                if (indexno && sessionId && courseId && courseForm) {
                     evaluation = yield eva.courseEvaluation.findUnique({
                         where: {
-                            indexno_sessionId_courseId: {
+                            indexno_sessionId_courseId_formId: {
                                 indexno,
                                 sessionId,
-                                courseId
+                                courseId,
+                                formId: courseForm.id
                             }
                         }
                     });
@@ -272,6 +274,7 @@ class EvaController {
                     evaluation = yield eva.courseEvaluation.create({
                         data: {
                             courseId,
+                            formId: courseForm.id,
                             staffNo,
                             indexno,
                             sessionId,
@@ -483,7 +486,8 @@ class EvaController {
                 const courseStats = {};
                 const lecturerStats = {};
                 evaluations.forEach((evaluation) => {
-                    const courseName = evaluation.course.title;
+                    var _a, _b;
+                    const courseName = (_b = (_a = evaluation.course) === null || _a === void 0 ? void 0 : _a.title) !== null && _b !== void 0 ? _b : 'Unknown';
                     const lecturerName = evaluation.staff ? `${evaluation.staff.fname} ${evaluation.staff.lname}` : 'Unknown';
                     // Count by course
                     if (!courseStats[courseName]) {
@@ -542,6 +546,11 @@ class EvaController {
                     });
                 }
                 console.log('Seeded evaluation options successfully!');
+                const courseForm = yield eva.evaluationForm.upsert({
+                    where: { key: 'course' },
+                    update: {},
+                    create: { key: 'course', name: 'Course Evaluation' },
+                });
                 // Seed questions
                 const questions = [
                     // Course Content
@@ -582,7 +591,7 @@ class EvaController {
                 ];
                 for (const q of questions) {
                     yield eva.evaluationQuestion.create({
-                        data: q
+                        data: Object.assign(Object.assign({}, q), { formId: courseForm.id })
                     });
                 }
                 console.log('Seeded evaluation questions successfully!');

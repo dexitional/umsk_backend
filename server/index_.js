@@ -8,7 +8,6 @@ const dotenv_1 = __importDefault(require("dotenv"));
 const express_1 = __importDefault(require("express"));
 const helmet_1 = __importDefault(require("helmet"));
 const aisRoute_1 = __importDefault(require("./route/aisRoute"));
-const amsRoute_1 = __importDefault(require("./route/amsRoute"));
 const apiRoute_1 = __importDefault(require("./route/apiRoute"));
 const authRoute_1 = __importDefault(require("./route/authRoute"));
 const evsRoute_1 = __importDefault(require("./route/evsRoute"));
@@ -44,7 +43,6 @@ class Routes {
         app.get('/', (req, res) => { res.send("test"); });
         app.use("/api/auth", authRoute_1.default); /** Authentication API **/
         app.use("/api/ais", aisRoute_1.default); /** Academics API **/
-        app.use("/api/ams", amsRoute_1.default); /** Admissions API **/
         app.use("/api/fms", fmsRoute_1.default); /** Finance API **/
         app.use("/api/hrs", hrsRoute_1.default); /** HRS API **/
         app.use("/api/evs", evsRoute_1.default); /** Electa API **/

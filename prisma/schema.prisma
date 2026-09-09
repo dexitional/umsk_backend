@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
   previewFeatures = ["views"]
   //output   = "../../node_modules/.prisma/client"
 }
@@ -319,10 +319,8 @@ model country {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  studentCountry     student[]     @relation("studentCountry")
-  studentNationality student[]     @relation("studentNationality")
-  profileNationality stepProfile[] @relation("profileNationality")
-  profileCountry     stepProfile[] @relation("profileCountry")
+  studentCountry     student[] @relation("studentCountry")
+  studentNationality student[] @relation("studentNationality")
   staff              staff[]
   nss                nss[]
 }
@@ -335,10 +333,9 @@ model region {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  student     student[]
-  stepProfile stepProfile[]
-  staff       staff[]
-  nss         nss[]
+  student student[]
+  staff   staff[]
+  nss     nss[]
 }
 
 model title {
@@ -349,13 +346,10 @@ model title {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  student      student[]
-  stepProfile  stepProfile[]
-  stepGuardian stepGuardian[]
-  stepReferee  stepReferee[]
-  staff        staff[]
-  nss          nss[]
-  relative     relative[]
+  student  student[]
+  staff    staff[]
+  nss      nss[]
+  relative relative[]
 }
 
 model relation {
@@ -365,8 +359,7 @@ model relation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stepGuardian stepGuardian[]
-  relative     relative[]
+  relative relative[]
 }
 
 model marital {
@@ -379,7 +372,6 @@ model marital {
   staff   staff[]
   student student[]
   nss     nss[]
-  profile stepProfile[]
 }
 
 // 'SINGLE','MARRIED','SEPARATED','WIDOW','DIVORCED','NONE'
@@ -391,10 +383,9 @@ model religion {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  student     student[]
-  stepProfile stepProfile[]
-  staff       staff[]
-  nss         nss[]
+  student student[]
+  staff   staff[]
+  nss     nss[]
 }
 
 model disability {
@@ -404,8 +395,7 @@ model disability {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  student     student[]
-  stepProfile stepProfile[]
+  student student[]
 }
 
 model unit {

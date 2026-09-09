@@ -3,7 +3,6 @@ import dotenv from 'dotenv';
 import express, { Application, Express, NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import aisRoute from './route/aisRoute';
-import amsRoute from './route/amsRoute';
 import apiRoute from './route/apiRoute';
 import authRoute from "./route/authRoute";
 import evsRoute from './route/evsRoute';
@@ -44,7 +43,6 @@ export default class Routes {
     app.get('/', (req, res) => { res.send("test") });
     app.use("/api/auth", authRoute); /** Authentication API **/
     app.use("/api/ais", aisRoute); /** Academics API **/
-    app.use("/api/ams", amsRoute); /** Admissions API **/
     app.use("/api/fms", fmsRoute); /** Finance API **/
     app.use("/api/hrs", hrsRoute); /** HRS API **/
     app.use("/api/evs", evsRoute); /** Electa API **/

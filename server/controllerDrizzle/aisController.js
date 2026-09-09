@@ -597,7 +597,7 @@ class AisController {
                 }
                 yield mysqlAdapter_1.db.update(schema_1.student).set({ indexno }).where((0, drizzle_orm_1.eq)(schema_1.student.id, studentId));
                 // Notification & Logging
-                const msg = `Hi ${st.fname}! Your AUCB Index number has been generated: ${indexno}`;
+                const msg = `Hi ${st.fname}! Your AKATSICO Index number has been generated: ${indexno}`;
                 if (st.phone)
                     yield sms(st.phone, msg);
                 yield mysqlAdapter_1.db.insert(schema_1.log).values({

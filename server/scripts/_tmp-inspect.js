@@ -9,12 +9,16 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const mysqlAdapter_1 = require("./drizzle/mysqlAdapter");
-const schema_1 = require("./drizzle/schema");
-const drizzle_orm_1 = require("drizzle-orm");
+require("dotenv/config");
+const client_1 = require("../prisma/client");
 (() => __awaiter(void 0, void 0, void 0, function* () {
-    const ps = yield mysqlAdapter_1.db.query.portfolio.findMany({ where: (0, drizzle_orm_1.eq)(schema_1.portfolio.electionId, 7), columns: { id: true } });
-    const cands = yield mysqlAdapter_1.db.query.candidate.findMany({ where: (0, drizzle_orm_1.inArray)(schema_1.candidate.portfolioId, ps.map((p) => p.id)) });
-    console.log(cands.map((c) => ({ id: c.id, name: c.name, tag: c.tag, teaser: c.teaser, votes: c.votes })));
-    process.exit(0);
+    const student = yield client_1.prisma.student.findFirst({ where: { id: "26090001" }, select: { indexno: true } });
+    console.log("student.indexno:", student === null || student === void 0 ? void 0 : student.indexno);
+    const rows = yield client_1.prisma.courseEvaluation.findMany({
+        where: { indexno: (student === null || student === void 0 ? void 0 : student.indexno) || undefined },
+        select: { id: true, courseId: true, formId: true, status: true, createdAt: true },
+        orderBy: { createdAt: "asc" },
+    });
+    console.log("rows:", JSON.stringify(rows, null, 2));
+    yield client_1.prisma.$disconnect();
 }))();

@@ -36,6 +36,11 @@ function main() {
             });
         }
         console.log('Seeded evaluation options successfully!');
+        const courseForm = yield prisma.evaluationForm.upsert({
+            where: { key: 'course' },
+            update: {},
+            create: { key: 'course', name: 'Course Evaluation' },
+        });
         // Seed questions
         const questions = [
             // Course Content
@@ -76,7 +81,7 @@ function main() {
         ];
         for (const q of questions) {
             yield prisma.evaluationQuestion.create({
-                data: q
+                data: Object.assign(Object.assign({}, q), { formId: courseForm.id })
             });
         }
         console.log('Seeded evaluation questions successfully!');

@@ -6,7 +6,6 @@ const drizzle_orm_1 = require("drizzle-orm");
 // Assuming these are imported from your previous consolidated pieces
 const util_schema_1 = require("../schema/util.schema");
 const ais_schema_1 = require("../schema/ais.schema");
-const ams_schema_1 = require("../schema/ams.schema");
 // ==========================================
 // 1. ENUMS
 // ==========================================
@@ -177,7 +176,6 @@ exports.billRelations = (0, drizzle_orm_1.relations)(exports.bill, ({ one, many 
     bankacc: one(exports.bankacc, { fields: [exports.bill.bankaccId], references: [exports.bankacc.id] }),
     program: one(ais_schema_1.program, { fields: [exports.bill.programId], references: [ais_schema_1.program.id] }),
     studentAccounts: many(exports.studentAccount),
-    freshers: many(ams_schema_1.fresher),
     activities: many(exports.activityBill),
 }));
 exports.transactionRelations = (0, drizzle_orm_1.relations)(exports.transaction, ({ one, many }) => ({

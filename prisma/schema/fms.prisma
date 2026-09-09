@@ -48,7 +48,6 @@ model bill {
   program program? @relation(fields: [programId], references: [id])
 
   studentAccount studentAccount[]
-  fresher        fresher[]
   activityBill   activityBill[]
 
   @@map("fms_bill")
@@ -144,9 +143,8 @@ model transaction {
   student   student?   @relation(fields: [studentId], references: [id])
   transtype transtype? @relation(fields: [transtypeId], references: [id])
 
-  studentAccount         studentAccount[]
-  activityFinanceVoucher activityFinanceVoucher[]
-  transwift              transwift[]
+  studentAccount studentAccount[]
+  transwift      transwift[]
 
   @@index([transtag])
   @@index([studentId])
@@ -194,21 +192,3 @@ model activityFinanceApi {
   @@map("fms_activity_api")
 }
 
-model activityFinanceVoucher {
-  id          String   @id @default(uuid())
-  transactId  String?
-  admissionId String?
-  serial      String?
-  pin         String?  @db.VarChar(8)
-  buyerName   String   @db.VarChar(255)
-  buyerPhone  String   @db.VarChar(15)
-  smsCode     Int?
-  generated   Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  admission   admission?   @relation(fields: [admissionId], references: [id])
-  transaction transaction? @relation(fields: [transactId], references: [id])
-
-  @@map("fms_activity_voucher")
-}

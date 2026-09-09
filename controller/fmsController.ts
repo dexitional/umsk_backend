@@ -904,53 +904,6 @@ export default class FmsController {
       }
    }
 
-   async fetchPaymentVouchers(req: Request, res: Response) {
-      const { page = 1, pageSize = 9, keyword = '' }: any = req.query;
-      const offset = (page - 1) * pageSize;
-      let searchCondition: any = { where: { transtypeId: { in: [1] } } }
-      try {
-         if (keyword) searchCondition = {
-            where: {
-               OR: [
-                  { transtag: { contains: keyword } },
-                  { student: { id: { contains: keyword } } },
-                  { student: { indexno: { contains: keyword } } },
-                  { student: { fname: { contains: keyword } } },
-                  { student: { lname: { contains: keyword } } },
-               ],
-               AND: [
-                  { transtypeId: { in: [1] } }
-               ]
-            }
-         }
-         const resp = await fms.$transaction([
-            fms.transaction.count({
-               ...(searchCondition),
-            }),
-            fms.transaction.findMany({
-               ...(searchCondition),
-               include: { transtype: true, activityFinanceVoucher: true },
-               skip: offset,
-               take: Number(pageSize),
-               orderBy: { createdAt: 'desc' }
-            })
-         ]);
-
-         if (resp && resp[1]?.length) {
-            res.status(200).json({
-               totalPages: Math.ceil(resp[0] / pageSize) ?? 0,
-               totalData: resp[1]?.length,
-               data: resp[1],
-            })
-         } else {
-            res.status(204).json({ message: `no records found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
    async fetchPayment(req: Request, res: Response) {
       try {
          const resp = await fms.transaction.findUnique({
@@ -1070,9 +1023,7 @@ export default class FmsController {
          const { studentId, transtypeId, bankaccId, collectorId } = req.body
          delete req.body.studentId; delete req.body.transtypeId;
          delete req.body.bankaccId; delete req.body.collectorId;
-         let voucher;
          const narrative = `Payment of ${transtypeId == 8 ? 'Graduation' : transtypeId == 3 ? 'Resit' : transtypeId == 8 ? 'Late Registration' : 'Academic'} Fees`
-         if (transtypeId == '1') voucher = await fms.voucher.findFirst({ where: {}, include: { admission: true } });
          const resp = await fms.transaction.update({
             where: { id: paramStr(req.params.id) },
             data: {
@@ -1083,8 +1034,6 @@ export default class FmsController {
                ...transtypeId && ({ transtype: { connect: { id: transtypeId } } }),
                // If Fees,Late,Resit,Graduation transaction
                ...transtypeId && ['2', '3', '4', '8'].includes(transtypeId) && ({ studentAccount: { updateMany: { data: { studentId, narrative, amount: (-1 * req?.body?.amount), type: 'PAYMENT', currency: req?.body?.currency } } } }),
-               // If Voucher transaction
-               //... transtypeId && transtypeId == '1' && ({ activityFinanceVoucher: { update: { data: {  } }}}),
             }
          })
          if (resp) {
@@ -1108,8 +1057,7 @@ export default class FmsController {
          const bs = await fms.transaction.update({
             where: { id: paramStr(req.params.id) },
             data: {
-               studentAccount: { deleteMany: { transactId: paramStr(req.params.id) } },
-               activityFinanceVoucher: { deleteMany: { transactId: paramStr(req.params.id) } }
+               studentAccount: { deleteMany: { transactId: paramStr(req.params.id) } }
             }
          })
          if (bs) {
@@ -1195,16 +1143,6 @@ export default class FmsController {
             }
 
 
-         } else if (type == 1) {
-            // LOAD_VOUCHER_FORMS
-            const pr = await fms.amsPrice.findMany({ where: { status: true } });
-            const sm = await fms.admission.findFirst({ where: { default: true } });
-            if (pr && sm) {
-               const forms = pr?.map((r: any) => ({ formId: r.id, formName: r.title, currency: r.currency, serviceCharge: r.amount }))
-               return res.status(200).json({ success: true, data: { serviceId: type, sessionId: sm?.id, title: sm?.title, forms } });
-            }
-            return res.status(403).json({ success: false, data: null, msg: "Invalid request" });
-
          } else {
             return res.status(403).json({ success: false, data: null, msg: "Invalid request" });
          }
@@ -1217,9 +1155,13 @@ export default class FmsController {
    async payService(req: Request, res: Response) {
       try {
 
-         const api = req.query.api;
-         const cl: any = await fms.vendor.findFirst();
-         let { serviceId, amountPaid, currency, studentId, refNote, transRef, buyerName, buyerPhone, formId, sessionId } = req.body;
+         // Previously fms.vendor.findFirst() — vendor was an admissions-only
+         // table removed along with the rest of the admission system.
+         // transaction.collectorId's actual relation points at collector
+         // (apiToken/apiEnabled fields, built for exactly this automated
+         // Bank API payment flow), so this was corrected to use it.
+         const cl: any = await fms.collector.findFirst();
+         let { serviceId, amountPaid, currency, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
          serviceId = Number(serviceId)
          amountPaid = parseFloat(amountPaid?.toString()?.replace(",", ""))
          const tr = await fms.transaction.findFirst({ where: { transtag: transRef } })
@@ -1236,71 +1178,9 @@ export default class FmsController {
 
         
 
-         /* BUY VOUCHER */
+         /* Voucher purchases (serviceId 1) were removed along with the admission system/portal. */
          if (serviceId == 1) {
-            if (!sessionId || sessionId == "") return res.status(200).json({ success: false, data: null, msg: `No Admission Session indicated!` }); // Check for Required but Empty field and return error
-            // Create Transaction
-            console.log("TR: ", tr)
-            if (!tr) {
-               const pr = await fms.amsPrice.findUnique({ where: { id: formId } });
-               if (!pr) return res.status(200).json({ success: false, data: null, msg: `No Form Category indicated!` });
-               // const vc: any = await fms.voucher.findFirst({ where: { admissionId: sessionId, vendorId: cl?.id, categoryId: pr?.categoryId, sellType: pr?.sellType, soldAt: null, sold: false } });
-               // if (!vc) return res.status(200).json({ success: false, data: null, msg: `Voucher quota exhausted` });
-
-               const vs: any = await fms.$queryRaw`SELECT * FROM ams_voucher WHERE admissionId = ${sessionId} AND vendorId = ${cl?.id} AND categoryId = ${pr?.categoryId} AND sellType = ${pr?.sellType} AND soldAt IS NULL AND sold = 0 order by createdAt asc LIMIT 1`;
-               console.log("Bank API Key: ", api);
-               console.log("VS: ", vs);
-
-               if (!vs?.length) return res.status(200).json({ success: false, data: null, msg: `Voucher quota exhausted` });
-               const vc = vs[0] || null;
-               // Send SMS to Buyer
-               const msg = `Hi! Your AUCB Applicant Voucher info are SERIAL: ${vc?.serial}, PIN: ${vc?.pin} Goto https://portal.aucb.edu.gh to apply!`;
-               const send = await sms(buyerPhone, msg);
-               console.log("Send: ", send)
-               // let send = { code: 1001 };
-               const ins = await fms.transaction.create({
-                  data: {
-                     ...data,
-                     activityFinanceVoucher: {
-                        createMany: {
-                           data: { serial: vc.serial, pin: vc?.pin, buyerName, buyerPhone, admissionId: sessionId, smsCode: send?.code ? Number(send?.code) : 0 }
-                        }
-                     }
-                  }
-               });
-
-               console.log("Voucher Transaction Created: ", ins)
-               if (ins) {
-                  // Update Voucher with details
-                  const vs: any = await fms.$queryRaw`UPDATE ams_voucher SET applicantName = ${buyerName}, applicantPhone = ${buyerPhone}, soldAt = now(), sold = 1, soldBy = ${'API'} WHERE serial = ${vc?.serial}`;
-                  // Send Response
-                  return res.status(200).json({ success: true, data: { voucherSerial: vc?.serial, voucherPin: vc?.pin, buyerName, buyerPhone, transId: ins?.id, serviceId } });
-               }
-
-            } else {
-               const vc: any = await fms.activityFinanceVoucher.findFirst({ where: { transactId: tr.id } });
-               if (vc) {
-                  // Delete same serials not belonging to same transactId
-                  await fms.$executeRaw`DELETE FROM fms_activity_voucher WHERE serial = ${vc?.serial} AND transactId <> ${tr?.id}`;
-                  // Resend Already Generated Voucher
-                  const msg = `Hi! AUCB Voucher info are, Serial: ${vc?.serial}, Pin: ${vc?.pin} Goto https://portal.aucb.edu.gh to apply!`;
-                  const send = await sms(buyerPhone, msg);
-                  //let send = { code: 1001 };
-                  await fms.activityFinanceVoucher.update({ where: { id: vc.id }, data: { smsCode: send?.code ? Number(send?.code) : 0 } })
-                  return res.status(200).json({
-                     success: true,
-                     data: {
-                        voucherSerial: vc?.serial,
-                        voucherPin: vc?.pin,
-                        buyerName,
-                        buyerPhone,
-                        transId: tr?.id,
-                        serviceId,
-                     },
-                  });
-               }
-               return res.status(200).json({ success: false, data: null, msg: `Transaction failed` });
-            }
+            return res.status(200).json({ success: false, data: null, msg: `Voucher service no longer available` });
 
             /* OTHER PAYMENT SERVICE (ACADEMIC FEES, RESIT, GRADUATION, ATTESTATION, PROFICIENCY, TRANSCRIPT, LATE FINE ) */
          } else {
@@ -1345,7 +1225,7 @@ export default class FmsController {
                         update: {}
                      })
                      // Send Follow-up SMS to Student
-                     const msg = `Hi! Your document request has been processed, Please go into your portal [https://portal.aucb.edu.gh] to update receipient and required information. Thank you.`;
+                     const msg = `Hi! Your document request has been processed, Please go into your portal [https://portal.akatsico.edu.gh] to update receipient and required information. Thank you.`;
                      const send = await sms(st?.phone, msg);
                   }
 
@@ -1379,7 +1259,7 @@ export default class FmsController {
 
                         await fms.student.update({ where: { id: studentId }, data: { indexno } });
                         // Send Notfication
-                        const msg = `Hi ${st.fname}! Your AUCB Index number has been generated: ${indexno}, Thank you!`;
+                        const msg = `Hi ${st.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
                         await sms(st?.phone, msg);
                      }
                   }
@@ -1706,123 +1586,6 @@ export default class FmsController {
    async deleteService(req: Request, res: Response) {
       try {
          const resp = await fms.transtype.delete({ where: { id: Number(paramStr(req.params.id)) } })
-         if (resp) {
-            res.status(200).json(resp)
-         } else {
-            res.status(204).json({ message: `No records deleted` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-
-   /* Voucher Costs */
-   async fetchVsales(req: Request, res: Response) {
-      const { page = 1, pageSize = 9, keyword = '' }: any = req.query;
-      const offset = (page - 1) * pageSize;
-      let searchCondition = {}
-      try {
-         if (keyword) searchCondition = {
-            where: {
-               OR: [
-                  { title: { contains: keyword } },
-                  { category: { title: { contains: keyword } } },
-               ],
-            }
-         }
-         const resp = await fms.$transaction([
-            fms.amsPrice.count({
-               ...(searchCondition),
-            }),
-            fms.amsPrice.findMany({
-               ...(searchCondition),
-               include: { category: true },
-               skip: offset,
-               take: Number(pageSize),
-               orderBy: { createdAt: 'desc' }
-            })
-         ]);
-
-         if (resp && resp[1]?.length) {
-            res.status(200).json({
-               totalPages: Math.ceil(resp[0] / pageSize) ?? 0,
-               totalData: resp[1]?.length,
-               data: resp[1],
-            })
-         } else {
-            res.status(204).json({ message: `no records found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-   async fetchVsale(req: Request, res: Response) {
-      try {
-         const resp = await fms.amsPrice.findUnique({
-            where: { id: paramStr(req.params.id) }
-         })
-         if (resp) {
-            res.status(200).json(resp)
-         } else {
-            res.status(204).json({ message: `no record found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-   async postVsale(req: Request, res: Response) {
-      try {
-         const { categoryId } = req.body
-         delete req.body.categoryId;
-         const resp = await fms.amsPrice.create({
-            data: {
-               ...req.body,
-               ...categoryId && ({ category: { connect: { id: categoryId } } }),
-            }
-         })
-         if (resp) {
-            res.status(200).json(resp)
-         } else {
-            res.status(204).json({ message: `no records found` })
-         }
-
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-   async updateVsale(req: Request, res: Response) {
-      try {
-         const { categoryId } = req.body
-         delete req.body.categoryId;
-         const resp = await fms.amsPrice.update({
-            where: { id: paramStr(req.params.id) },
-            data: {
-               ...req.body,
-               ...categoryId && ({ category: { connect: { id: categoryId } } }),
-            }
-         })
-         if (resp) {
-            res.status(200).json(resp)
-         } else {
-            res.status(204).json({ message: `No records found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-   async deleteVsale(req: Request, res: Response) {
-      try {
-         const resp = await fms.amsPrice.delete({ where: { id: paramStr(req.params.id) } })
          if (resp) {
             res.status(200).json(resp)
          } else {

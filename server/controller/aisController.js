@@ -33,6 +33,9 @@ class BacklogRecordError extends Error {
 const password_1 = require("../util/password");
 const { customAlphabet } = require("nanoid");
 const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
+// unlockPin is a VarChar(4) column (a short quick-access PIN, distinct from
+// the full login password) — must stay 4 digits, not pwdgen's 6 characters.
+const pin = customAlphabet("1234567890", 4);
 const sms = require('../config/sms');
 const ExcelJS = require('exceljs');
 // Students who have no ais_activity_register row for this session — the
@@ -1134,17 +1137,26 @@ class AisController {
                 const isUser = yield ais.user.findFirst({ where: { tag: studentId } });
                 if (isUser)
                     throw ("Student Portal Account Exists!");
-                const ssoData = { tag: studentId, username: studentId, password: (0, password_1.hashPassword)(password), unlockPin: password }; // AUCC only
+                const ssoData = { tag: studentId, username: studentId, password: (0, password_1.hashPassword)(password), unlockPin: pin() }; // AKATSICO only
                 //   const ssoData = { tag:studentId, username:studentId, password:sha1(password), unlockPin: password }  // MLK & Others
                 // Populate SSO Account
                 const resp = yield ais.user.create({
                     data: Object.assign(Object.assign({}, ssoData), { group: { connect: { id: 1 } } }),
                 });
                 if (resp) {
-                    // Send Credentials By SMS
+                    // Send Credentials By SMS — isolated in its own try/catch (matching
+                    // resetStudent below): a gateway hiccup shouldn't turn an
+                    // already-successful account creation into a 500 with no visibility
+                    // into what actually failed.
                     const st = yield ais.student.findFirst({ where: { id: studentId } });
-                    if (st === null || st === void 0 ? void 0 : st.phone)
-                        yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : studentId}, password: ${password}`);
+                    if (st === null || st === void 0 ? void 0 : st.phone) {
+                        try {
+                            yield sms(st.phone, `Hi! Your new credentials is username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : studentId}, password: ${password}`);
+                        }
+                        catch (smsError) {
+                            console.log('stageStudent SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
+                        }
+                    }
                     // Log Login Response
                     yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: ssoData } });
                     // Return Response
@@ -1239,7 +1251,7 @@ class AisController {
                 // const students = await ais.$queryRaw`select * from ais_student where date_format(entryDate,'%m%y') = ${moment(student?.entryDate).format("MMYYYY")} and programId = ${student?.programId}`;
                 const students = yield ais.$queryRaw `select * from ais_student where date_format(entryDate,'%m%y') = ${(0, moment_1.default)(student === null || student === void 0 ? void 0 : student.entryDate).format("MMYY")} and programId = ${student === null || student === void 0 ? void 0 : student.programId} and indexno is not null and (semesterNum = entrySemesterNum)`;
                 // console.log("index student: ", students,moment(student?.entryDate).format("MMYY"));
-                // AUCC INDEX NUMBER GENERATION
+                // AKATSICO INDEX NUMBER GENERATION
                 let studentCount = (students === null || students === void 0 ? void 0 : students.length) + 1;
                 let loop = true;
                 while (loop) {
@@ -1265,7 +1277,7 @@ class AisController {
                 });
                 if (resp) {
                     // Send Notfication
-                    const msg = `Hi ${student.fname}! Your AUCB Index number has been generated: ${indexno}, Thank you!`;
+                    const msg = `Hi ${student.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
                     yield sms(student === null || student === void 0 ? void 0 : student.phone, msg);
                     // Log Login Response
                     yield ais.log.create({ data: { action: `INDEX_NUMBER_GENERATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { indexno } } });
@@ -1311,6 +1323,33 @@ class AisController {
                     // Log Login Response
                     yield ais.log.create({ data: { action: `STUDENT_EMAIL_GENERATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail } } });
                     // Return Response
+                    res.status(200).json(resp);
+                }
+                else {
+                    res.status(202).json({ message: `no records found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json(error);
+            }
+        });
+    }
+    // Dedicated pardon action (route-gated to student::admin/student::finance,
+    // see STUDENT_FINANCE_ROLES in aisRoute.ts) — kept separate from the
+    // generic updateStudent PATCH so this specific, finance-sensitive action
+    // gets its own audit log entry and role enforcement at the backend, not
+    // just the Finance Pardon button's frontend gating.
+    pardonStudent(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { studentId } = req.body;
+                const resp = yield ais.student.update({
+                    where: { id: studentId },
+                    data: { flagPardon: true },
+                });
+                if (resp) {
+                    yield ais.log.create({ data: { action: `STUDENT_PARDON_ACTIVATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { studentId } } });
                     res.status(200).json(resp);
                 }
                 else {
@@ -2075,7 +2114,7 @@ class AisController {
                 // Get Active Sessions Info
                 const sessions = yield ais.session.findMany({ where: { default: true } });
                 // console.log("sessions: ", sessions);
-                // Get Session, for AUCC Only
+                // Get Session, for AKATSICO Only
                 // const session: any = sessions.find((row: any) => (moment(student?.entryDate).format("MM") == '01' && student?.semesterNum <= 2) ? row?.tag?.toUpperCase() == 'SUB' : row?.tag?.toUpperCase() == 'MAIN');
                 // NB: Entry Year 1 for January Stream joins September Stream in Year 2 and Entry Year 2 for January Stream joins September Stream in Year 3
                 const session = sessions.find((row) => {
@@ -2192,10 +2231,12 @@ class AisController {
                 const st = yield ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } });
                 const sessions = yield ais.session.findMany({ where: { default: true } });
                 const session = sessions.find((row) => { var _a, _b; return ((0, moment_1.default)(st === null || st === void 0 ? void 0 : st.entryDate).format("MM") == '01' && (st === null || st === void 0 ? void 0 : st.semesterNum) <= 2) ? ((_a = row === null || row === void 0 ? void 0 : row.tag) === null || _a === void 0 ? void 0 : _a.toUpperCase()) == 'SUB' : ((_b = row === null || row === void 0 ? void 0 : row.tag) === null || _b === void 0 ? void 0 : _b.toUpperCase()) == 'MAIN'; });
+                if (!session)
+                    return res.status(400).json({ message: "No active registration session found. Please contact the registry." });
                 // Check If Registration Data exists
                 const slip = yield ais.assessment.findFirst({ where: { indexno: courses[0].indexno, sessionId: session.id } });
                 if (slip)
-                    throw ("Registration already submitted!");
+                    return res.status(400).json({ message: "Registration already submitted!" });
                 const resitcourses = courses.filter((row) => row.type == 'R');
                 const maincourses = courses.filter((row) => row.type != 'R');
                 if (maincourses.length) {
@@ -2272,12 +2313,12 @@ class AisController {
                     res.status(200).json({ courses: mainresp, resits: rdata, totalCourses: courses.length });
                 }
                 else {
-                    res.status(200).json({ message: `No selected courses found!` });
+                    res.status(202).json({ message: `No selected courses found!` });
                 }
             }
             catch (error) {
                 console.log(error);
-                return res.status(200).json({ message: error });
+                return res.status(500).json({ message: (error === null || error === void 0 ? void 0 : error.message) || error });
             }
         });
     }
@@ -3189,7 +3230,7 @@ class AisController {
                 const st = yield ais.student.findFirst({ where: { indexno, deferStatus: false, completeStatus: false }, include: { program: { select: { semesterTotal: true } } } });
                 if (!st)
                     throw ("Student can't be progressed, check indexno,defer or complete status!");
-                // Fetch Active Session for Student - AUCC Only
+                // Fetch Active Session for Student - AKATSICO Only
                 const session = ((st.semesterNum <= 2 && st.entrySemesterNum == 1) || (st.semesterNum <= 4 && st.entrySemesterNum == 3)) && ['01', '1'].includes((0, moment_1.default)(st.entryDate).format("MM"))
                     ? yield ais.session.findFirst({ where: { default: true, tag: 'SUB' } })
                     : yield ais.session.findFirst({ where: { default: true, tag: 'MAIN' } });
@@ -3232,7 +3273,7 @@ class AisController {
                 delete req.body.sessionId;
                 // Fetch Active Session for Student
                 const session = yield ais.session.findFirst({ where: { id: sessionId } });
-                // AUCC only
+                // AKATSICO only
                 const students = session.tag == 'SUB'
                     ? yield ais.$queryRaw `select s.id,indexno,semesterNum,p.semesterTotal from ais_student s left join ais_program p on s.programId = p.id where (((semesterNum <= 2 and entrySemesterNum = 1) or (semesterNum <= 4 and entrySemesterNum = 3)) and date_format(entryDate,'%m') = '01') and completeStatus = 0 and deferStatus = 0 and indexno is not NULL`
                     : yield ais.$queryRaw `select s.id,indexno,semesterNum,p.semesterTotal from ais_student s left join ais_program p on s.programId = p.id where ((((semesterNum > 2 and entrySemesterNum = 1) or (semesterNum > 4 and entrySemesterNum = 3)) and date_format(entryDate,'%m') = '01') or (date_format(entryDate,'%m') <> '01') or entryDate is null) and completeStatus = 0 and deferStatus = 0 and indexno is not NULL`;
@@ -3888,7 +3929,7 @@ class AisController {
             }
         });
     }
-    stageAuccSheet(req, res) {
+    stageAkatsicoSheet(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             var _a, _b, _c;
             try {
@@ -5165,43 +5206,6 @@ class AisController {
         });
     }
     /* Graduate Session */
-    fetchGraduateLogs(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b;
-            const { page = 1, pageSize = 9, keyword = '' } = req.query;
-            const offset = (page - 1) * pageSize;
-            let searchCondition = {};
-            try {
-                if (keyword)
-                    searchCondition = {
-                        where: {
-                            OR: [
-                                { indexno: { contains: keyword } },
-                                { graduateSession: { contains: keyword } },
-                                { reason: { contains: keyword } },
-                            ],
-                        }
-                    };
-                const resp = yield ais.$transaction([
-                    ais.graduateLog.count(Object.assign({}, (searchCondition))),
-                    ais.graduateLog.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize) }))
-                ]);
-                //if(resp && resp[1]?.length){
-                res.status(200).json({
-                    totalPages: (_a = Math.ceil(resp[0] / pageSize)) !== null && _a !== void 0 ? _a : 0,
-                    totalData: (_b = resp[1]) === null || _b === void 0 ? void 0 : _b.length,
-                    data: resp[1],
-                });
-                //} else {
-                //res.status(202).json({ message: `no records found` })
-                //}
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
     /* Graduate Session */
     fetchGraduateSessions(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
@@ -5975,14 +5979,7 @@ class AisController {
                 });
                 if (resp) {
                     let receivers = [];
-                    if (resp.receiver == 'APPLICANT') {
-                        const rs = yield ais.applicant.findMany({
-                            where: { session: { default: true }, profileId: { not: null } },
-                            include: { profile: { select: { phone: true } } }
-                        });
-                        receivers = rs === null || rs === void 0 ? void 0 : rs.map((r) => { var _a; return (_a = r === null || r === void 0 ? void 0 : r.profile) === null || _a === void 0 ? void 0 : _a.phone; });
-                    }
-                    else if (resp.receiver == 'FRESHER') {
+                    if (resp.receiver == 'FRESHER') {
                         const rs = yield ais.student.findMany({
                             where: { completeStatus: false, deferStatus: false, phone: { not: null } },
                             select: { semesterNum: true, entrySemesterNum: true, phone: true },
@@ -6700,10 +6697,15 @@ class AisController {
             const { page = 1, pageSize = 10, keyword = '' } = req.query;
             const offset = (page - 1) * pageSize;
             try {
-                let searchCondition = {};
+                // Course-only — this view and EvaluationCardItem.tsx are entirely
+                // course-oriented (a "COURSES: {count}" badge, print-slip link);
+                // without this scoping, non-course (sts/ims) submissions would show
+                // up here as phantom extra cards once students start completing them.
+                let searchCondition = { where: { courseId: { not: null } } };
                 if (keyword) {
                     searchCondition = {
                         where: {
+                            courseId: { not: null },
                             session: { default: true },
                             OR: [
                                 { student: { indexno: { contains: keyword } } },
@@ -7481,25 +7483,6 @@ class AisController {
             }
         });
     }
-    fetchVendors(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const resp = yield ais.vendor.findMany({
-                    where: { status: true },
-                });
-                if (resp) {
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(202).json({ message: `no record found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
     fetchCollectors(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
@@ -7548,7 +7531,7 @@ class AisController {
                 //  const scores = require('../../util/_calendar.json');
                 //const scores = require('../../util/_graduate.json');
                 //  const scores = require('../../util/units.json');
-                // const courses = require('../../util/aucc_courses.json');
+                // const courses = require('../../util/akatsico_courses.json');
                 // const courses = require('../../util/courses.json');
                 // if(courses.length){
                 //   for(const course of courses){
