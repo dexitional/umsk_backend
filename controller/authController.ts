@@ -35,7 +35,7 @@ export default class AuthController {
       username = username.trim();
 
       const userByName: any = await sso.user.findFirst({ where: { username }, include: { group: { select: { title: true } } } });
-      const isUser: any = userByName && (verifyPassword(userByName.password, password) || userByName.unlockPin === password) ? userByName : null;
+      const isUser: any = userByName && verifyPassword(userByName.password, password) ? userByName : null;
 
       if (isUser) {
         let { id, tag, groupId, group: { title: groupName } } = isUser;
