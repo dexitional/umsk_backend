@@ -3833,18 +3833,21 @@ class AisController {
                 if ((data === null || data === void 0 ? void 0 : data.length) && sheet && !sheet.assessed) {
                     const { sessionId, courseId } = sheet;
                     resp = yield Promise.all(data === null || data === void 0 ? void 0 : data.map((row) => __awaiter(this, void 0, void 0, function* () {
-                        let { indexno, classScore, examScore } = row;
-                        classScore = classScore != '' ? classScore : null;
-                        examScore = examScore != '' ? examScore : null;
-                        // Always recompute totalScore server-side from class+exam —
-                        // never trust a totalScore column from the uploaded file
-                        // (matches saveSheet's convention: null is treated as 0 in
-                        // the sum, so a NaN only occurs if both are non-numeric).
-                        let totalScore = classScore + examScore;
-                        totalScore = !isNaN(totalScore) ? totalScore : null;
+                        const { indexno, quiz, assignment, midsem } = row;
+                        const scoreA = quiz !== '' && quiz != null ? parseFloat(quiz) : null;
+                        const scoreB = assignment !== '' && assignment != null ? parseFloat(assignment) : null;
+                        const scoreC = midsem !== '' && midsem != null ? parseFloat(midsem) : null;
+                        // Class score is always the sum of Quiz/Assignment/Midsem — same
+                        // rule as the manual capture form (saveSheet). Never trust a
+                        // pre-computed class/total column from the uploaded file.
+                        const classScore = (scoreA !== null && scoreA !== void 0 ? scoreA : 0) + (scoreB !== null && scoreB !== void 0 ? scoreB : 0) + (scoreC !== null && scoreC !== void 0 ? scoreC : 0);
                         let isExist = yield ais.assessment.findFirst({ where: { sessionId, courseId, indexno } });
                         if (isExist) {
-                            return yield ais.assessment.update({ where: { id: isExist === null || isExist === void 0 ? void 0 : isExist.id }, data: { classScore, examScore, totalScore } });
+                            // Exam score isn't part of this upload — total is recomputed
+                            // from the new class score plus whatever exam score already
+                            // exists on the record, left untouched here.
+                            const totalScore = classScore + (isExist.examScore || 0);
+                            return yield ais.assessment.update({ where: { id: isExist === null || isExist === void 0 ? void 0 : isExist.id }, data: { scoreA, scoreB, scoreC, classScore, totalScore } });
                         }
                         return null;
                     })));
