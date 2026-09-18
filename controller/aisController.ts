@@ -118,7 +118,7 @@ export default class AisController {
                   'STUDENT ID': r.student?.id,
                   'GENDER': r.student?.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
-                  'ACADEMIC SESSION': `${r.session?.title} - ${r.session?.tag}`,
+                  'ACADEMIC SESSION': r.session?.title,
                   'PROGRAM': r.student?.program?.shortName,
                   'MAJOR': r.student?.major?.shortName,
                   'COURSES': r.courses,
@@ -372,15 +372,13 @@ export default class AisController {
          // Academic Session Statistics
          const sessions: any = await ais.session.findMany({ where: { default: true } }); // Sessions
          const academic = await Promise.all(sessions.map(async (s: any) => {
-            const { tag } = s;
             // Registered
             const reg: any = await ais.activityRegister.findMany({ where: { sessionId: s.id } });
             // const unregister:any = await ais.activityRegister.findMany({ where: { sessionId: s.id, student: { gender: 'F' }} });
-            const unreg: any = tag == 'MAIN'
-               ? await ais.$queryRaw`select id from ais_student s where (date_format(entryDate,'%m') = '09' or (date_format(entryDate,'%m') = '01' and ((entrySemesterNum = 1 and semesterNum > 2) or (entrySemesterNum = 3 and semesterNum > 4)))) and completeStatus = 0 and deferStatus = 0 and indexno not in (select indexno from ais_activity_register where sessionId = ${s.id})`
-               : await ais.$queryRaw`select id from ais_student s where date_format(entryDate,'%m') = '01' and ((entrySemesterNum = 1 and semesterNum < 3) or (entrySemesterNum = 3 and semesterNum < 5)) and completeStatus = 0 and deferStatus = 0 and indexno not in (select indexno from ais_activity_register where sessionId = ${s.id})`;
+            // No more MAIN/January-SUB stream split -- every active student.
+            const unreg: any = await ais.$queryRaw`select id from ais_student s where completeStatus = 0 and deferStatus = 0 and indexno not in (select indexno from ais_activity_register where sessionId = ${s.id})`;
             return ({
-               label: `${s.title} - ${s.tag}`,
+               label: s.title,
                register: reg?.length,
                unregister: unreg?.length
             })
@@ -577,9 +575,9 @@ export default class AisController {
       try {
          const { sessionId } = req.body;
 
-         const resm = await ais.session.findUnique({ where: { id: sessionId } })
-         const resx = await ais.session.updateMany({ where: { NOT: { id: sessionId }, tag: resm?.tag }, data: { default: false } })
-         //const resx = await ais.session.updateMany({ where: { NOT: { id: sessionId }  }, data: { default: false } })
+         // Only one session can be the default at a time (no more per-tag
+         // defaults now that MAIN/January-SUB stream is gone).
+         const resx = await ais.session.updateMany({ where: { NOT: { id: sessionId } }, data: { default: false } })
          const resp = await ais.session.update({ where: { id: sessionId }, data: { default: true } })
          if (resp) {
             res.status(200).json(resp)
@@ -598,7 +596,7 @@ export default class AisController {
          const session = await ais.session.findUnique({ where: { id: paramStr(req.params.id) } });
          if (!session) return res.status(202).json({ message: `no record found` });
          const eligible = await unregisteredStudentsForSession(session.id);
-         res.status(200).json({ count: eligible.length, session: { title: session.title, tag: session.tag } });
+         res.status(200).json({ count: eligible.length, session: { title: session.title } });
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
@@ -610,7 +608,7 @@ export default class AisController {
          const session = await ais.session.findUnique({ where: { id: paramStr(req.params.id) } });
          if (!session) return res.status(202).json({ message: `no record found` });
          const eligible = await unregisteredStudentsForSession(session.id);
-         const message = `Hi! Reminder: You have not yet registered for the ${session.title} (${session.tag}) semester. As a GTEC requirement, all students must register each semester or risk automatic deferment of their programme. Please register promptly.`;
+         const message = `Hi! Reminder: You have not yet registered for the ${session.title} semester. As a GTEC requirement, all students must register each semester or risk automatic deferment of their programme. Please register promptly.`;
          const sent = await Promise.all(eligible.map(async (st: any) => {
             try {
                const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
@@ -1969,7 +1967,7 @@ export default class AisController {
                         program: { select: { longName: true } },
                      }
                   },
-                  session: { select: { title: true, tag: true } },
+                  session: { select: { title: true } },
                }
             })
          ]);
@@ -1997,10 +1995,10 @@ export default class AisController {
             select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true, department: true } } },
          })
          if (st) {
-            // Get Active Sessions Info
-            const sessions: any = await ais.session.findMany({ where: { default: true } })
-            const session: any = sessions.find((row: any) => (moment(st?.entryDate).format("MM") == '01' && st?.semesterNum <= 2) ? row?.tag?.toUpperCase() == 'SUB' : row?.tag?.toUpperCase() == 'MAIN')
-            // Assessment 
+            // Get Active Session Info -- no more MAIN/January-SUB stream split,
+            // just the one default session.
+            const session: any = await ais.session.findFirst({ where: { default: true } })
+            // Assessment
             // resp = await ais.assessment.findMany({
             //    include: {
             //       course: { select: { title: true, creditHour: true } },
@@ -2063,23 +2061,10 @@ export default class AisController {
          // Get Student Info
          const student: any = await ais.student.findUnique({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id } })
          const indexno = student?.indexno;
-         // Get Active Sessions Info
-         const sessions: any = await ais.session.findMany({ where: { default: true } })
-         // console.log("sessions: ", sessions);
+         // Get Active Session Info -- no more MAIN/January-SUB stream split,
+         // just the one default session.
+         const session: any = await ais.session.findFirst({ where: { default: true } })
 
-         // Get Session, for AKATSICO Only
-         // const session: any = sessions.find((row: any) => (moment(student?.entryDate).format("MM") == '01' && student?.semesterNum <= 2) ? row?.tag?.toUpperCase() == 'SUB' : row?.tag?.toUpperCase() == 'MAIN');
-         // NB: Entry Year 1 for January Stream joins September Stream in Year 2 and Entry Year 2 for January Stream joins September Stream in Year 3
-         const session: any = sessions.find((row: any) => {
-            const streamTag = (moment(student?.entryDate).format("MM") == '01' && ((student?.entrySemesterNum == 1 && ['1', '2'].includes(student?.semesterNum)) || (student?.entrySemesterNum == 3 && ['3', '4'].includes(student?.semesterNum)))) ? 'SUB' : 'MAIN';
-            return row?.tag?.toUpperCase() == streamTag;
-         });
-         // Get Session, for MLK Only
-         // const session:any = sessions[0];
-
-         // console.log("Session: ", session?.tag);
-         // console.log("Registration Stream: ", moment(student?.entryDate).format("MM"));
-         // console.log("Registration Stream: ", ['01','09'].includes(moment(student?.entryDate).format("MM") ? 'Stream Passed':'Issue with Stream / Entry Month'));
          // console.log("Registration SemesterNum: ", student?.semesterNum);
 
          // Get Normal Courses with/without Majors
@@ -2204,10 +2189,10 @@ export default class AisController {
       try {
          const courses = req.body;
          const data: any = [], rdata: any = [];
-         // Get Active Sessions Info
+         // Get Active Session Info -- no more MAIN/January-SUB stream split,
+         // just the one default session.
          const st: any = await ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } })
-         const sessions: any = await ais.session.findMany({ where: { default: true } })
-         const session: any = sessions.find((row: any) => (moment(st?.entryDate).format("MM") == '01' && st?.semesterNum <= 2) ? row?.tag?.toUpperCase() == 'SUB' : row?.tag?.toUpperCase() == 'MAIN')
+         const session: any = await ais.session.findFirst({ where: { default: true } })
          if (!session) return res.status(400).json({ message: "No active registration session found. Please contact the registry." });
          // Check If Registration Data exists
          const slip = await ais.assessment.findFirst({ where: { indexno: courses[0].indexno, sessionId: session.id } });
@@ -3181,13 +3166,9 @@ export default class AisController {
          const st = await ais.student.findFirst({ where: { indexno, deferStatus: false, completeStatus: false }, include: { program: { select: { semesterTotal: true } } } });
          if (!st) throw ("Student can't be progressed, check indexno,defer or complete status!");
 
-         // Fetch Active Session for Student - AKATSICO Only
-         const session = ((st.semesterNum <= 2 && st.entrySemesterNum == 1) || (st.semesterNum <= 4 && st.entrySemesterNum == 3)) && ['01', '1'].includes(moment(st.entryDate).format("MM"))
-            ? await ais.session.findFirst({ where: { default: true, tag: 'SUB' } })
-            : await ais.session.findFirst({ where: { default: true, tag: 'MAIN' } })
-
-         // Fetch Active Session for Student - MLK & Others Only
-         // const session = await ais.sesssion.findFirst({ where: { default: true }})
+         // Fetch Active Session for Student -- no more MAIN/January-SUB stream
+         // split, just the one default session.
+         const session = await ais.session.findFirst({ where: { default: true } })
 
          // Check If Progressed
          const pg = await ais.activityProgress.findFirst({ where: { indexno, sessionId: session?.id } })
@@ -3231,13 +3212,8 @@ export default class AisController {
          delete req.body.sessionId;
          // Fetch Active Session for Student
          const session = await ais.session.findFirst({ where: { id: sessionId } })
-         // AKATSICO only
-         const students = session.tag == 'SUB'
-            ? await ais.$queryRaw`select s.id,indexno,semesterNum,p.semesterTotal from ais_student s left join ais_program p on s.programId = p.id where (((semesterNum <= 2 and entrySemesterNum = 1) or (semesterNum <= 4 and entrySemesterNum = 3)) and date_format(entryDate,'%m') = '01') and completeStatus = 0 and deferStatus = 0 and indexno is not NULL`
-            : await ais.$queryRaw`select s.id,indexno,semesterNum,p.semesterTotal from ais_student s left join ais_program p on s.programId = p.id where ((((semesterNum > 2 and entrySemesterNum = 1) or (semesterNum > 4 and entrySemesterNum = 3)) and date_format(entryDate,'%m') = '01') or (date_format(entryDate,'%m') <> '01') or entryDate is null) and completeStatus = 0 and deferStatus = 0 and indexno is not NULL`;
-
-         // MLK & Others only
-         // const students = await ais.$queryRaw`select indexno,semesterNum from ais_student where completeStatus = 0 and deferStatus = 0 and indexno is not NULL`;
+         // No more MAIN/January-SUB stream split -- every active student.
+         const students = await ais.$queryRaw`select s.id,indexno,semesterNum,p.semesterTotal from ais_student s left join ais_program p on s.programId = p.id where completeStatus = 0 and deferStatus = 0 and indexno is not NULL`;
 
          const resp = await Promise.all(students.map(async (st: any) => {
             console.log("st: ", st)
@@ -3753,7 +3729,7 @@ export default class AisController {
          const resp = await ais.sheet.findUnique({
             where: { id: paramStr(req.params.id) },
             include: {
-               session: { select: { title: true, tag: true, cohort: true } },
+               session: { select: { title: true, cohort: true } },
                program: { select: { longName: true, category: true } },
                course: { select: { title: true, id: true, creditHour: true } },
                major: { select: { longName: true } },
@@ -7741,12 +7717,9 @@ export default class AisController {
          // Get Student Info
          const student: any = await ais.student.findUnique({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id } })
          const indexno = student?.indexno;
-         // Get Active Sessions Info
-         const sessions: any = await ais.session.findMany({ where: { default: true } })
-         const session: any = sessions.find((row: any) => {
-            const streamTag = (moment(student?.entryDate).format("MM") == '01' && ((student?.entrySemesterNum == 1 && ['1', '2'].includes(student?.semesterNum)) || (student?.entrySemesterNum == 3 && ['3', '4'].includes(student?.semesterNum)))) ? 'SUB' : 'MAIN';
-            return row?.tag?.toUpperCase() == streamTag;
-         });
+         // Get Active Session Info -- no more MAIN/January-SUB stream split,
+         // just the one default session.
+         const session: any = await ais.session.findFirst({ where: { default: true } })
 
          const assessment: any = await ais.assessment.findFirst({ where: { sessionId: id, indexno } });
 

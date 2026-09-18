@@ -230,9 +230,7 @@ model student {
 
 model session {
   id               String          @id @default(uuid())
-  tag              String?         @default("main") @db.VarChar(50)
-  // Displayed as "COHORT {n}" in place of the main/January-sub stream label
-  // for sheets belonging to a PG (postgraduate) program.
+  // Displayed as "COHORT {n}" for sheets belonging to a PG (postgraduate) program.
   cohort           Int?
   title            String          @db.VarChar(255)
   year             String?         @db.VarChar(50)

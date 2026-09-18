@@ -59,14 +59,12 @@ function isFormOpen(form, userId) {
         return allowed.some((r) => r.yearGroup === studentYearGroup);
     });
 }
-// Resolves the currently-active session for a student — AKATSICO-only rule:
-// a January-stream student in year 1 joins the 'SUB' session, everyone else
-// joins 'MAIN'. Shared by submitEvaluation, fetchAvailableForms and
-// fetchMyEvaluation, all of which need "which session is this evaluation for".
+// Resolves the currently-active session for a student. There's no more
+// MAIN/January-SUB stream split (session.tag is always null now, and only
+// one session can be the default at a time) -- just the one default session.
 function resolveActiveSession(student) {
     return __awaiter(this, void 0, void 0, function* () {
-        const sessions = yield eva.session.findMany({ where: { default: true } });
-        return sessions.find((row) => { var _a, _b, _c; return ((0, moment_1.default)(student === null || student === void 0 ? void 0 : student.entryDate).format("MM") == '01' && ((_a = student === null || student === void 0 ? void 0 : student.semesterNum) !== null && _a !== void 0 ? _a : 0) <= 2) ? ((_b = row === null || row === void 0 ? void 0 : row.tag) === null || _b === void 0 ? void 0 : _b.toUpperCase()) == 'SUB' : ((_c = row === null || row === void 0 ? void 0 : row.tag) === null || _c === void 0 ? void 0 : _c.toUpperCase()) == 'MAIN'; });
+        return yield eva.session.findFirst({ where: { default: true } });
     });
 }
 // Shared by fetchForms and fetchAvailableForms: a student's evaluation
