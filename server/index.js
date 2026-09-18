@@ -46,6 +46,7 @@ app.locals.broadcastStats = broadcastStats;
 app.locals.broadcastElection = broadcastElection;
 class Routes {
     constructor(app) {
+        var _a;
         // Middlewares
         app.use(body_parser_1.default.json({ limit: '50mb' }));
         app.use(body_parser_1.default.urlencoded({ limit: '50mb', extended: true }));
@@ -59,7 +60,10 @@ class Routes {
                 }
             }
         }));
-        app.use((0, cors_1.default)());
+        // Allowlist is env-driven per deployment rather than hardcoded here.
+        // Falls back to the local dev frontend origin only if unset.
+        const corsOrigins = ((_a = process.env.CORS_ORIGINS) === null || _a === void 0 ? void 0 : _a.split(',').map(o => o.trim()).filter(Boolean)) || ['http://localhost:5173'];
+        app.use((0, cors_1.default)({ origin: corsOrigins }));
         app.use((0, express_fileupload_1.default)({ limits: { fileSize: 50 * 1024 * 1024 } }));
         app.use((0, compression_1.default)());
         app.use((0, helmet_1.default)());

@@ -52,7 +52,10 @@ export default class Routes {
       }
     }));
 
-    app.use(cors());
+    // Allowlist is env-driven per deployment rather than hardcoded here.
+    // Falls back to the local dev frontend origin only if unset.
+    const corsOrigins = (process.env.CORS_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)) || ['http://localhost:5173'];
+    app.use(cors({ origin: corsOrigins }));
     app.use(fileUpload({ limits: { fileSize: 50 * 1024 * 1024 } }));
     app.use(compression());
     app.use(helmet());
