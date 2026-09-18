@@ -2870,10 +2870,11 @@ class AisController {
     postUnit(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { level1Id } = req.body;
+                const { level1Id, level2Id } = req.body;
                 delete req.body.level1Id;
+                delete req.body.level2Id;
                 const resp = yield ais.unit.create({
-                    data: Object.assign(Object.assign({}, req.body), level1Id && ({ level1: { connect: { id: level1Id } } })),
+                    data: Object.assign(Object.assign(Object.assign({}, req.body), level1Id && ({ level1: { connect: { id: level1Id } } })), level2Id && ({ level2: { connect: { id: level2Id } } })),
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -2891,12 +2892,13 @@ class AisController {
     updateUnit(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { level1Id, headStaffNo: newHead } = req.body;
+                const { level1Id, level2Id, headStaffNo: newHead } = req.body;
                 delete req.body.level1Id;
+                delete req.body.level2Id;
                 const unit = yield ais.unit.findFirst({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
                 const resp = yield ais.unit.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), level1Id && ({ level1: { connect: { id: level1Id } } })), !level1Id && ({ level1: { disconnect: true } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), level1Id && ({ level1: { connect: { id: level1Id } } })), !level1Id && ({ level1: { disconnect: true } })), level2Id && ({ level2: { connect: { id: level2Id } } })), !level2Id && ({ level2: { disconnect: true } }))
                 });
                 if (resp) {
                     // Stage Head or Dean of Unit

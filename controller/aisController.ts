@@ -2839,12 +2839,13 @@ export default class AisController {
 
    async postUnit(req: Request, res: Response) {
       try {
-         const { level1Id } = req.body
-         delete req.body.level1Id;
+         const { level1Id, level2Id } = req.body
+         delete req.body.level1Id; delete req.body.level2Id;
          const resp = await ais.unit.create({
             data: {
                ...req.body,
                ...level1Id && ({ level1: { connect: { id: level1Id } } }),
+               ...level2Id && ({ level2: { connect: { id: level2Id } } }),
             },
          })
          if (resp) {
@@ -2861,8 +2862,8 @@ export default class AisController {
 
    async updateUnit(req: Request, res: Response) {
       try {
-         const { level1Id, headStaffNo: newHead } = req.body
-         delete req.body.level1Id;
+         const { level1Id, level2Id, headStaffNo: newHead } = req.body
+         delete req.body.level1Id; delete req.body.level2Id;
          const unit = await ais.unit.findFirst({ where: { id: paramStr(req.params.id) } });
          const resp = await ais.unit.update({
             where: { id: paramStr(req.params.id) },
@@ -2870,6 +2871,8 @@ export default class AisController {
                ...req.body,
                ...level1Id && ({ level1: { connect: { id: level1Id } } }),
                ...!level1Id && ({ level1: { disconnect: true } }),
+               ...level2Id && ({ level2: { connect: { id: level2Id } } }),
+               ...!level2Id && ({ level2: { disconnect: true } }),
             }
          })
          if (resp) {
