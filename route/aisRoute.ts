@@ -5,17 +5,20 @@ const { voteLimiter } = require("../middleware/rateLimitterFlexible");
 const { verifyToken } = require("../middleware/verifyToken");
 const { requireRole } = require("../middleware/requireRole");
 
-const SHEET_VIEW_ROLES = ['sheet::admin', 'sheet::dean', 'sheet::hod', 'sheet::head', 'sheet::pg-registry', 'sheet::ug-registry', 'mysheet::assessor'];
-const SHEET_ADMIN_ONLY = ['sheet::admin'];
-const SHEET_PUBLISH_ROLES = ['sheet::admin', 'sheet::dean'];
-const SHEET_REVERSE_ROLES = ['sheet::admin', 'sheet::hod', 'sheet::pg-registry', 'sheet::ug-registry'];
-const SHEET_MODERATE_ROLES = ["sheet::admin", "sheet::hod","sheet::pg-registry", "sheet::ug-registry"];
-const SHEET_SUBMIT_ROLES = ['sheet::admin', 'mysheet::assessor'];
-const SHEET_UPLOAD_ROLES = ['sheet::admin', 'sheet::pg-registry', 'sheet::ug-registry', 'mysheet::assessor'];
-// updateSheet serves both the admin-only edit form and the assign action (hod/registry);
+// sheet::admin has been relieved of assessment-sheet duties entirely --
+// none of these role sets include it. Create/close/delete (formerly
+// admin-only, with no other role covering them) now belong to sheet::hod.
+const SHEET_VIEW_ROLES = ['sheet::dean', 'sheet::hod', 'sheet::head', 'sheet::pg-registry', 'sheet::ug-registry', 'mysheet::assessor'];
+const SHEET_MANAGE_ROLES = ['sheet::hod'];
+const SHEET_PUBLISH_ROLES = ['sheet::dean', 'sheet::hod'];
+const SHEET_REVERSE_ROLES = ['sheet::hod', 'sheet::pg-registry', 'sheet::ug-registry'];
+const SHEET_MODERATE_ROLES = ["sheet::hod","sheet::pg-registry", "sheet::ug-registry"];
+const SHEET_SUBMIT_ROLES = ['mysheet::assessor'];
+const SHEET_UPLOAD_ROLES = ['sheet::pg-registry', 'sheet::ug-registry', 'mysheet::assessor'];
+// updateSheet serves both the hod-only edit form and the assign action (hod/registry);
 // the controller itself branches by request body shape, so the route gate stays permissive
 // to every role that could legitimately hit either path.
-const SHEET_UPDATE_ROLES = ['sheet::admin', 'sheet::hod', 'sheet::pg-registry', 'sheet::ug-registry'];
+const SHEET_UPDATE_ROLES = ['sheet::hod', 'sheet::pg-registry', 'sheet::ug-registry'];
 
 // Matches AISResitActionCard.tsx's existing canSubmit role set.
 const RESIT_ASSESSOR_ROLES = ['resit::admin', 'resit::assessor'];
@@ -130,7 +133,7 @@ class AisRoute {
 
       /* Sheet */
       this.router.get('/sheets', [verifyToken, requireRole(SHEET_VIEW_ROLES)], this.controller.fetchSheets);
-      this.router.get('/sheets/my', [verifyToken, requireRole(['mysheet::assessor', 'sheet::admin'])], this.controller.fetchMySheets);
+      this.router.get('/sheets/my', [verifyToken, requireRole(['mysheet::assessor'])], this.controller.fetchMySheets);
       this.router.get('/sheets/:id', [verifyToken, requireRole(SHEET_VIEW_ROLES)], this.controller.fetchSheet);
       this.router.post('/sheets/stage', [verifyToken], this.controller.stageSheet);
       this.router.get('/sanitize', this.controller.cleanSheet);
@@ -138,14 +141,14 @@ class AisRoute {
       this.router.post('/sheets/save', [verifyToken, requireRole(SHEET_VIEW_ROLES)], this.controller.saveSheet);//AUUG09210105
       this.router.post('/sheets/reverse', [verifyToken, requireRole(SHEET_REVERSE_ROLES)], this.controller.reverseSheet);
       this.router.post('/sheets/upload', [verifyToken, requireRole(SHEET_UPLOAD_ROLES)], this.controller.uploadSheet);//AUUG09210105
-      this.router.post('/sheets', [verifyToken, requireRole(SHEET_ADMIN_ONLY)], this.controller.postSheet);
+      this.router.post('/sheets', [verifyToken, requireRole(SHEET_MANAGE_ROLES)], this.controller.postSheet);
       this.router.patch('/sheets/:id/submit', [verifyToken, requireRole(SHEET_SUBMIT_ROLES)], this.controller.submitSheet);
-      this.router.patch('/sheets/:id/close', [verifyToken, requireRole(SHEET_ADMIN_ONLY)], this.controller.closeSheet);
+      this.router.patch('/sheets/:id/close', [verifyToken, requireRole(SHEET_MANAGE_ROLES)], this.controller.closeSheet);
       this.router.patch('/sheets/:id/moderate', [verifyToken, requireRole(SHEET_MODERATE_ROLES)], this.controller.moderateSheet);
       this.router.patch('/sheets/:id/publish', [verifyToken, requireRole(SHEET_PUBLISH_ROLES)], this.controller.publishSheet);
       this.router.patch('/sheets/:id/unpublish', [verifyToken, requireRole(SHEET_PUBLISH_ROLES)], this.controller.unpublishSheet);
       this.router.patch('/sheets/:id', [verifyToken, requireRole(SHEET_UPDATE_ROLES)], this.controller.updateSheet);
-      this.router.delete('/sheets/:id', [verifyToken, requireRole(SHEET_ADMIN_ONLY)], this.controller.deleteSheet);
+      this.router.delete('/sheets/:id', [verifyToken, requireRole(SHEET_MANAGE_ROLES)], this.controller.deleteSheet);
 
        /* Backlog */
        this.router.get('/backlogs', [verifyToken], this.controller.fetchBacklogs);
