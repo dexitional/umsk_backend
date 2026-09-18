@@ -241,7 +241,6 @@ enum backlogType {
   REGISTRATION
   ASSESSMENT
   DELETION
-  EXAM_SCORE
 }
 
 enum backlogInsertType {

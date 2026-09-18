@@ -97,6 +97,8 @@ model staff {
   certifier          sheet[]            @relation("certifier")
   backlogCreator     activityBacklog[]  @relation("creator")
   backlogApprover    activityBacklog[]  @relation("approver")
+  examCreator        activityExam[]     @relation("examCreator")
+  examApprover       activityExam[]     @relation("examApprover")
   courseEvaluations  courseEvaluation[]
   supervisor         respondent[]       @relation("supervisor")
   respondent         respondent[]       @relation("respondent")

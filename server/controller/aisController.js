@@ -4067,11 +4067,11 @@ class AisController {
     fetchBacklogs(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             var _a, _b, _c;
-            const { page = 1, pageSize = 6, keyword = '', type = '' } = req.query;
+            const { page = 1, pageSize = 6, keyword = '' } = req.query;
             const offset = (page - 1) * pageSize;
             let searchCondition = {};
             try {
-                const where = Object.assign(Object.assign({}, type && ({ type })), keyword && ({
+                const where = Object.assign({}, keyword && ({
                     OR: [
                         { title: { contains: keyword } },
                         { session: { title: { contains: keyword } } },
@@ -4151,18 +4151,6 @@ class AisController {
                                 failedCount: missingScore.length,
                                 totalCount: meta.length,
                                 errors: indexnos.map((indexno) => ({ indexno, reason: 'Total score is missing' })),
-                            });
-                        }
-                    }
-                    if (type == 'EXAM_SCORE') {
-                        const missingExam = (meta || []).filter((r) => r.scoreExam === null || r.scoreExam === undefined || Number.isNaN(r.scoreExam));
-                        if (missingExam.length) {
-                            const indexnos = [...new Set(missingExam.map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }))];
-                            return res.status(400).json({
-                                message: `Backlog not committed: exam score is missing for ${missingExam.length} of ${meta.length} student record(s): ${indexnos.join(', ')}. Please provide an exam score before committing this backlog.`,
-                                failedCount: missingExam.length,
-                                totalCount: meta.length,
-                                errors: indexnos.map((indexno) => ({ indexno, reason: 'Exam score is missing' })),
                             });
                         }
                     }
@@ -4267,34 +4255,6 @@ class AisController {
                                     }
                                 })));
                             }
-                            else if (type == 'EXAM_SCORE') { // EXAM SCORE UPDATE
-                                // Updates an existing assessment record only -- sessionId,
-                                // courseId, semesterNum, indexno, and scoreType (N/R) are
-                                // used purely to find/confirm the right row, never to
-                                // create one. totalScore is always recomputed as
-                                // classScore + examScore.
-                                data = yield Promise.all(meta.map((r) => __awaiter(this, void 0, void 0, function* () {
-                                    var _a, _b, _c, _d;
-                                    try {
-                                        const as = yield tx.assessment.findFirst({ where: { sessionId, courseId: r.courseId, semesterNum: Number(r.semesterNum), indexno: r.indexno.trim(), type: r.scoreType } });
-                                        if (!as)
-                                            throw new BacklogRecordError((_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(), 'No matching assessment record found for that session, course, semester, and assessment type');
-                                        // Log Existing Data
-                                        yield tx.log.create({ data: { action: `BACKLOG_${type}`, user: req.userId, student: r.indexno.trim(), meta: as } });
-                                        // Update Exam + Total Score
-                                        const totalScore = ((_b = as.classScore) !== null && _b !== void 0 ? _b : 0) + ((_c = r.scoreExam) !== null && _c !== void 0 ? _c : 0);
-                                        return yield tx.assessment.update({
-                                            where: { id: as.id },
-                                            data: { examScore: r.scoreExam, totalScore },
-                                        });
-                                    }
-                                    catch (recordError) {
-                                        if (recordError instanceof BacklogRecordError)
-                                            throw recordError;
-                                        throw new BacklogRecordError((_d = r.indexno) === null || _d === void 0 ? void 0 : _d.trim(), (0, helper_1.friendlyDbError)(recordError));
-                                    }
-                                })));
-                            }
                             const committed = { count: data === null || data === void 0 ? void 0 : data.length };
                             if (committed.count) {
                                 // Update Backlog Status
@@ -4380,8 +4340,8 @@ class AisController {
     // courseId, indexno, and type (scoreType N/R): no classScore/totalScore
     // and no schemeId, since this never creates an assessment record, only
     // updates the examScore (and recomputed totalScore) on an existing one.
-    // Stages a pending activityBacklog batch (type: EXAM_SCORE) the same way
-    // uploadBacklog does; approveBacklog commits it.
+    // Stages a pending activityExam batch the same way uploadBacklog does;
+    // approveExamScore commits it.
     uploadExamScore(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             var _a;
@@ -4401,8 +4361,8 @@ class AisController {
                         examScore = examScore != '' ? parseFloat(examScore) : null;
                         meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore });
                     });
-                    resp = yield ais.activityBacklog.create({
-                        data: Object.assign(Object.assign({ title: `EXAM SCORE UPLOAD - ${(_a = (0, moment_1.default)().format('LLL')) === null || _a === void 0 ? void 0 : _a.toUpperCase()} - ${createdBy}`, type: `EXAM_SCORE`, meta }, createdBy && ({ creator: { connect: { staffNo: createdBy } } })), sessionId && ({ session: { connect: { id: sessionId } } })),
+                    resp = yield ais.activityExam.create({
+                        data: Object.assign(Object.assign({ title: `EXAM SCORE UPLOAD - ${(_a = (0, moment_1.default)().format('LLL')) === null || _a === void 0 ? void 0 : _a.toUpperCase()} - ${createdBy}`, meta }, createdBy && ({ creator: { connect: { staffNo: createdBy } } })), sessionId && ({ session: { connect: { id: sessionId } } })),
                     });
                 }
                 else
@@ -4417,6 +4377,177 @@ class AisController {
             catch (error) {
                 console.log(error);
                 return res.status(202).json({ message: error.message });
+            }
+        });
+    }
+    fetchExamScores(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c;
+            const { page = 1, pageSize = 6, keyword = '' } = req.query;
+            const offset = (page - 1) * pageSize;
+            let searchCondition = {};
+            try {
+                const where = Object.assign({}, keyword && ({
+                    OR: [
+                        { title: { contains: keyword } },
+                        { session: { title: { contains: keyword } } },
+                    ],
+                }));
+                if (Object.keys(where).length)
+                    searchCondition = { where };
+                const resp = yield ais.$transaction([
+                    ais.activityExam.count(Object.assign({}, (searchCondition))),
+                    ais.activityExam.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize), include: {
+                            session: true
+                        } }))
+                ]);
+                if (resp && ((_a = resp[1]) === null || _a === void 0 ? void 0 : _a.length)) {
+                    return res.status(200).json({
+                        totalPages: (_b = Math.ceil(resp[0] / pageSize)) !== null && _b !== void 0 ? _b : 0,
+                        totalData: (_c = resp[1]) === null || _c === void 0 ? void 0 : _c.length,
+                        data: resp[1],
+                    });
+                }
+                else {
+                    return res.status(202).json({ message: `no records found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    fetchExamScore(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resp = yield ais.activityExam.findUnique({
+                    where: { id: (0, paramStr_1.paramStr)(req.params.id) },
+                    include: { session: true }
+                });
+                if (resp) {
+                    // Flag rows whose indexno has no matching student so the UI can
+                    // highlight them before an approval attempt rejects the batch.
+                    const indexnos = [...new Set((resp.meta || []).map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }).filter(Boolean))];
+                    if (indexnos.length) {
+                        const students = yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { indexno: true } });
+                        const foundIndexnos = new Set(students.map((s) => s.indexno));
+                        resp.meta = resp.meta.map((r) => { var _a; return (Object.assign(Object.assign({}, r), { studentExists: foundIndexnos.has((_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim()) })); });
+                    }
+                    return res.status(200).json(resp);
+                }
+                else {
+                    return res.status(202).json({ message: `no record found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    approveExamScore(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            try {
+                const approvedBy = req.userId;
+                const rs = yield ais.activityExam.findUnique({
+                    where: { id: (_a = req.body) === null || _a === void 0 ? void 0 : _a.examId },
+                });
+                if (rs) {
+                    const { id, meta, sessionId } = rs;
+                    // Validate the whole batch up front so a bad row fails cleanly
+                    // instead of leaving the batch partially committed.
+                    const missingExam = (meta || []).filter((r) => r.scoreExam === null || r.scoreExam === undefined || Number.isNaN(r.scoreExam));
+                    if (missingExam.length) {
+                        const indexnos = [...new Set(missingExam.map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }))];
+                        return res.status(400).json({
+                            message: `Batch not committed: exam score is missing for ${missingExam.length} of ${meta.length} student record(s): ${indexnos.join(', ')}. Please provide an exam score before committing this batch.`,
+                            failedCount: missingExam.length,
+                            totalCount: meta.length,
+                            errors: indexnos.map((indexno) => ({ indexno, reason: 'Exam score is missing' })),
+                        });
+                    }
+                    const indexnos = [...new Set((meta || []).map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }).filter(Boolean))];
+                    if (indexnos.length) {
+                        const students = yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { indexno: true } });
+                        const foundIndexnos = new Set(students.map((s) => s.indexno));
+                        const missingStudents = indexnos.filter((idx) => !foundIndexnos.has(idx));
+                        if (missingStudents.length) {
+                            return res.status(400).json({
+                                message: `Batch not committed: ${missingStudents.length} of ${indexnos.length} student index number(s) could not be found: ${missingStudents.join(', ')}. Please check and correct them before committing this batch.`,
+                                failedCount: missingStudents.length,
+                                totalCount: indexnos.length,
+                                errors: missingStudents.map((indexno) => ({ indexno, reason: 'Student index number not found' })),
+                            });
+                        }
+                    }
+                    // Commit each record inside a transaction so a failure partway
+                    // through rolls back cleanly instead of leaving the batch
+                    // partially committed, and report exactly which record(s) failed.
+                    let resp;
+                    try {
+                        resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                            // Updates an existing assessment record only -- sessionId,
+                            // courseId, semesterNum, indexno, and scoreType (N/R) are
+                            // used purely to find/confirm the right row, never to
+                            // create one. totalScore is always recomputed as
+                            // classScore + examScore.
+                            const data = yield Promise.all(meta.map((r) => __awaiter(this, void 0, void 0, function* () {
+                                var _a, _b, _c, _d;
+                                try {
+                                    const as = yield tx.assessment.findFirst({ where: { sessionId, courseId: r.courseId, semesterNum: Number(r.semesterNum), indexno: r.indexno.trim(), type: r.scoreType } });
+                                    if (!as)
+                                        throw new BacklogRecordError((_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(), 'No matching assessment record found for that session, course, semester, and assessment type');
+                                    // Log Existing Data
+                                    yield tx.log.create({ data: { action: `EXAM_SCORE`, user: req.userId, student: r.indexno.trim(), meta: as } });
+                                    // Update Exam + Total Score
+                                    const totalScore = ((_b = as.classScore) !== null && _b !== void 0 ? _b : 0) + ((_c = r.scoreExam) !== null && _c !== void 0 ? _c : 0);
+                                    return yield tx.assessment.update({
+                                        where: { id: as.id },
+                                        data: { examScore: r.scoreExam, totalScore },
+                                    });
+                                }
+                                catch (recordError) {
+                                    if (recordError instanceof BacklogRecordError)
+                                        throw recordError;
+                                    throw new BacklogRecordError((_d = r.indexno) === null || _d === void 0 ? void 0 : _d.trim(), (0, helper_1.friendlyDbError)(recordError));
+                                }
+                            })));
+                            const committed = { count: data === null || data === void 0 ? void 0 : data.length };
+                            if (committed.count) {
+                                // Update Batch Status
+                                yield tx.activityExam.update({ where: { id }, data: { approvedBy, status: true } });
+                            }
+                            return committed;
+                        }));
+                    }
+                    catch (txError) {
+                        if (txError instanceof BacklogRecordError) {
+                            console.log(txError);
+                            return res.status(400).json({
+                                message: `Batch not committed: record for student ${txError.indexno || 'unknown'} failed (${txError.reason}). No changes were saved — please fix this record and try again.`,
+                                failedCount: 1,
+                                totalCount: meta.length,
+                                errors: [{ indexno: txError.indexno, reason: txError.reason }],
+                            });
+                        }
+                        throw txError;
+                    }
+                    console.log(resp);
+                    if (resp === null || resp === void 0 ? void 0 : resp.count) {
+                        res.status(200).json({ success: true, data: resp });
+                    }
+                    else {
+                        res.status(202).json({ message: `no records found` });
+                    }
+                }
+                else
+                    throw ("Invalid Exam Score Batch Id");
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
             }
         });
     }

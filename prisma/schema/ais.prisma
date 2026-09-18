@@ -273,6 +273,7 @@ model session {
   bill               bill[]
   studentAccount     studentAccount[]
   activityBacklog    activityBacklog[]
+  activityExam       activityExam[]
   courseEvaluations  courseEvaluation[]
 
   @@map("ais_session")
@@ -414,6 +415,24 @@ model activityBacklog {
   approver staff?   @relation("approver", fields: [approvedBy], references: [staffNo])
 
   @@map("ais_activity_backlog")
+}
+
+model activityExam {
+  id         String   @id @default(uuid())
+  sessionId  String?
+  title      String?
+  meta       Json?
+  status     Boolean  @default(false)
+  approvedBy String?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  session  session? @relation(fields: [sessionId], references: [id])
+  creator  staff?   @relation("examCreator", fields: [createdBy], references: [staffNo])
+  approver staff?   @relation("examApprover", fields: [approvedBy], references: [staffNo])
+
+  @@map("ais_activity_exam")
 }
 
 model assessment {
