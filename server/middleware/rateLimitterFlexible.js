@@ -26,6 +26,32 @@ const opts = {
 //     points:   1    // Requests
 // });
 const rateLimiter = new RateLimiterMySQL(opts, (err) => console.log(err));
+// Login is unauthenticated (no req.userId yet), so this is keyed by IP rather
+// than user, with a much looser window than voteLimiter -- a real user
+// mistyping their password a couple of times shouldn't get locked out.
+const loginLimiterOpts = {
+    storeClient: db,
+    dbName: 'ums',
+    tableName: 'rate',
+    keyPrefix: 'login',
+    duration: 900, // 15 minutes
+    points: 5 // Attempts
+};
+const loginRateLimiter = new RateLimiterMySQL(loginLimiterOpts, (err) => console.log(err));
+const loginLimiter = (req, res, next) => {
+    loginRateLimiter
+        .consume(req.ip)
+        .then((rateLimiterRes) => {
+        res.setHeader('Retry-After', rateLimiterRes.msBeforeNext / 1000);
+        res.setHeader('X-RateLimit-Limit', loginLimiterOpts.points);
+        res.setHeader('X-RateLimit-Remaining', rateLimiterRes.remainingPoints);
+        res.setHeader('X-RateLimit-Reset', new Date(Date.now() + rateLimiterRes.msBeforeNext).toISOString());
+        next();
+    })
+        .catch(() => {
+        res.status(429).json({ message: 'Too many login attempts, please try again later.' });
+    });
+};
 const voteLimiter = (req, res, next) => {
     rateLimiter
         .consume(req.userId)
@@ -54,7 +80,8 @@ const voteLimiter = (req, res, next) => {
     }));
 };
 module.exports = {
-    voteLimiter
+    voteLimiter,
+    loginLimiter
 };
 // EH/BSS/19/0234 - adongo
 // EH/ACT/20/0075 - abanga

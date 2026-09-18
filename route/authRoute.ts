@@ -2,6 +2,7 @@ import { Router } from 'express'
 import AuthController from '../controller/authController'
 
 const { verifyToken } = require("../middleware/verifyToken");
+const { loginLimiter } = require("../middleware/rateLimitterFlexible");
 
 class AuthRoute {
     
@@ -14,7 +15,7 @@ class AuthRoute {
 
     initializeRoute(){
       /* Authentication Providers */
-       this.router.post('/credential', this.controller.authenticateWithCredential);
+       this.router.post('/credential', [loginLimiter], this.controller.authenticateWithCredential);
        this.router.post('/google', this.controller.authenticateWithGoogle);
        // Impersonation — must require an already-authenticated caller.
        // authenticateWithKey issues a full session token by tag alone, no
