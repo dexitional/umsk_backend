@@ -58,6 +58,18 @@ function unregisteredStudentsForSession(sessionId) {
         });
     });
 }
+// A program's department must be a genuine department-level unit (levelNum 2,
+// ACADEMIC — see fetchDepartments/fetchFaculties for the same convention),
+// not a faculty, a non-academic unit, or an arbitrary id. The frontend's
+// department dropdown already only offers valid options, but postProgram/
+// updateProgram had nothing stopping a direct request from connecting any
+// unit id -- this is the server-side backstop.
+function isValidDepartmentUnit(unitId) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const unit = yield ais.unit.findFirst({ where: { id: unitId, levelNum: 2, type: 'ACADEMIC' }, select: { id: true } });
+        return !!unit;
+    });
+}
 // A student may have several outstanding resit courses tied to this
 // session — dedupe by indexno so each student is reminded once, not once
 // per course row.
@@ -2625,6 +2637,9 @@ class AisController {
                 const { unitId, schemeId } = req.body;
                 delete req.body.schemeId;
                 delete req.body.unitId;
+                if (unitId && !(yield isValidDepartmentUnit(unitId))) {
+                    return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
+                }
                 const resp = yield ais.program.create({
                     data: Object.assign(Object.assign(Object.assign({}, req.body), unitId && ({ department: { connect: { id: unitId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } }))
                 });
@@ -2647,6 +2662,9 @@ class AisController {
                 const { unitId, schemeId } = req.body;
                 delete req.body.schemeId;
                 delete req.body.unitId;
+                if (unitId && !(yield isValidDepartmentUnit(unitId))) {
+                    return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
+                }
                 const resp = yield ais.program.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
                     data: Object.assign(Object.assign(Object.assign({}, req.body), unitId && ({ department: { connect: { id: unitId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } }))

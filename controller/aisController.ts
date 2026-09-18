@@ -51,6 +51,17 @@ async function unregisteredStudentsForSession(sessionId: string) {
    });
 }
 
+// A program's department must be a genuine department-level unit (levelNum 2,
+// ACADEMIC — see fetchDepartments/fetchFaculties for the same convention),
+// not a faculty, a non-academic unit, or an arbitrary id. The frontend's
+// department dropdown already only offers valid options, but postProgram/
+// updateProgram had nothing stopping a direct request from connecting any
+// unit id -- this is the server-side backstop.
+async function isValidDepartmentUnit(unitId: string): Promise<boolean> {
+   const unit = await ais.unit.findFirst({ where: { id: unitId, levelNum: 2, type: 'ACADEMIC' }, select: { id: true } });
+   return !!unit;
+}
+
 // A student may have several outstanding resit courses tied to this
 // session — dedupe by indexno so each student is reminded once, not once
 // per course row.
@@ -2598,6 +2609,10 @@ export default class AisController {
          const { unitId, schemeId } = req.body
          delete req.body.schemeId; delete req.body.unitId;
 
+         if (unitId && !(await isValidDepartmentUnit(unitId))) {
+            return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
+         }
+
          const resp = await ais.program.create({
             data: {
                ...req.body,
@@ -2621,6 +2636,11 @@ export default class AisController {
       try {
          const { unitId, schemeId } = req.body
          delete req.body.schemeId; delete req.body.unitId;
+
+         if (unitId && !(await isValidDepartmentUnit(unitId))) {
+            return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
+         }
+
          const resp = await ais.program.update({
             where: { id: paramStr(req.params.id) },
             data: {
