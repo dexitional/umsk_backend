@@ -305,6 +305,10 @@ model log {
   student   String?  @db.VarChar(255)
   meta      Json
   createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+  @@index([user])
 }
 
 // AIS - ACADEMIC MANAGEMENT  MODELS
