@@ -34,7 +34,7 @@ export default class AuthController {
       // worth normalizing here, since collation doesn't cover that.
       username = username.trim();
 
-      const userByName: any = await sso.user.findFirst({ where: { username }, include: { group: { select: { title: true } } } });
+      const userByName: any = await sso.user.findFirst({ where: { username, status: true }, include: { group: { select: { title: true } } } });
       const isUser: any = userByName && verifyPassword(userByName.password, password) ? userByName : null;
 
       if (isUser) {

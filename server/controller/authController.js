@@ -48,7 +48,7 @@ class AuthController {
                 // whitespace (a common copy/paste artifact) is the one thing actually
                 // worth normalizing here, since collation doesn't cover that.
                 username = username.trim();
-                const userByName = yield sso.user.findFirst({ where: { username }, include: { group: { select: { title: true } } } });
+                const userByName = yield sso.user.findFirst({ where: { username, status: true }, include: { group: { select: { title: true } } } });
                 const isUser = userByName && (0, password_1.verifyPassword)(userByName.password, password) ? userByName : null;
                 if (isUser) {
                     let { id, tag, groupId, group: { title: groupName } } = isUser;
