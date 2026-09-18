@@ -3882,8 +3882,11 @@ class AisController {
                     const scoreA = data[`${i}_scorea`] ? parseFloat(data[`${i}_scorea`]) : null;
                     const scoreB = data[`${i}_scoreb`] ? parseFloat(data[`${i}_scoreb`]) : null;
                     const scoreC = data[`${i}_scorec`] ? parseFloat(data[`${i}_scorec`]) : null;
-                    let classScore = (scoreA && scoreB && scoreC) ? (scoreA + scoreB + scoreC) : (scoreA && scoreB && !scoreC) ? (scoreA + scoreB) : parseFloat(data[`${i}_class`]);
-                    classScore = !isNaN(classScore) ? classScore : null;
+                    // Class score capture (Quiz/Assignment/Midsem) is now the sole source of
+                    // classScore -- it's always their sum, not a separately-entered value.
+                    // The old truthy-AND chain here broke on a genuine 0 in any component
+                    // (falsy), silently falling back to the unrelated manual _class field.
+                    const classScore = (scoreA !== null && scoreA !== void 0 ? scoreA : 0) + (scoreB !== null && scoreB !== void 0 ? scoreB : 0) + (scoreC !== null && scoreC !== void 0 ? scoreC : 0);
                     let examScore = parseFloat(data[`${i}_exam`]);
                     examScore = !isNaN(examScore) ? examScore : null;
                     let totalScore = classScore + examScore;
