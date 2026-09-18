@@ -4079,18 +4079,20 @@ export default class AisController {
 
    /* Backlog */
    async fetchBacklogs(req: Request, res: Response) {
-      const { page = 1, pageSize = 6, keyword = '' }: any = req.query;
+      const { page = 1, pageSize = 6, keyword = '', type = '' }: any = req.query;
       const offset = (page - 1) * pageSize;
       let searchCondition = {}
       try {
-         if (keyword) searchCondition = {
-            where: {
+         const where: any = {
+            ...type && ({ type }),
+            ...keyword && ({
                OR: [
                   { title: { contains: keyword } },
                   { session: { title: { contains: keyword } } },
                ],
-            },
-         }
+            }),
+         };
+         if (Object.keys(where).length) searchCondition = { where };
          const resp = await ais.$transaction([
             ais.activityBacklog.count({
                ...(searchCondition),
@@ -4166,6 +4168,19 @@ export default class AisController {
                      failedCount: missingScore.length,
                      totalCount: meta.length,
                      errors: indexnos.map((indexno) => ({ indexno, reason: 'Total score is missing' })),
+                  });
+               }
+            }
+
+            if (type == 'EXAM_SCORE') {
+               const missingExam = (meta || []).filter((r: any) => r.scoreExam === null || r.scoreExam === undefined || Number.isNaN(r.scoreExam));
+               if (missingExam.length) {
+                  const indexnos = [...new Set(missingExam.map((r: any) => r.indexno?.trim()))];
+                  return res.status(400).json({
+                     message: `Backlog not committed: exam score is missing for ${missingExam.length} of ${meta.length} student record(s): ${indexnos.join(', ')}. Please provide an exam score before committing this backlog.`,
+                     failedCount: missingExam.length,
+                     totalCount: meta.length,
+                     errors: indexnos.map((indexno) => ({ indexno, reason: 'Exam score is missing' })),
                   });
                }
             }
@@ -4267,6 +4282,30 @@ export default class AisController {
                            throw new BacklogRecordError(r.indexno?.trim(), friendlyDbError(recordError));
                         }
                      }))
+
+                  } else if (type == 'EXAM_SCORE') { // EXAM SCORE UPDATE
+                     // Updates an existing assessment record only -- sessionId,
+                     // courseId, semesterNum, indexno, and scoreType (N/R) are
+                     // used purely to find/confirm the right row, never to
+                     // create one. totalScore is always recomputed as
+                     // classScore + examScore.
+                     data = await Promise.all(meta.map(async (r: any) => {
+                        try {
+                           const as = await tx.assessment.findFirst({ where: { sessionId, courseId: r.courseId, semesterNum: Number(r.semesterNum), indexno: r.indexno.trim(), type: r.scoreType } });
+                           if (!as) throw new BacklogRecordError(r.indexno?.trim(), 'No matching assessment record found for that session, course, semester, and assessment type');
+                           // Log Existing Data
+                           await tx.log.create({ data: { action: `BACKLOG_${type}`, user: req.userId, student: r.indexno.trim(), meta: as } });
+                           // Update Exam + Total Score
+                           const totalScore = (as.classScore ?? 0) + (r.scoreExam ?? 0);
+                           return await tx.assessment.update({
+                              where: { id: as.id },
+                              data: { examScore: r.scoreExam, totalScore },
+                           })
+                        } catch (recordError: any) {
+                           if (recordError instanceof BacklogRecordError) throw recordError;
+                           throw new BacklogRecordError(r.indexno?.trim(), friendlyDbError(recordError));
+                        }
+                     }))
                   }
 
                   const committed = { count: data?.length };
@@ -4347,6 +4386,57 @@ export default class AisController {
 
          if (resp) {
             console.log(resp)
+            res.status(200).json({ success: true, data: resp })
+         } else {
+            res.status(202).json({ message: `no records found` })
+         }
+
+      } catch (error: any) {
+         console.log(error)
+         return res.status(202).json({ message: error.message })
+      }
+   }
+
+   // Exam Score Manager upload -- a narrower clone of uploadBacklog. The
+   // sample/upload file only has exam score, sessionId, semesterNum,
+   // courseId, indexno, and type (scoreType N/R): no classScore/totalScore
+   // and no schemeId, since this never creates an assessment record, only
+   // updates the examScore (and recomputed totalScore) on an existing one.
+   // Stages a pending activityBacklog batch (type: EXAM_SCORE) the same way
+   // uploadBacklog does; approveBacklog commits it.
+   async uploadExamScore(req: any, res: Response) {
+      try {
+         const data = req.body;
+         let resp;
+         if (data?.length) {
+            const createdBy: any = req.userId;
+            let sessionId = data[0].sessionId;
+            let meta: any = [];
+
+            data?.map((row: any) => {
+               let { courseId, type, semesterNum, indexno, examScore } = row;
+               indexno = indexno.trim();
+               courseId = courseId.trim();
+               type = type.trim();
+               semesterNum = +semesterNum;
+               examScore = examScore != '' ? parseFloat(examScore) : null;
+
+               meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore })
+            })
+
+            resp = await ais.activityBacklog.create({
+               data: {
+                  title: `EXAM SCORE UPLOAD - ${moment().format('LLL')?.toUpperCase()} - ${createdBy}`,
+                  type: `EXAM_SCORE`,
+                  meta,
+                  ...createdBy && ({ creator: { connect: { staffNo: createdBy } } }),
+                  ...sessionId && ({ session: { connect: { id: sessionId } } }),
+               },
+            })
+
+         } else return resp;
+
+         if (resp) {
             res.status(200).json({ success: true, data: resp })
          } else {
             res.status(202).json({ message: `no records found` })

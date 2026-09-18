@@ -158,7 +158,12 @@ class AisRoute {
        this.router.post('/backlogs/upload', [verifyToken], this.controller.uploadBacklog);
        this.router.patch('/backlogs/:id', [verifyToken], this.controller.updateBacklog);
        this.router.delete('/backlogs/:id', [verifyToken], this.controller.deleteBacklog);
-       
+
+       /* Exam Score Manager -- narrower clone of Backlog, staged as an
+          activityBacklog batch (type: EXAM_SCORE) and committed through the
+          same /backlogs/approve and /backlogs/:id endpoints above. */
+       this.router.post('/examscores/upload', [verifyToken], this.controller.uploadExamScore);
+
        /* Progression */
        this.router.get('/progression', [verifyToken], this.controller.fetchProgressions);
        this.router.get('/progression/:id', [verifyToken], this.controller.fetchProgression);
