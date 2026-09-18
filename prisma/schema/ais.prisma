@@ -193,7 +193,6 @@ model student {
   entryDate         DateTime?          @db.DateTime(0)
   exitDate          DateTime?          @db.DateTime(0)
   residentialStatus residentialStatus?
-  studyMode         studyMode?
   deferStatus       Boolean            @default(false)
   completeStatus    Boolean            @default(false)
   completeType      completeType?
@@ -488,7 +487,6 @@ model sheet {
   assessorId    String?
   certifierId   String?
   semesterNum   Int
-  studyMode     String? @db.VarChar(50)
   studentCount  Int?    @default(0)
   completeRatio Float?
 

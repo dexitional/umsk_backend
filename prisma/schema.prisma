@@ -231,14 +231,6 @@ enum residentialStatus {
   NON_RESIDENTIAL
 }
 
-enum studyMode {
-  M
-  W
-  E
-  A
-  f
-}
-
 enum EvsActionType {
   STAGED
   STARTED
