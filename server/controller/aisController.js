@@ -102,36 +102,34 @@ class AisController {
     loadReport(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                let { type, program, major, year, mode, session, gsession, rsession, category } = req.body;
+                let { type, program, major, year, session, gsession, rsession, category } = req.body;
                 let resp = { type };
                 if (type == 'student_registration') {
                     let regs = yield ais.activityRegister.findMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign({ session: { default: true } }, program && ({ student: { programId: program } })), major && ({ student: { majorId: major } })), mode && ({ student: { studyMode: mode } })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
+                        where: Object.assign(Object.assign(Object.assign({ session: { default: true } }, program && ({ student: { programId: program } })), major && ({ student: { majorId: major } })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                         include: { student: { include: { program: true, major: true } }, session: true },
                         orderBy: [
                             { session: { createdAt: 'asc' } },
                             { student: { programId: 'asc' } },
                             { student: { majorId: 'asc' } },
                             { student: { semesterNum: 'asc' } },
-                            { student: { studyMode: 'asc' } },
                             { student: { lname: 'asc' } },
                         ]
                     });
                     if (regs.length) {
                         regs = regs.map((r) => {
-                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
+                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
                             return ({
                                 'LAST NAME': (_b = (_a = r.student) === null || _a === void 0 ? void 0 : _a.lname) === null || _b === void 0 ? void 0 : _b.toUpperCase(),
                                 'FIRST NAME': (_d = (_c = r.student) === null || _c === void 0 ? void 0 : _c.fname) === null || _d === void 0 ? void 0 : _d.toUpperCase(),
                                 'MIDDLE NAME(S)': (_f = (_e = r.student) === null || _e === void 0 ? void 0 : _e.mname) === null || _f === void 0 ? void 0 : _f.toUpperCase(),
                                 'INDEX NUMBER': (_g = r.student) === null || _g === void 0 ? void 0 : _g.indexno,
                                 'STUDENT ID': (_h = r.student) === null || _h === void 0 ? void 0 : _h.id,
-                                'STUDY MODE': (_j = r.student) === null || _j === void 0 ? void 0 : _j.studyMode,
-                                'GENDER': (_k = r.student) === null || _k === void 0 ? void 0 : _k.gender,
+                                'GENDER': (_j = r.student) === null || _j === void 0 ? void 0 : _j.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
-                                'ACADEMIC SESSION': `${(_l = r.session) === null || _l === void 0 ? void 0 : _l.title} - ${(_m = r.session) === null || _m === void 0 ? void 0 : _m.tag}`,
-                                'PROGRAM': (_p = (_o = r.student) === null || _o === void 0 ? void 0 : _o.program) === null || _p === void 0 ? void 0 : _p.shortName,
-                                'MAJOR': (_r = (_q = r.student) === null || _q === void 0 ? void 0 : _q.major) === null || _r === void 0 ? void 0 : _r.shortName,
+                                'ACADEMIC SESSION': `${(_k = r.session) === null || _k === void 0 ? void 0 : _k.title} - ${(_l = r.session) === null || _l === void 0 ? void 0 : _l.tag}`,
+                                'PROGRAM': (_o = (_m = r.student) === null || _m === void 0 ? void 0 : _m.program) === null || _o === void 0 ? void 0 : _o.shortName,
+                                'MAJOR': (_q = (_p = r.student) === null || _p === void 0 ? void 0 : _p.major) === null || _q === void 0 ? void 0 : _q.shortName,
                                 'COURSES': r.courses,
                                 'REGISTRATION DATE': r.createdAt
                             });
@@ -141,30 +139,28 @@ class AisController {
                 }
                 else if (type == 'student_deferment') {
                     let regs = yield ais.activityDefer.findMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign({}, program && ({ student: { programId: program } })), major && ({ student: { majorId: major } })), mode && ({ student: { studyMode: mode } })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
+                        where: Object.assign(Object.assign(Object.assign({}, program && ({ student: { programId: program } })), major && ({ student: { majorId: major } })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                         include: { student: { include: { program: true, major: true } } },
                         orderBy: [
                             { student: { programId: 'asc' } },
                             { student: { majorId: 'asc' } },
                             { student: { semesterNum: 'asc' } },
-                            { student: { studyMode: 'asc' } },
                             { student: { lname: 'asc' } },
                         ]
                     });
                     if (regs.length) {
                         regs = regs.map((r) => {
-                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
+                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
                             return ({
                                 'LAST NAME': (_b = (_a = r.student) === null || _a === void 0 ? void 0 : _a.lname) === null || _b === void 0 ? void 0 : _b.toUpperCase(),
                                 'FIRST NAME': (_d = (_c = r.student) === null || _c === void 0 ? void 0 : _c.fname) === null || _d === void 0 ? void 0 : _d.toUpperCase(),
                                 'MIDDLE NAME(S)': (_f = (_e = r.student) === null || _e === void 0 ? void 0 : _e.mname) === null || _f === void 0 ? void 0 : _f.toUpperCase(),
                                 'INDEX NUMBER': (_g = r.student) === null || _g === void 0 ? void 0 : _g.indexno,
                                 'STUDENT ID': (_h = r.student) === null || _h === void 0 ? void 0 : _h.id,
-                                'STUDY MODE': (_j = r.student) === null || _j === void 0 ? void 0 : _j.studyMode,
-                                'GENDER': (_k = r.student) === null || _k === void 0 ? void 0 : _k.gender,
+                                'GENDER': (_j = r.student) === null || _j === void 0 ? void 0 : _j.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
-                                'PROGRAM': (_m = (_l = r.student) === null || _l === void 0 ? void 0 : _l.program) === null || _m === void 0 ? void 0 : _m.shortName,
-                                'MAJOR': (_p = (_o = r.student) === null || _o === void 0 ? void 0 : _o.major) === null || _p === void 0 ? void 0 : _p.shortName,
+                                'PROGRAM': (_l = (_k = r.student) === null || _k === void 0 ? void 0 : _k.program) === null || _l === void 0 ? void 0 : _l.shortName,
+                                'MAJOR': (_o = (_m = r.student) === null || _m === void 0 ? void 0 : _m.major) === null || _o === void 0 ? void 0 : _o.shortName,
                                 'DURATION': r.durationInYears,
                                 'RESUMPTION DATE': r.end
                             });
@@ -174,15 +170,14 @@ class AisController {
                 }
                 else if (type == 'student_debtor') {
                     let regs = yield ais.student.findMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign({ 
+                        where: Object.assign(Object.assign(Object.assign({ 
                             //completeStatus: false,
-                            accountNet: { gt: 0 } }, program && ({ programId: program })), major && ({ majorId: major })), mode && ({ studyMode: mode })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
+                            accountNet: { gt: 0 } }, program && ({ programId: program })), major && ({ majorId: major })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                         include: { program: true, major: true },
                         orderBy: [
                             { programId: 'asc' },
                             { majorId: 'asc' },
                             { semesterNum: 'asc' },
-                            { studyMode: 'asc' },
                             { lname: 'asc' },
                         ]
                     });
@@ -195,7 +190,6 @@ class AisController {
                                 'MIDDLE NAME(S)': (_c = r.mname) === null || _c === void 0 ? void 0 : _c.toUpperCase(),
                                 'INDEX NUMBER': r.indexno,
                                 'STUDENT ID': r.id,
-                                'STUDY MODE': r.studyMode,
                                 'GENDER': r.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'PROGRAM': (_d = r.program) === null || _d === void 0 ? void 0 : _d.shortName,
@@ -208,13 +202,12 @@ class AisController {
                 }
                 else if (type == 'student_profile') {
                     let regs = yield ais.student.findMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign({ completeStatus: false }, program && ({ programId: program })), major && ({ majorId: major })), mode && ({ studyMode: mode })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
+                        where: Object.assign(Object.assign(Object.assign({ completeStatus: false }, program && ({ programId: program })), major && ({ majorId: major })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                         include: { program: true, major: true },
                         orderBy: [
                             { programId: 'desc' },
                             { majorId: 'asc' },
                             { semesterNum: 'asc' },
-                            { studyMode: 'asc' },
                             { lname: 'asc' },
                         ]
                     });
@@ -227,7 +220,6 @@ class AisController {
                                 'MIDDLE NAME(S)': (_c = r.mname) === null || _c === void 0 ? void 0 : _c.toUpperCase(),
                                 'INDEX NUMBER': r.indexno,
                                 'STUDENT ID': r.id,
-                                'STUDY MODE': r.studyMode,
                                 'GENDER': r.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'PROGRAM': (_d = r.program) === null || _d === void 0 ? void 0 : _d.shortName,
@@ -249,7 +241,6 @@ class AisController {
                                 { completeStatus: false },
                                 Object.assign({}, program && ({ programId: program })),
                                 Object.assign({}, major && ({ majorId: major })),
-                                Object.assign({}, mode && ({ studyMode: mode })),
                                 Object.assign({}, year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                             ],
                         },
@@ -258,7 +249,6 @@ class AisController {
                             { programId: 'desc' },
                             { majorId: 'asc' },
                             { semesterNum: 'asc' },
-                            { studyMode: 'asc' },
                             { lname: 'asc' },
                         ]
                     });
@@ -271,7 +261,6 @@ class AisController {
                                 'MIDDLE NAME(S)': (_c = r.mname) === null || _c === void 0 ? void 0 : _c.toUpperCase(),
                                 'INDEX NUMBER': r.indexno,
                                 'STUDENT ID': r.id,
-                                'STUDY MODE': r.studyMode,
                                 'GENDER': r.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'PROGRAM': (_d = r.program) === null || _d === void 0 ? void 0 : _d.shortName,
@@ -295,7 +284,6 @@ class AisController {
                             { student: { programId: 'asc' } },
                             { student: { majorId: 'asc' } },
                             { student: { semesterNum: 'asc' } },
-                            { student: { studyMode: 'asc' } },
                             { student: { lname: 'asc' } },
                         ]
                     });
@@ -308,7 +296,6 @@ class AisController {
                                 'MIDDLE NAME(S)': (_c = r.student.mname) === null || _c === void 0 ? void 0 : _c.toUpperCase(),
                                 'INDEX NUMBER': (_d = r.student) === null || _d === void 0 ? void 0 : _d.indexno,
                                 'STUDENT ID': (_e = r.student) === null || _e === void 0 ? void 0 : _e.id,
-                                'STUDY MODE': r.student.studyMode,
                                 'GENDER': r.student.gender,
                                 'YEAR': Math.ceil(r.student.semesterNum / 2),
                                 'PROGRAM': (_f = r.student.program) === null || _f === void 0 ? void 0 : _f.shortName,
@@ -328,7 +315,6 @@ class AisController {
                             { student: { programId: 'asc' } },
                             { student: { majorId: 'asc' } },
                             { student: { semesterNum: 'asc' } },
-                            { student: { studyMode: 'asc' } },
                             { student: { lname: 'asc' } },
                         ]
                     });
@@ -341,7 +327,6 @@ class AisController {
                                 'MIDDLE NAME(S)': (_c = r.student.mname) === null || _c === void 0 ? void 0 : _c.toUpperCase(),
                                 'INDEX NUMBER': (_d = r.student) === null || _d === void 0 ? void 0 : _d.indexno,
                                 'STUDENT ID': (_e = r.student) === null || _e === void 0 ? void 0 : _e.id,
-                                'STUDY MODE': r.student.studyMode,
                                 'GENDER': r.student.gender,
                                 'PROGRAM': (_f = r.student.program) === null || _f === void 0 ? void 0 : _f.shortName,
                                 'MAJOR': (_g = r.student.major) === null || _g === void 0 ? void 0 : _g.shortName,
@@ -3494,41 +3479,18 @@ class AisController {
     }
     stageSheet(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b;
             try {
                 // Fetch Active Semester
                 const { sessionId } = req.body;
                 // Fetch Session Info
                 const session = yield ais.session.findFirst({ where: { id: sessionId, default: true } });
                 if (session) {
-                    // Fetch Mounted Courses all Program Levels
+                    // Fetch Mounted Courses all Program Levels — one sheet per
+                    // program/session/semester, no mode-based split.
                     let mounts = yield ais.structure.findMany({ where: { status: true }, include: { program: true } });
                     mounts = mounts.filter((meta) => ((meta === null || meta === void 0 ? void 0 : meta.semesterNum) % 2) == ((session === null || session === void 0 ? void 0 : session.semester) == 'SEM2' ? 0 : 1));
-                    let data = [];
-                    for (let meta of mounts) {
-                        let modes;
-                        console.log("MODE: ", (_a = meta === null || meta === void 0 ? void 0 : meta.program) === null || _a === void 0 ? void 0 : _a.category);
-                        switch ((_b = meta === null || meta === void 0 ? void 0 : meta.program) === null || _b === void 0 ? void 0 : _b.category) {
-                            case "CP":
-                                modes = ["M", "E", "W"];
-                                break;
-                            case "DP":
-                                modes = ["M", "E", "W"];
-                                break;
-                            case "UG":
-                                modes = ["M", "E", "W"];
-                                break;
-                            case "PG":
-                                modes = ["W"];
-                                break;
-                        }
-                        // Re-populate Data
-                        for (const mode of modes) {
-                            data.push(Object.assign(Object.assign({}, meta), { studyMode: mode }));
-                        }
-                    }
-                    //console.log(data);
-                    // Check whether Sheets are generated 
+                    let data = mounts;
+                    // Check whether Sheets are generated
                     const form = yield ais.sheet.findFirst({ where: { sessionId, status: true } });
                     if (form) {
                         // Update Generated Flag
@@ -3536,11 +3498,11 @@ class AisController {
                         // Return Response
                         return res.status(202).json({ message: `sheets exists for calendar` });
                     }
-                    // Upsert Bulk into Sheet 
+                    // Upsert Bulk into Sheet
                     const resp = yield Promise.all(data === null || data === void 0 ? void 0 : data.map((row) => __awaiter(this, void 0, void 0, function* () {
                         let { courseId, programId, unitId, majorId } = row;
                         return yield ais.sheet.create({
-                            data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({ semesterNum: row.semesterNum, studyMode: row.studyMode }, sessionId && ({ session: { connect: { id: sessionId } } })), courseId && ({ course: { connect: { id: courseId } } })), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })), unitId && ({ unit: { connect: { id: unitId } } }))
+                            data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({ semesterNum: row.semesterNum }, sessionId && ({ session: { connect: { id: sessionId } } })), courseId && ({ course: { connect: { id: courseId } } })), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })), unitId && ({ unit: { connect: { id: unitId } } }))
                         });
                     })));
                     if (resp) {
@@ -3564,7 +3526,6 @@ class AisController {
     }
     cleanSheet(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b;
             try {
                 // Fetch Active Semester
                 // const { sessionId } = req.body
@@ -3580,48 +3541,24 @@ class AisController {
                 // Fetch Session Info
                 const session = yield ais.session.findFirst({ where: { id: sessionId } });
                 if (session) {
-                    // Fetch Mounted Courses all Program Levels
+                    // Fetch Mounted Courses all Program Levels — one sheet per
+                    // program/session/semester, no mode-based split.
                     let mounts = yield ais.structure.findMany({ where: { status: true }, include: { program: true } });
                     mounts = mounts.filter((meta) => ((meta === null || meta === void 0 ? void 0 : meta.semesterNum) % 2) == ((session === null || session === void 0 ? void 0 : session.semester) == 'SEM2' ? 0 : 1));
-                    let data = [];
-                    for (let meta of mounts) {
-                        let modes;
-                        console.log("MODE: ", (_a = meta === null || meta === void 0 ? void 0 : meta.program) === null || _a === void 0 ? void 0 : _a.category);
-                        switch ((_b = meta === null || meta === void 0 ? void 0 : meta.program) === null || _b === void 0 ? void 0 : _b.category) {
-                            case "CP":
-                                modes = ["M", "E", "W"];
-                                break;
-                            case "DP":
-                                modes = ["M", "E", "W"];
-                                break;
-                            case "UG":
-                                modes = ["M", "E", "W"];
-                                break;
-                            case "PG":
-                                modes = ["W"];
-                                break;
-                        }
-                        // Re-populate Data
-                        for (const mode of modes) {
-                            data.push(Object.assign(Object.assign({}, meta), { studyMode: mode }));
-                        }
-                    }
-                    // Upsert Bulk into Sheet 
+                    let data = mounts;
+                    // Upsert Bulk into Sheet
                     const resp = yield Promise.all(data === null || data === void 0 ? void 0 : data.map((row) => __awaiter(this, void 0, void 0, function* () {
                         let { courseId, programId, unitId, majorId } = row;
                         const sheetM = yield ais.sheet.findFirst({ where: { semesterNum: row.semesterNum, sessionId, programId, courseId } });
-                        const sheet = yield ais.sheet.findFirst({ where: { semesterNum: row.semesterNum, studyMode: row.studyMode, sessionId, programId, courseId } });
                         yield ais.$executeRaw `set foreign_key_checks=0`;
-                        if (sheet) {
-                            return yield ais.$executeRaw `UPDATE ais_sheet SET semesterNum = ${row.semesterNum}, studyMode = ${row.studyMode}, assignStaffId = ${(sheetM === null || sheetM === void 0 ? void 0 : sheetM.assignStaffId) || null}, sessionId = ${sessionId || null}, courseId = ${courseId || null}, programId = ${programId || null}, majorId = ${majorId || null}, unitId = ${unitId || null}, updatedAt = NOW() WHERE id = ${sheet.id}`;
+                        if (sheetM) {
+                            return yield ais.$executeRaw `UPDATE ais_sheet SET semesterNum = ${row.semesterNum}, assignStaffId = ${(sheetM === null || sheetM === void 0 ? void 0 : sheetM.assignStaffId) || null}, sessionId = ${sessionId || null}, courseId = ${courseId || null}, programId = ${programId || null}, majorId = ${majorId || null}, unitId = ${unitId || null}, updatedAt = NOW() WHERE id = ${sheetM.id}`;
                         }
                         else {
-                            return yield ais.$executeRaw `INSERT INTO ais_sheet (id,semesterNum,studyMode,assignStaffId,sessionId,courseId,programId,majorId,unitId,status,createdAt,updatedAt) VALUES (UUID(),${row.semesterNum}, ${row.studyMode}, ${(sheetM === null || sheetM === void 0 ? void 0 : sheetM.assignStaffId) || null}, ${sessionId || null}, ${courseId || null}, ${programId || null}, ${majorId || null}, ${unitId || null}, 1, NOW(),NOW())`;
+                            return yield ais.$executeRaw `INSERT INTO ais_sheet (id,semesterNum,assignStaffId,sessionId,courseId,programId,majorId,unitId,status,createdAt,updatedAt) VALUES (UUID(),${row.semesterNum}, ${(sheetM === null || sheetM === void 0 ? void 0 : sheetM.assignStaffId) || null}, ${sessionId || null}, ${courseId || null}, ${programId || null}, ${majorId || null}, ${unitId || null}, 1, NOW(),NOW())`;
                         }
                     })));
                     if (resp) {
-                        // Clean Records without StudyModes
-                        yield ais.$executeRaw `DELETE from ais_sheet where sessionId = ${sessionId} and studyMode is null`;
                         return res.status(200).json(resp);
                     }
                     else {
@@ -3631,121 +3568,6 @@ class AisController {
                 else {
                     return res.status(202).json({ message: `no record found` });
                 }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    sanitizeSheet(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                let newData = new Map();
-                let sheetData = require(path_1.default.join(__dirname, '/../../util/sheetData.json'));
-                // console.log(sheetData);
-                for (let dt of sheetData) {
-                    if (newData.has(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`)) {
-                        let dm = newData.get(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`);
-                        if (dm) {
-                            if (!dm.unitId && dt.unitId)
-                                dm.unitId = dt.unitId;
-                            if (!dm.majorId && dt.majorId)
-                                dm.majorId = dt.majorId;
-                            if (!dm.assignStaffId && dt.assignStaffId)
-                                dm.assignStaffId = dt.assignStaffId;
-                            if (!dm.assessorId && dt.assessorId)
-                                dm.assessorId = dt.assessorId;
-                            if (!dm.certifierId && dt.certifierId)
-                                dm.certifierId = dt.certifierId;
-                            if (!dm.assessed && dt.assessed)
-                                dm.assessed = dt.assessed;
-                            if (!dm.certified && dt.certified)
-                                dm.certified = dt.certified;
-                            if (!dm.finalized && dt.finalized)
-                                dm.finalized = dt.finalized;
-                            newData.set(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`, dm);
-                        }
-                    }
-                    else {
-                        newData.set(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`, dt);
-                    }
-                }
-                // Write to Database
-                const insData = Array.from(newData).map(([_, d]) => d);
-                // Upsert Bulk into Sheet 
-                // const resp: any = await Promise.all(insData?.map(async (row: any) => {
-                //    let { courseId, programId, unitId, majorId, sessionId } = row;
-                //    return await ais.sheet.create({
-                //       data: {
-                //          semesterNum: row.semesterNum,
-                //          assessed: !!row.assessed,
-                //          certified: !!row.certified,
-                //          finalized: !!row.finalized,
-                //          status: !!row.status,
-                //          ...sessionId && ({ session: { connect: { id: sessionId } } }),
-                //          ...courseId && ({ course: { connect: { id: courseId } } }),
-                //          ...programId && ({ program: { connect: { id: programId } } }),
-                //          ...majorId && ({ major: { connect: { id: majorId } } }),
-                //          ...unitId && ({ unit: { connect: { id: unitId } } }),
-                //       }
-                //    })
-                // }))
-                console.log(insData);
-                // Write to File
-                const jsonData = JSON.stringify(Array.from(newData).map(([_, d]) => d), null, 2);
-                const filePath = path_1.default.join(__dirname, '/../../util/sheetData2.json');
-                fs_1.default.writeFile(filePath, jsonData, (err) => {
-                    if (err)
-                        console.error('Error writing file:', err);
-                    else
-                        console.log(`Array successfully written to ${filePath}`);
-                });
-                // Return JSON Output
-                return res.status(200).json(Array.from(newData).map(([_, d]) => d));
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    fixSheet(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                let sheetData = require(path_1.default.join(__dirname, '/../../util/sheetData2.json'));
-                const sessionId = `f63b1b74-0533-4a62-8510-6292cc93a9a3`;
-                const sheets = yield ais.sheet.findMany({
-                    where: {
-                        sessionId,
-                    }
-                });
-                // Upsert Bulk into Sheet 
-                yield ais.$executeRaw `set foreign_key_checks=0`;
-                const resp = yield Promise.all(sheets === null || sheets === void 0 ? void 0 : sheets.map((row) => __awaiter(this, void 0, void 0, function* () {
-                    const sm = sheetData.find((r) => r.sessionId == sessionId && r.semesterNum == row.semesterNum && r.programId == row.programId && r.assignStaffId != null);
-                    if (sm)
-                        // return await ais.sheet.update({
-                        //    where: { id: row.id },
-                        //    data: {
-                        //       assessed:      !!sm.assessed,
-                        //       certified:     !!sm.certified,
-                        //       finalized:     !!sm.finalized,
-                        //       // assignStaffId: sm.assignStaffId,
-                        //       // assessorId:    sm.assessorId,
-                        //       // certifierId:   sm.certifierId,
-                        //       ...sm.assignStaffId && ({ assignee: { connect: { staffNo: sm.assignStaffId } } }),
-                        //       ...sm.assessorId && ({ assessor: { connect: { staffNo: sm.assessorId } } }),
-                        //       ...sm.certifierId && ({ certifier: { connect: { staffNo: sm.certifierId } } }),
-                        //    }
-                        // })
-                        return yield ais.$executeRaw `update ais_sheet set assignStaffId=${sm.assignStaffId}, assessorId=${sm.assessorId}, certifierId=${sm.certifierId} WHERE id = ${row.id}`;
-                })));
-                yield ais.$executeRaw `set foreign_key_checks=1`;
-                console.log(resp);
-                // Write to File
-                // Return JSON Output
-                return res.status(200).json(resp);
             }
             catch (error) {
                 console.log(error);
@@ -3774,25 +3596,13 @@ class AisController {
                         },
                         include: {
                             student: {
-                                select: { fname: true, mname: true, lname: true, id: true, indexno: true, studyMode: true, gender: true, programId: true }
+                                select: { fname: true, mname: true, lname: true, id: true, indexno: true, gender: true, programId: true }
                             },
                             scheme: true,
                             course: true,
                             session: true
                         },
                         orderBy: { student: { fname: 'asc' } }
-                    });
-                    mounts = mounts === null || mounts === void 0 ? void 0 : mounts.filter((st, i) => {
-                        //console.log(sheet, st?.semesterNum, st?.student?.studyMode, sheet?.studyMode)
-                        // if(st?.student?.semesterNum < 5) return sheet?.programId == st?.student?.programId && sheet?.studyMode == st?.student?.studyMode;
-                        // return sheet?.programId == st?.student?.programId && sheet?.majorId == st?.student?.majorId && sheet?.studyMode == st?.student?.studyMode;
-                        // if(st?.student?.semesterNum < 5) return sheet?.studyMode == st?.student?.studyMode; // Level 100 - 200 dont have majors assigned
-                        // return sheet?.majorId == st?.student?.majorId && sheet?.studyMode == st?.student?.studyMode; // Level 300 and Above should have Majors 
-                        // if(sheet?.studyMode) return sheet?.studyMode == st?.student?.studyMode; 
-                        var _a;
-                        if ((sheet === null || sheet === void 0 ? void 0 : sheet.studyMode) == null)
-                            return true;
-                        return (sheet === null || sheet === void 0 ? void 0 : sheet.studyMode) == ((_a = st === null || st === void 0 ? void 0 : st.student) === null || _a === void 0 ? void 0 : _a.studyMode);
                     });
                     let resp = mounts === null || mounts === void 0 ? void 0 : mounts.map((row) => {
                         var _a, _b;
@@ -3875,7 +3685,7 @@ class AisController {
                 const inScope = yield (0, sheetScope_1.isSheetInScope)(ais, sheetId, req.roles, req.userId);
                 if (!inScope)
                     return res.status(403).json({ message: `You do not have access to this sheet.` });
-                const sheet = yield ais.sheet.findUnique({ where: { id: sheetId }, select: { programId: true, majorId: true, studyMode: true } });
+                const sheet = yield ais.sheet.findUnique({ where: { id: sheetId }, select: { programId: true, majorId: true } });
                 if (!sheet)
                     return res.status(202).json({ message: `no record found` });
                 let mounts = [];
@@ -3903,7 +3713,7 @@ class AisController {
                             // any row that happens to share course+session+indexno —
                             // closes the gap where saveSheet couldn't otherwise verify a
                             // captured score belongs to the sheet it was authorized for.
-                            student: Object.assign(Object.assign({ programId: sheet.programId }, sheet.majorId && ({ majorId: sheet.majorId })), sheet.studyMode && ({ studyMode: sheet.studyMode })),
+                            student: Object.assign({ programId: sheet.programId }, sheet.majorId && ({ majorId: sheet.majorId })),
                         },
                         data: {
                             // ... scoreA && ({ scoreA }),
@@ -3924,125 +3734,6 @@ class AisController {
                 })));
                 if (resp) {
                     res.status(200).json(resp);
-                }
-                else {
-                    res.status(202).json({ message: `no record found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
-            }
-        });
-    }
-    stageAkatsicoSheet(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
-            try {
-                // Fetch Active Semester
-                const { sessionId } = req.body;
-                let loopcount = 0;
-                // Check whether Sheets are generated 
-                const form = yield ais.sheet.findFirst({ where: { sessionId, status: true } });
-                if (form)
-                    res.status(202).json({ message: `no record found` });
-                // Fetch Session Info
-                const session = yield ais.session.findFirst({ where: { id: sessionId, default: true } });
-                if (session) {
-                    if (((_a = session === null || session === void 0 ? void 0 : session.tag) === null || _a === void 0 ? void 0 : _a.toLowerCase()) == 'main') {
-                        // Fetch Mounted Courses all Program Levels
-                        const mounts = yield ais.structure.findMany({ where: { status: true, program: { status: true } }, include: { program: true } });
-                        if (mounts === null || mounts === void 0 ? void 0 : mounts.length) {
-                            for (let meta of mounts) {
-                                if (meta.semesterNum % 2 == (session.semester == 'SEM2' ? 1 : 0))
-                                    continue;
-                                var sessionModes = [];
-                                switch ((_b = meta === null || meta === void 0 ? void 0 : meta.program) === null || _b === void 0 ? void 0 : _b.category) {
-                                    case "CP":
-                                        sessionModes = ["M"];
-                                        break;
-                                    case "DP":
-                                        sessionModes = ["M", "E", "W"];
-                                        break;
-                                    case "UG":
-                                        sessionModes = ["M", "E", "W"];
-                                        break;
-                                    case "PG":
-                                        sessionModes = ["W"];
-                                        break;
-                                }
-                                // Run Data For All Existing Session Modes
-                                if (sessionModes === null || sessionModes === void 0 ? void 0 : sessionModes.length) {
-                                    const resp = yield Promise.all(sessionModes === null || sessionModes === void 0 ? void 0 : sessionModes.map((mode) => __awaiter(this, void 0, void 0, function* () {
-                                        let { courseId, programId, unitId, majorId } = meta;
-                                        return yield ais.sheet.create({
-                                            data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({ semesterNum: meta.semesterNum, studyMode: mode }, sessionId && ({ session: { connect: { id: sessionId } } })), courseId && ({ course: { connect: { id: courseId } } })), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })), unitId && ({ unit: { connect: { id: unitId } } }))
-                                        });
-                                    })));
-                                    if (resp.length)
-                                        loopcount += resp.length;
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        // JAN - SUB STREAM
-                        const code = session === null || session === void 0 ? void 0 : session.admissionPrefix;
-                        if (code) { // Only Set for January Sessions - not Main Session
-                            // Check Student if students admitted
-                            const st = yield ais.$queryRaw `select * from ais_student where date_format(entryDate,'%m%y') = ${code} and semesterNum < 5`;
-                            // Fetch Mounted Courses all Program Levels
-                            let mounts = yield ais.structure.findMany({ where: { status: true, semesterNum: { lt: 5 }, program: { status: true } }, include: { program: true } });
-                            // Filter Mounted to Some Specific course and programs
-                            let holder = new Set();
-                            for (const s of st) {
-                                if (!holder.has(`${s.programId}${s.semesterNum}${s.studyMode ? s.studyMode : ""}`))
-                                    holder.add(`${s.programId}${s.semesterNum}${s.studyMode ? s.studyMode : ""}`);
-                            }
-                            mounts = mounts.filter((r) => [1, 2].includes(r.semesterNum) || ([3, 4].includes(r.semesterNum) && holder.has(`${r.programId}${r.semesterNum}${r.studyMode ? r.studyMode : ""}`)));
-                            if ((st === null || st === void 0 ? void 0 : st.length) && (mounts === null || mounts === void 0 ? void 0 : mounts.length)) {
-                                for (let meta of mounts) {
-                                    if (meta.semesterNum % 2 == (session.semester == 'SEM2' ? 1 : 0))
-                                        continue;
-                                    var sessionModes = [];
-                                    switch ((_c = meta === null || meta === void 0 ? void 0 : meta.program) === null || _c === void 0 ? void 0 : _c.category) {
-                                        case "CP":
-                                            sessionModes = ["M"];
-                                            break;
-                                        case "DP":
-                                            sessionModes = ["M", "E", "W"];
-                                            break;
-                                        case "UG":
-                                            sessionModes = ["M", "E", "W"];
-                                            break;
-                                        case "PG":
-                                            sessionModes = ["W"];
-                                            break;
-                                    }
-                                    // Run Data For All Existing Session Modes
-                                    if (sessionModes === null || sessionModes === void 0 ? void 0 : sessionModes.length) {
-                                        const resp = yield Promise.all(sessionModes === null || sessionModes === void 0 ? void 0 : sessionModes.map((mode) => __awaiter(this, void 0, void 0, function* () {
-                                            let { courseId, programId, unitId, majorId } = meta;
-                                            return yield ais.sheet.create({
-                                                data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({ semesterNum: meta.semesterNum, studyMode: mode }, sessionId && ({ session: { connect: { id: sessionId } } })), courseId && ({ course: { connect: { id: courseId } } })), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })), unitId && ({ unit: { connect: { id: unitId } } }))
-                                            });
-                                        })));
-                                        if (resp.length)
-                                            loopcount += resp.length;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                else {
-                    // Session Not Default or Activated
-                    res.status(202).json({ message: `Session is not activated!` });
-                }
-                if (loopcount) {
-                    // Update Stage Status in Calendar
-                    yield ais.session.update({ where: { id: sessionId }, data: { stageSheet: true } });
-                    res.status(200).json(loopcount);
                 }
                 else {
                     res.status(202).json({ message: `no record found` });
@@ -4137,10 +3828,10 @@ class AisController {
             try {
                 const resp = yield ais.sheet.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
                 if (resp) {
-                    let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode } = resp;
+                    let { courseId, programId, unitId, majorId, sessionId, semesterNum } = resp;
                     // Fetch Affected Students
                     const assessments = yield ais.assessment.findMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), studyMode && ({ student: { studyMode } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
+                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
                         include: { scheme: true }
                     });
                     // Generate Resit Data on Sheet Close
@@ -4168,7 +3859,7 @@ class AisController {
                     })));
                     // Update Student Assessment Publish Status
                     yield ais.assessment.updateMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), studyMode && ({ student: { studyMode } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
+                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
                         data: { status: true },
                     });
                     console.log(all);
@@ -4222,10 +3913,10 @@ class AisController {
                     if (!resp.moderated) {
                         return res.status(400).json({ message: `This sheet must be moderated before it can be published.` });
                     }
-                    let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode } = resp;
+                    let { courseId, programId, unitId, majorId, sessionId, semesterNum } = resp;
                     // Update Student Assessment Publish Status
                     const ups = yield ais.assessment.updateMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), studyMode && ({ student: { studyMode } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
+                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
                         data: { status: true }
                     });
                     // Update Sheet
@@ -4251,10 +3942,10 @@ class AisController {
                     return res.status(403).json({ message: `You do not have access to this sheet.` });
                 const resp = yield ais.sheet.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
                 if (resp) {
-                    let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode } = resp;
+                    let { courseId, programId, unitId, majorId, sessionId, semesterNum } = resp;
                     // Update Student Assessment Publish Status
                     const ups = yield ais.assessment.updateMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), studyMode && ({ student: { studyMode } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
+                        where: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, sessionId && ({ sessionId })), courseId && ({ courseId })), programId && ({ student: { programId } })), majorId && ({ student: { majorId } })), semesterNum && ({ semesterNum: Number(semesterNum) })),
                         data: { status: false }
                     });
                     console.log(ups);
@@ -4276,12 +3967,12 @@ class AisController {
     updateSheet(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode, assignStaffId } = req.body;
+                let { courseId, programId, unitId, majorId, sessionId, semesterNum, assignStaffId } = req.body;
                 // This endpoint serves two different callers behind the same route:
                 // the admin-only edit form (arbitrary fields) and the "assign sheet"
                 // action (only assignStaffId), which hod/registry roles may also
                 // trigger — so authorization branches by request body shape.
-                const isAssignOnly = !!assignStaffId && !courseId && !programId && !unitId && !majorId && !sessionId && !semesterNum && !studyMode;
+                const isAssignOnly = !!assignStaffId && !courseId && !programId && !unitId && !majorId && !sessionId && !semesterNum;
                 if (isAssignOnly) {
                     const inScope = yield (0, sheetScope_1.isSheetInScope)(ais, (0, paramStr_1.paramStr)(req.params.id), req.roles, req.userId);
                     if (!inScope)
@@ -4295,7 +3986,7 @@ class AisController {
                     where: {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, studyMode && ({ studyMode })), semesterNum && ({ semesterNum: Number(semesterNum) })), sessionId && ({ session: { connect: { id: sessionId } } })), courseId && ({ course: { connect: { id: courseId } } })), programId && ({ program: { connect: { id: programId } } })), unitId && ({ unit: { connect: { id: unitId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } })), assignStaffId && ({ assignee: { connect: { staffNo: assignStaffId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, semesterNum && ({ semesterNum: Number(semesterNum) })), sessionId && ({ session: { connect: { id: sessionId } } })), courseId && ({ course: { connect: { id: courseId } } })), programId && ({ program: { connect: { id: programId } } })), unitId && ({ unit: { connect: { id: unitId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } })), assignStaffId && ({ assignee: { connect: { staffNo: assignStaffId } } }))
                 });
                 if (resp) {
                     // Send SMS

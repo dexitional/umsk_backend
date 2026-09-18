@@ -89,7 +89,7 @@ export default class AisController {
    /* Reports */
    async loadReport(req: Request, res: Response) {
       try {
-         let { type, program, major, year, mode, session, gsession, rsession, category } = req.body;
+         let { type, program, major, year, session, gsession, rsession, category } = req.body;
          let resp: any = { type };
 
          if (type == 'student_registration') {
@@ -98,7 +98,6 @@ export default class AisController {
                   session: { default: true },
                   ...program && ({ student: { programId: program } }),
                   ...major && ({ student: { majorId: major } }),
-                  ...mode && ({ student: { studyMode: mode } }),
                   ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
                },
                include: { student: { include: { program: true, major: true } }, session: true },
@@ -107,7 +106,6 @@ export default class AisController {
                   { student: { programId: 'asc' } },
                   { student: { majorId: 'asc' } },
                   { student: { semesterNum: 'asc' } },
-                  { student: { studyMode: 'asc' } },
                   { student: { lname: 'asc' } },
                ]
             })
@@ -118,7 +116,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.student?.mname?.toUpperCase(),
                   'INDEX NUMBER': r.student?.indexno,
                   'STUDENT ID': r.student?.id,
-                  'STUDY MODE': r.student?.studyMode,
                   'GENDER': r.student?.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'ACADEMIC SESSION': `${r.session?.title} - ${r.session?.tag}`,
@@ -135,7 +132,6 @@ export default class AisController {
                where: {
                   ...program && ({ student: { programId: program } }),
                   ...major && ({ student: { majorId: major } }),
-                  ...mode && ({ student: { studyMode: mode } }),
                   ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
                },
                include: { student: { include: { program: true, major: true } } },
@@ -143,7 +139,6 @@ export default class AisController {
                   { student: { programId: 'asc' } },
                   { student: { majorId: 'asc' } },
                   { student: { semesterNum: 'asc' } },
-                  { student: { studyMode: 'asc' } },
                   { student: { lname: 'asc' } },
                ]
             })
@@ -154,7 +149,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.student?.mname?.toUpperCase(),
                   'INDEX NUMBER': r.student?.indexno,
                   'STUDENT ID': r.student?.id,
-                  'STUDY MODE': r.student?.studyMode,
                   'GENDER': r.student?.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'PROGRAM': r.student?.program?.shortName,
@@ -172,7 +166,6 @@ export default class AisController {
                   accountNet: { gt: 0 },
                   ...program && ({ programId: program }),
                   ...major && ({ majorId: major }),
-                  ...mode && ({ studyMode: mode }),
                   ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
                },
                include: { program: true, major: true },
@@ -180,7 +173,6 @@ export default class AisController {
                   { programId: 'asc' },
                   { majorId: 'asc' },
                   { semesterNum: 'asc' },
-                  { studyMode: 'asc' },
                   { lname: 'asc' },
                ]
             })
@@ -191,7 +183,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.mname?.toUpperCase(),
                   'INDEX NUMBER': r.indexno,
                   'STUDENT ID': r.id,
-                  'STUDY MODE': r.studyMode,
                   'GENDER': r.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'PROGRAM': r.program?.shortName,
@@ -207,7 +198,6 @@ export default class AisController {
                   completeStatus: false,
                   ...program && ({ programId: program }),
                   ...major && ({ majorId: major }),
-                  ...mode && ({ studyMode: mode }),
                   ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
                },
                include: { program: true, major: true },
@@ -215,7 +205,6 @@ export default class AisController {
                   { programId: 'desc' },
                   { majorId: 'asc' },
                   { semesterNum: 'asc' },
-                  { studyMode: 'asc' },
                   { lname: 'asc' },
                ]
             })
@@ -226,7 +215,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.mname?.toUpperCase(),
                   'INDEX NUMBER': r.indexno,
                   'STUDENT ID': r.id,
-                  'STUDY MODE': r.studyMode,
                   'GENDER': r.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'PROGRAM': r.program?.shortName,
@@ -247,7 +235,6 @@ export default class AisController {
                      { completeStatus: false },
                      { ...program && ({ programId: program }) },
                      { ...major && ({ majorId: major }) },
-                     { ...mode && ({ studyMode: mode }) },
                      { ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }) },
                   ],
                },
@@ -256,7 +243,6 @@ export default class AisController {
                   { programId: 'desc' },
                   { majorId: 'asc' },
                   { semesterNum: 'asc' },
-                  { studyMode: 'asc' },
                   { lname: 'asc' },
                ]
             })
@@ -267,7 +253,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.mname?.toUpperCase(),
                   'INDEX NUMBER': r.indexno,
                   'STUDENT ID': r.id,
-                  'STUDY MODE': r.studyMode,
                   'GENDER': r.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'PROGRAM': r.program?.shortName,
@@ -290,7 +275,6 @@ export default class AisController {
                   { student: { programId: 'asc' } },
                   { student: { majorId: 'asc' } },
                   { student: { semesterNum: 'asc' } },
-                  { student: { studyMode: 'asc' } },
                   { student: { lname: 'asc' } },
                ]
             })
@@ -301,7 +285,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.student.mname?.toUpperCase(),
                   'INDEX NUMBER': r.student?.indexno,
                   'STUDENT ID': r.student?.id,
-                  'STUDY MODE': r.student.studyMode,
                   'GENDER': r.student.gender,
                   'YEAR': Math.ceil(r.student.semesterNum / 2),
                   'PROGRAM': r.student.program?.shortName,
@@ -322,7 +305,6 @@ export default class AisController {
                   { student: { programId: 'asc' } },
                   { student: { majorId: 'asc' } },
                   { student: { semesterNum: 'asc' } },
-                  { student: { studyMode: 'asc' } },
                   { student: { lname: 'asc' } },
                ]
             })
@@ -333,7 +315,6 @@ export default class AisController {
                   'MIDDLE NAME(S)': r.student.mname?.toUpperCase(),
                   'INDEX NUMBER': r.student?.indexno,
                   'STUDENT ID': r.student?.id,
-                  'STUDY MODE': r.student.studyMode,
                   'GENDER': r.student.gender,
                   'PROGRAM': r.student.program?.shortName,
                   'MAJOR': r.student.major?.shortName,
@@ -3489,36 +3470,13 @@ export default class AisController {
          // Fetch Session Info
          const session = await ais.session.findFirst({ where: { id: sessionId, default: true } })
          if (session) {
-            // Fetch Mounted Courses all Program Levels
+            // Fetch Mounted Courses all Program Levels — one sheet per
+            // program/session/semester, no mode-based split.
             let mounts = await ais.structure.findMany({ where: { status: true }, include: { program: true } })
             mounts = mounts.filter((meta: any) => (meta?.semesterNum % 2) == (session?.semester == 'SEM2' ? 0 : 1))
-            let data = [];
-            for (let meta of mounts) {
-               let modes: any;
-               console.log("MODE: ", meta?.program?.category)
-               switch (meta?.program?.category) {
-                  case "CP":
-                     modes = ["M", "E", "W"];
-                     break;
-                  case "DP":
-                     modes = ["M", "E", "W"];
-                     break;
-                  case "UG":
-                     modes = ["M", "E", "W"];
-                     break;
-                  case "PG":
-                     modes = ["W"];
-                     break;
-               }
+            let data = mounts;
 
-               // Re-populate Data
-               for (const mode of modes) {
-                  data.push({ ...meta, studyMode: mode })
-               }
-            }
-
-            //console.log(data);
-            // Check whether Sheets are generated 
+            // Check whether Sheets are generated
             const form = await ais.sheet.findFirst({ where: { sessionId, status: true } })
             if (form) {
                // Update Generated Flag
@@ -3527,13 +3485,12 @@ export default class AisController {
                return res.status(202).json({ message: `sheets exists for calendar` });
             }
 
-            // Upsert Bulk into Sheet 
+            // Upsert Bulk into Sheet
             const resp: any = await Promise.all(data?.map(async (row: any) => {
                let { courseId, programId, unitId, majorId } = row;
                return await ais.sheet.create({
                   data: {
                      semesterNum: row.semesterNum,
-                     studyMode: row.studyMode,
                      ...sessionId && ({ session: { connect: { id: sessionId } } }),
                      ...courseId && ({ course: { connect: { id: courseId } } }),
                      ...programId && ({ program: { connect: { id: programId } } }),
@@ -3581,50 +3538,24 @@ export default class AisController {
          // Fetch Session Info
          const session = await ais.session.findFirst({ where: { id: sessionId } })
          if (session) {
-            // Fetch Mounted Courses all Program Levels
+            // Fetch Mounted Courses all Program Levels — one sheet per
+            // program/session/semester, no mode-based split.
             let mounts = await ais.structure.findMany({ where: { status: true }, include: { program: true } })
             mounts = mounts.filter((meta: any) => (meta?.semesterNum % 2) == (session?.semester == 'SEM2' ? 0 : 1))
-            let data = [];
-            for (let meta of mounts) {
-               let modes: any;
-               console.log("MODE: ", meta?.program?.category)
-               switch (meta?.program?.category) {
-                  case "CP":
-                     modes = ["M", "E", "W"];
-                     break;
-                  case "DP":
-                     modes = ["M", "E", "W"];
-                     break;
-                  case "UG":
-                     modes = ["M", "E", "W"];
-                     break;
-                  case "PG":
-                     modes = ["W"];
-                     break;
-               }
+            let data = mounts;
 
-               // Re-populate Data
-               for (const mode of modes) {
-                  data.push({ ...meta, studyMode: mode })
-               }
-            }
-
-            // Upsert Bulk into Sheet 
+            // Upsert Bulk into Sheet
             const resp: any = await Promise.all(data?.map(async (row: any) => {
                let { courseId, programId, unitId, majorId } = row;
                const sheetM = await ais.sheet.findFirst({ where: { semesterNum: row.semesterNum, sessionId, programId, courseId } });
-               const sheet = await ais.sheet.findFirst({ where: { semesterNum: row.semesterNum, studyMode: row.studyMode, sessionId, programId, courseId } });
                await ais.$executeRaw`set foreign_key_checks=0`;
-               if (sheet) {
-                  return await ais.$executeRaw`UPDATE ais_sheet SET semesterNum = ${row.semesterNum}, studyMode = ${row.studyMode}, assignStaffId = ${sheetM?.assignStaffId || null}, sessionId = ${sessionId || null}, courseId = ${courseId || null}, programId = ${programId || null}, majorId = ${majorId || null}, unitId = ${unitId || null}, updatedAt = NOW() WHERE id = ${sheet.id}`;
+               if (sheetM) {
+                  return await ais.$executeRaw`UPDATE ais_sheet SET semesterNum = ${row.semesterNum}, assignStaffId = ${sheetM?.assignStaffId || null}, sessionId = ${sessionId || null}, courseId = ${courseId || null}, programId = ${programId || null}, majorId = ${majorId || null}, unitId = ${unitId || null}, updatedAt = NOW() WHERE id = ${sheetM.id}`;
                } else {
-                  return await ais.$executeRaw`INSERT INTO ais_sheet (id,semesterNum,studyMode,assignStaffId,sessionId,courseId,programId,majorId,unitId,status,createdAt,updatedAt) VALUES (UUID(),${row.semesterNum}, ${row.studyMode}, ${sheetM?.assignStaffId || null}, ${sessionId || null}, ${courseId || null}, ${programId || null}, ${majorId || null}, ${unitId || null}, 1, NOW(),NOW())`;
+                  return await ais.$executeRaw`INSERT INTO ais_sheet (id,semesterNum,assignStaffId,sessionId,courseId,programId,majorId,unitId,status,createdAt,updatedAt) VALUES (UUID(),${row.semesterNum}, ${sheetM?.assignStaffId || null}, ${sessionId || null}, ${courseId || null}, ${programId || null}, ${majorId || null}, ${unitId || null}, 1, NOW(),NOW())`;
                }
             }))
             if (resp) {
-               // Clean Records without StudyModes
-               await ais.$executeRaw`DELETE from ais_sheet where sessionId = ${sessionId} and studyMode is null`;
-
                return res.status(200).json(resp)
             } else {
                return res.status(202).json({ message: `no record found` })
@@ -3632,112 +3563,6 @@ export default class AisController {
          } else {
             return res.status(202).json({ message: `no record found` })
          }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-   async sanitizeSheet(req: Request, res: Response) {
-      try {
-         let newData = new Map();
-         let sheetData = require(path.join(__dirname, '/../../util/sheetData.json'));
-         // console.log(sheetData);
-         for (let dt of sheetData) {
-            if (newData.has(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`)) {
-               let dm = newData.get(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`);
-               if (dm) {
-                  if (!dm.unitId && dt.unitId) dm.unitId = dt.unitId;
-                  if (!dm.majorId && dt.majorId) dm.majorId = dt.majorId;
-                  if (!dm.assignStaffId && dt.assignStaffId) dm.assignStaffId = dt.assignStaffId;
-                  if (!dm.assessorId && dt.assessorId) dm.assessorId = dt.assessorId;
-                  if (!dm.certifierId && dt.certifierId) dm.certifierId = dt.certifierId;
-                  if (!dm.assessed && dt.assessed) dm.assessed = dt.assessed;
-                  if (!dm.certified && dt.certified) dm.certified = dt.certified;
-                  if (!dm.finalized && dt.finalized) dm.finalized = dt.finalized;
-                  newData.set(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`, dm);
-               }
-            } else {
-               newData.set(`${dt.semesterNum}${dt.studyMode}${dt.sessionId}${dt.courseId}${dt.programId}`, dt);
-            }
-         }
-
-         // Write to Database
-         const insData = Array.from(newData).map(([_, d]) => d);
-         // Upsert Bulk into Sheet 
-         // const resp: any = await Promise.all(insData?.map(async (row: any) => {
-         //    let { courseId, programId, unitId, majorId, sessionId } = row;
-         //    return await ais.sheet.create({
-         //       data: {
-         //          semesterNum: row.semesterNum,
-         //          assessed: !!row.assessed,
-         //          certified: !!row.certified,
-         //          finalized: !!row.finalized,
-         //          status: !!row.status,
-         //          ...sessionId && ({ session: { connect: { id: sessionId } } }),
-         //          ...courseId && ({ course: { connect: { id: courseId } } }),
-         //          ...programId && ({ program: { connect: { id: programId } } }),
-         //          ...majorId && ({ major: { connect: { id: majorId } } }),
-         //          ...unitId && ({ unit: { connect: { id: unitId } } }),
-         //       }
-         //    })
-         // }))
-         console.log(insData);
-         // Write to File
-         const jsonData = JSON.stringify(Array.from(newData).map(([_, d]) => d), null, 2);
-         const filePath = path.join(__dirname, '/../../util/sheetData2.json');
-         fs.writeFile(filePath, jsonData, (err) => {
-            if (err) console.error('Error writing file:', err);
-            else console.log(`Array successfully written to ${filePath}`);
-         });
-
-         // Return JSON Output
-         return res.status(200).json(Array.from(newData).map(([_, d]) => d));
-
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
-
-   async fixSheet(req: Request, res: Response) {
-      try {
-         let sheetData = require(path.join(__dirname, '/../../util/sheetData2.json'));
-         const sessionId = `f63b1b74-0533-4a62-8510-6292cc93a9a3`;
-         const sheets = await ais.sheet.findMany({
-            where: {
-               sessionId,
-            }
-         })
-         // Upsert Bulk into Sheet 
-         await ais.$executeRaw`set foreign_key_checks=0`;
-         const resp: any = await Promise.all(sheets?.map(async (row: any) => {
-            const sm = sheetData.find((r: any) => r.sessionId == sessionId && r.semesterNum == row.semesterNum && r.programId == row.programId && r.assignStaffId != null);
-            if (sm)
-               // return await ais.sheet.update({
-               //    where: { id: row.id },
-               //    data: {
-               //       assessed:      !!sm.assessed,
-               //       certified:     !!sm.certified,
-               //       finalized:     !!sm.finalized,
-               //       // assignStaffId: sm.assignStaffId,
-               //       // assessorId:    sm.assessorId,
-               //       // certifierId:   sm.certifierId,
-               //       ...sm.assignStaffId && ({ assignee: { connect: { staffNo: sm.assignStaffId } } }),
-               //       ...sm.assessorId && ({ assessor: { connect: { staffNo: sm.assessorId } } }),
-               //       ...sm.certifierId && ({ certifier: { connect: { staffNo: sm.certifierId } } }),
-               //    }
-               // })
-               return await ais.$executeRaw`update ais_sheet set assignStaffId=${sm.assignStaffId}, assessorId=${sm.assessorId}, certifierId=${sm.certifierId} WHERE id = ${row.id}`;
-         }))
-         await ais.$executeRaw`set foreign_key_checks=1`;
-         console.log(resp);
-         // Write to File
-
-         // Return JSON Output
-         return res.status(200).json(resp);
-
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
@@ -3765,7 +3590,7 @@ export default class AisController {
                },
                include: {
                   student: {
-                     select: { fname: true, mname: true, lname: true, id: true, indexno: true, studyMode: true, gender: true, programId: true }
+                     select: { fname: true, mname: true, lname: true, id: true, indexno: true, gender: true, programId: true }
                   },
                   scheme: true,
                   course: true,
@@ -3773,18 +3598,6 @@ export default class AisController {
                },
                orderBy: { student: { fname: 'asc' } }
             })
-
-            mounts = mounts?.filter((st: any, i: number) => {
-               //console.log(sheet, st?.semesterNum, st?.student?.studyMode, sheet?.studyMode)
-               // if(st?.student?.semesterNum < 5) return sheet?.programId == st?.student?.programId && sheet?.studyMode == st?.student?.studyMode;
-               // return sheet?.programId == st?.student?.programId && sheet?.majorId == st?.student?.majorId && sheet?.studyMode == st?.student?.studyMode;
-               // if(st?.student?.semesterNum < 5) return sheet?.studyMode == st?.student?.studyMode; // Level 100 - 200 dont have majors assigned
-               // return sheet?.majorId == st?.student?.majorId && sheet?.studyMode == st?.student?.studyMode; // Level 300 and Above should have Majors 
-               // if(sheet?.studyMode) return sheet?.studyMode == st?.student?.studyMode; 
-
-               if (sheet?.studyMode == null) return true;
-               return sheet?.studyMode == st?.student?.studyMode;
-            });
 
             let resp = mounts?.map((row: any) => {
                const grade = getGrade(row.totalScore, row.scheme?.gradeMeta);
@@ -3867,7 +3680,7 @@ export default class AisController {
          const inScope = await isSheetInScope(ais, sheetId, req.roles, req.userId);
          if (!inScope) return res.status(403).json({ message: `You do not have access to this sheet.` });
 
-         const sheet = await ais.sheet.findUnique({ where: { id: sheetId }, select: { programId: true, majorId: true, studyMode: true } });
+         const sheet = await ais.sheet.findUnique({ where: { id: sheetId }, select: { programId: true, majorId: true } });
          if (!sheet) return res.status(202).json({ message: `no record found` });
 
          let mounts = [];
@@ -3900,7 +3713,6 @@ export default class AisController {
                   student: {
                      programId: sheet.programId,
                      ...sheet.majorId && ({ majorId: sheet.majorId }),
-                     ...sheet.studyMode && ({ studyMode: sheet.studyMode }),
                   },
                },
                data: {
@@ -3932,121 +3744,6 @@ export default class AisController {
          return res.status(500).json({ message: error.message })
       }
    }
-
-   async stageAkatsicoSheet(req: Request, res: Response) {
-      try {
-         // Fetch Active Semester
-         const { sessionId } = req.body;
-         let loopcount = 0;
-         // Check whether Sheets are generated 
-         const form = await ais.sheet.findFirst({ where: { sessionId, status: true } })
-         if (form) res.status(202).json({ message: `no record found` });
-         // Fetch Session Info
-         const session = await ais.session.findFirst({ where: { id: sessionId, default: true } })
-         if (session) {
-            if (session?.tag?.toLowerCase() == 'main') {
-               // Fetch Mounted Courses all Program Levels
-               const mounts = await ais.structure.findMany({ where: { status: true, program: { status: true } }, include: { program: true } })
-               if (mounts?.length) {
-                  for (let meta of mounts) {
-                     if (meta.semesterNum % 2 == (session.semester == 'SEM2' ? 1 : 0)) continue;
-                     var sessionModes: any = [];
-                     switch (meta?.program?.category) {
-                        case "CP": sessionModes = ["M"]; break;
-                        case "DP": sessionModes = ["M", "E", "W"]; break;
-                        case "UG": sessionModes = ["M", "E", "W"]; break;
-                        case "PG": sessionModes = ["W"]; break;
-                     }
-
-                     // Run Data For All Existing Session Modes
-                     if (sessionModes?.length) {
-                        const resp: any = await Promise.all(sessionModes?.map(async (mode: any) => {
-                           let { courseId, programId, unitId, majorId } = meta;
-                           return await ais.sheet.create({
-                              data: {
-                                 semesterNum: meta.semesterNum,
-                                 studyMode: mode,
-                                 ...sessionId && ({ session: { connect: { id: sessionId } } }),
-                                 ...courseId && ({ course: { connect: { id: courseId } } }),
-                                 ...programId && ({ program: { connect: { id: programId } } }),
-                                 ...majorId && ({ major: { connect: { id: majorId } } }),
-                                 ...unitId && ({ unit: { connect: { id: unitId } } }),
-                              }
-                           })
-                        }))
-                        if (resp.length) loopcount += resp.length;
-                     }
-                  }
-               }
-
-            } else {
-               // JAN - SUB STREAM
-               const code = session?.admissionPrefix;
-               if (code) {  // Only Set for January Sessions - not Main Session
-                  // Check Student if students admitted
-                  const st: any = await ais.$queryRaw`select * from ais_student where date_format(entryDate,'%m%y') = ${code} and semesterNum < 5`;
-                  // Fetch Mounted Courses all Program Levels
-                  let mounts = await ais.structure.findMany({ where: { status: true, semesterNum: { lt: 5 }, program: { status: true } }, include: { program: true } })
-                  // Filter Mounted to Some Specific course and programs
-                  let holder: any = new Set();
-                  for (const s of st) {
-                     if (!holder.has(`${s.programId}${s.semesterNum}${s.studyMode ? s.studyMode : ""}`))
-                        holder.add(`${s.programId}${s.semesterNum}${s.studyMode ? s.studyMode : ""}`);
-                  }
-                  mounts = mounts.filter((r: any) => [1, 2].includes(r.semesterNum) || ([3, 4].includes(r.semesterNum) && holder.has(`${r.programId}${r.semesterNum}${r.studyMode ? r.studyMode : ""}`)));
-
-                  if (st?.length && mounts?.length) {
-                     for (let meta of mounts) {
-                        if (meta.semesterNum % 2 == (session.semester == 'SEM2' ? 1 : 0)) continue;
-                        var sessionModes: any = [];
-                        switch (meta?.program?.category) {
-                           case "CP": sessionModes = ["M"]; break;
-                           case "DP": sessionModes = ["M", "E", "W"]; break;
-                           case "UG": sessionModes = ["M", "E", "W"]; break;
-                           case "PG": sessionModes = ["W"]; break;
-                        }
-
-                        // Run Data For All Existing Session Modes
-                        if (sessionModes?.length) {
-                           const resp: any = await Promise.all(sessionModes?.map(async (mode: any) => {
-                              let { courseId, programId, unitId, majorId } = meta;
-                              return await ais.sheet.create({
-                                 data: {
-                                    semesterNum: meta.semesterNum,
-                                    studyMode: mode,
-                                    ...sessionId && ({ session: { connect: { id: sessionId } } }),
-                                    ...courseId && ({ course: { connect: { id: courseId } } }),
-                                    ...programId && ({ program: { connect: { id: programId } } }),
-                                    ...majorId && ({ major: { connect: { id: majorId } } }),
-                                    ...unitId && ({ unit: { connect: { id: unitId } } }),
-                                 }
-                              })
-                           }))
-                           if (resp.length) loopcount += resp.length;
-                        }
-                     }
-                  }
-               }
-            }
-         } else {
-            // Session Not Default or Activated
-            res.status(202).json({ message: `Session is not activated!` })
-         }
-
-         if (loopcount) {
-            // Update Stage Status in Calendar
-            await ais.session.update({ where: { id: sessionId }, data: { stageSheet: true } })
-            res.status(200).json(loopcount)
-
-         } else {
-            res.status(202).json({ message: `no record found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
-      }
-   }
-
 
    async fetchSheet(req: any, res: Response) {
       try {
@@ -4122,7 +3819,7 @@ export default class AisController {
       try {
          const resp: any = await ais.sheet.findUnique({ where: { id: paramStr(req.params.id) } });
          if (resp) {
-            let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode } = resp;
+            let { courseId, programId, unitId, majorId, sessionId, semesterNum } = resp;
             // Fetch Affected Students
             const assessments = await ais.assessment.findMany({
                where: {
@@ -4130,7 +3827,6 @@ export default class AisController {
                   ...courseId && ({ courseId }),
                   ...programId && ({ student: { programId } }),
                   ...majorId && ({ student: { majorId } }),
-                  ...studyMode && ({ student: { studyMode } }),
                   ...semesterNum && ({ semesterNum: Number(semesterNum) }),
                   // ... unitId && ({ unitId }),
                },
@@ -4169,7 +3865,6 @@ export default class AisController {
                   ...courseId && ({ courseId }),
                   ...programId && ({ student: { programId } }),
                   ...majorId && ({ student: { majorId } }),
-                  ...studyMode && ({ student: { studyMode } }),
                   ...semesterNum && ({ semesterNum: Number(semesterNum) }),
                   // ... unitId && ({ unitId }),
                },
@@ -4220,7 +3915,7 @@ export default class AisController {
             if (!resp.moderated) {
                return res.status(400).json({ message: `This sheet must be moderated before it can be published.` });
             }
-            let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode } = resp
+            let { courseId, programId, unitId, majorId, sessionId, semesterNum } = resp
             // Update Student Assessment Publish Status
             const ups = await ais.assessment.updateMany({
                where: {
@@ -4228,7 +3923,6 @@ export default class AisController {
                   ...courseId && ({ courseId }),
                   ...programId && ({ student: { programId } }),
                   ...majorId && ({ student: { majorId } }),
-                  ...studyMode && ({ student: { studyMode } }),
                   ...semesterNum && ({ semesterNum: Number(semesterNum) }),
                   // ... unitId && ({ unitId }),
                },
@@ -4254,7 +3948,7 @@ export default class AisController {
 
          const resp: any = await ais.sheet.findUnique({ where: { id: paramStr(req.params.id) } });
          if (resp) {
-            let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode } = resp
+            let { courseId, programId, unitId, majorId, sessionId, semesterNum } = resp
             // Update Student Assessment Publish Status
             const ups = await ais.assessment.updateMany({
                where: {
@@ -4262,7 +3956,6 @@ export default class AisController {
                   ...courseId && ({ courseId }),
                   ...programId && ({ student: { programId } }),
                   ...majorId && ({ student: { majorId } }),
-                  ...studyMode && ({ student: { studyMode } }),
                   ...semesterNum && ({ semesterNum: Number(semesterNum) }),
                   // ... unitId && ({ unitId }),
                },
@@ -4284,13 +3977,13 @@ export default class AisController {
 
    async updateSheet(req: any, res: Response) {
       try {
-         let { courseId, programId, unitId, majorId, sessionId, semesterNum, studyMode, assignStaffId } = req.body;
+         let { courseId, programId, unitId, majorId, sessionId, semesterNum, assignStaffId } = req.body;
 
          // This endpoint serves two different callers behind the same route:
          // the admin-only edit form (arbitrary fields) and the "assign sheet"
          // action (only assignStaffId), which hod/registry roles may also
          // trigger — so authorization branches by request body shape.
-         const isAssignOnly = !!assignStaffId && !courseId && !programId && !unitId && !majorId && !sessionId && !semesterNum && !studyMode;
+         const isAssignOnly = !!assignStaffId && !courseId && !programId && !unitId && !majorId && !sessionId && !semesterNum;
          if (isAssignOnly) {
             const inScope = await isSheetInScope(ais, paramStr(req.params.id), req.roles, req.userId);
             if (!inScope) return res.status(403).json({ message: `You do not have access to this sheet.` });
@@ -4305,7 +3998,6 @@ export default class AisController {
             },
             data: {
                //...req.body,
-               ...studyMode && ({ studyMode }),
                ...semesterNum && ({ semesterNum: Number(semesterNum) }),
                ...sessionId && ({ session: { connect: { id: sessionId } } }),
                ...courseId && ({ course: { connect: { id: courseId } } }),

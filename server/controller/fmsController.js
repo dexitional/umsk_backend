@@ -23,10 +23,10 @@ class FmsController {
     loadReport(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                let { type, program, major, year, mode, session, service, start, end } = req.body;
+                let { type, program, major, year, session, service, start, end } = req.body;
                 let resp = { type };
                 if (type == 'payments') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.studyMode,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where t.transtypeId = ${service} and (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where t.transtypeId = ${service} and (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
                     if (regs.length) {
                         regs = regs.map((r) => ({
                             'SERVICE TYPE': r === null || r === void 0 ? void 0 : r.transtitle,
@@ -45,7 +45,7 @@ class FmsController {
                     }
                 }
                 else if (type == 'bills') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.studyMode,s.entryGroup,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where s.programId = ${program} and r.sessionId = ${session} order by t.createdAt asc`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.entryGroup,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where s.programId = ${program} and r.sessionId = ${session} order by t.createdAt asc`;
                     // let regs:any = await fms.studentAccount.findMany({ 
                     //    where: {
                     //       billId: { not: null },
@@ -89,7 +89,6 @@ class FmsController {
                                 'MIDDLE NAME(S)': r === null || r === void 0 ? void 0 : r.mname,
                                 'INDEX NUMBER': r === null || r === void 0 ? void 0 : r.indexno,
                                 'STUDENT ID': r === null || r === void 0 ? void 0 : r.id,
-                                'STUDY MODE': r === null || r === void 0 ? void 0 : r.studyMode,
                                 'GENDER': (_a = r.student) === null || _a === void 0 ? void 0 : _a.gender,
                                 'YEAR': Math.ceil((r === null || r === void 0 ? void 0 : r.semesterNum) / 2),
                                 'PROGRAM': (_b = r === null || r === void 0 ? void 0 : r.program) === null || _b === void 0 ? void 0 : _b.shortName,
@@ -103,7 +102,7 @@ class FmsController {
                     }
                 }
                 else if (type == 'charges') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.studyMode,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
                     // let regs:any = await fms.charge.findMany({ 
                     //    where: {
                     //       ... program && ({ student: { programId: program }}),
@@ -139,15 +138,14 @@ class FmsController {
                 }
                 else if (type == 'debtors') {
                     let regs = yield fms.student.findMany({
-                        where: Object.assign(Object.assign(Object.assign(Object.assign({ 
+                        where: Object.assign(Object.assign(Object.assign({ 
                             //completeStatus: false,
-                            accountNet: { gt: 0 } }, program && ({ programId: program })), major && ({ majorId: major })), mode && ({ studyMode: mode })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
+                            accountNet: { gt: 0 } }, program && ({ programId: program })), major && ({ majorId: major })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                         include: { program: true, major: true },
                         orderBy: [
                             { programId: 'asc' },
                             { majorId: 'asc' },
                             { semesterNum: 'asc' },
-                            { studyMode: 'asc' },
                             { lname: 'asc' },
                         ]
                     });
@@ -160,7 +158,6 @@ class FmsController {
                                 'MIDDLE NAME(S)': r.mname,
                                 'INDEX NUMBER': r.indexno,
                                 'STUDENT ID': r.id,
-                                'STUDY MODE': r.studyMode,
                                 'GENDER': r.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'PROGRAM': (_a = r.program) === null || _a === void 0 ? void 0 : _a.shortName,
@@ -182,7 +179,6 @@ class FmsController {
                                 { completeStatus: false },
                                 Object.assign({}, program && ({ programId: program })),
                                 Object.assign({}, major && ({ majorId: major })),
-                                Object.assign({}, mode && ({ studyMode: mode })),
                                 Object.assign({}, year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
                             ],
                         },
@@ -191,7 +187,6 @@ class FmsController {
                             { programId: 'desc' },
                             { majorId: 'asc' },
                             { semesterNum: 'asc' },
-                            { studyMode: 'asc' },
                             { lname: 'asc' },
                         ]
                     });
@@ -204,7 +199,6 @@ class FmsController {
                                 'MIDDLE NAME(S)': r.mname,
                                 'INDEX NUMBER': r.indexno,
                                 'STUDENT ID': r.id,
-                                'STUDY MODE': r.studyMode,
                                 'GENDER': r.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'PROGRAM': (_a = r.program) === null || _a === void 0 ? void 0 : _a.shortName,

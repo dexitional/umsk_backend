@@ -119,8 +119,6 @@ class AisRoute {
         this.router.get('/sheets/my', [verifyToken, requireRole(['mysheet::assessor', 'sheet::admin'])], this.controller.fetchMySheets);
         this.router.get('/sheets/:id', [verifyToken, requireRole(SHEET_VIEW_ROLES)], this.controller.fetchSheet);
         this.router.post('/sheets/stage', [verifyToken], this.controller.stageSheet);
-        // this.router.get('/sanitize', this.controller.fixSheet);
-        // this.router.get('/sanitize', this.controller.sanitizeSheet);
         this.router.get('/sanitize', this.controller.cleanSheet);
         this.router.post('/sheets/load', [verifyToken, requireRole(SHEET_VIEW_ROLES)], this.controller.loadSheet);
         this.router.post('/sheets/save', [verifyToken, requireRole(SHEET_VIEW_ROLES)], this.controller.saveSheet); //AUUG09210105

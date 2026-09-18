@@ -12,12 +12,12 @@ export default class FmsController {
    /* Reports */
    async loadReport(req: Request, res: Response) {
       try {
-         let { type, program, major, year, mode, session, service, start, end } = req.body;
+         let { type, program, major, year, session, service, start, end } = req.body;
          let resp: any = { type };
 
          if (type == 'payments') {
 
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.studyMode,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where t.transtypeId = ${service} and (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where t.transtypeId = ${service} and (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
             if (regs.length) {
                regs = regs.map((r: any) => ({
                   'SERVICE TYPE': r?.transtitle,
@@ -36,7 +36,7 @@ export default class FmsController {
             }
 
          } else if (type == 'bills') {
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.studyMode,s.entryGroup,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where s.programId = ${program} and r.sessionId = ${session} order by t.createdAt asc`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.entryGroup,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where s.programId = ${program} and r.sessionId = ${session} order by t.createdAt asc`;
 
             // let regs:any = await fms.studentAccount.findMany({ 
             //    where: {
@@ -79,7 +79,6 @@ export default class FmsController {
                   'MIDDLE NAME(S)': r?.mname,
                   'INDEX NUMBER': r?.indexno,
                   'STUDENT ID': r?.id,
-                  'STUDY MODE': r?.studyMode,
                   'GENDER': r.student?.gender,
                   'YEAR': Math.ceil(r?.semesterNum / 2),
                   'PROGRAM': r?.program?.shortName,
@@ -92,7 +91,7 @@ export default class FmsController {
             }
 
          } else if (type == 'charges') {
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.studyMode,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
 
             // let regs:any = await fms.charge.findMany({ 
             //    where: {
@@ -134,7 +133,6 @@ export default class FmsController {
                   accountNet: { gt: 0 },
                   ...program && ({ programId: program }),
                   ...major && ({ majorId: major }),
-                  ...mode && ({ studyMode: mode }),
                   ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
                },
                include: { program: true, major: true },
@@ -142,7 +140,6 @@ export default class FmsController {
                   { programId: 'asc' },
                   { majorId: 'asc' },
                   { semesterNum: 'asc' },
-                  { studyMode: 'asc' },
                   { lname: 'asc' },
                ]
             })
@@ -153,7 +150,6 @@ export default class FmsController {
                   'MIDDLE NAME(S)': r.mname,
                   'INDEX NUMBER': r.indexno,
                   'STUDENT ID': r.id,
-                  'STUDY MODE': r.studyMode,
                   'GENDER': r.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'PROGRAM': r.program?.shortName,
@@ -174,7 +170,6 @@ export default class FmsController {
                      { completeStatus: false },
                      { ...program && ({ programId: program }) },
                      { ...major && ({ majorId: major }) },
-                     { ...mode && ({ studyMode: mode }) },
                      { ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }) },
                   ],
                },
@@ -183,7 +178,6 @@ export default class FmsController {
                   { programId: 'desc' },
                   { majorId: 'asc' },
                   { semesterNum: 'asc' },
-                  { studyMode: 'asc' },
                   { lname: 'asc' },
                ]
             })
@@ -194,7 +188,6 @@ export default class FmsController {
                   'MIDDLE NAME(S)': r.mname,
                   'INDEX NUMBER': r.indexno,
                   'STUDENT ID': r.id,
-                  'STUDY MODE': r.studyMode,
                   'GENDER': r.gender,
                   'YEAR': Math.ceil(r.semesterNum / 2),
                   'PROGRAM': r.program?.shortName,
