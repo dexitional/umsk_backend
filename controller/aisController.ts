@@ -1217,8 +1217,9 @@ export default class AisController {
          //   4    = program duration in years, Math.ceil(semesterTotal / 2)
          //   25   = admission year, derived from entryDate (else the current year)
          //   203  = program prefix
-         //   0001 = sequence among this program's active (not completed/deferred),
-         //          already-indexed students admitted the same year
+         //   0001 = sequence among this program's active (not completed --
+         //          deferred students still count), already-indexed
+         //          students admitted the same year
          const admissionYear = (student?.entryDate ? moment(student.entryDate) : moment()).format("YY");
          const duration = Math.ceil((student?.program?.semesterTotal || 0) / 2);
          const prefix = student?.program?.prefix;
@@ -1228,7 +1229,6 @@ export default class AisController {
                programId: student?.programId,
                indexno: { not: null },
                completeStatus: false,
-               deferStatus: false,
             },
             select: { entryDate: true },
          });
