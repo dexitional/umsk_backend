@@ -4459,13 +4459,27 @@ export default class AisController {
             include: { session: true }
          })
          if (resp) {
-            // Flag rows whose indexno has no matching student so the UI can
-            // highlight them before an approval attempt rejects the batch.
-            const indexnos = [...new Set((resp.meta as any[] || []).map((r: any) => r.indexno?.trim()).filter(Boolean))] as string[];
-            if (indexnos.length) {
-               const students = await ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { indexno: true } });
-               const foundIndexnos = new Set(students.map((s: any) => s.indexno));
-               resp.meta = (resp.meta as any[]).map((r: any) => ({ ...r, studentExists: foundIndexnos.has(r.indexno?.trim()) }));
+            // Flag rows with no matching assessment record (the row an
+            // approval actually updates) so the UI can highlight them before
+            // an approval attempt rejects the batch. Checking the `student`
+            // table here would be wrong: this module only updates existing
+            // assessment rows, which can outlive or predate a student record.
+            const meta = (resp.meta as any[]) || [];
+            if (meta.length) {
+               const existing = await ais.assessment.findMany({
+                  where: {
+                     sessionId: resp.sessionId,
+                     OR: meta.map((r: any) => ({
+                        courseId: r.courseId,
+                        semesterNum: Number(r.semesterNum),
+                        indexno: r.indexno?.trim(),
+                        type: r.scoreType,
+                     })),
+                  },
+                  select: { courseId: true, semesterNum: true, indexno: true, type: true },
+               });
+               const foundKeys = new Set(existing.map((a: any) => `${a.courseId}|${a.semesterNum}|${a.indexno}|${a.type}`));
+               resp.meta = meta.map((r: any) => ({ ...r, studentExists: foundKeys.has(`${r.courseId}|${Number(r.semesterNum)}|${r.indexno?.trim()}|${r.scoreType}`) }));
             }
             return res.status(200).json(resp)
          } else {
@@ -4500,19 +4514,34 @@ export default class AisController {
                });
             }
 
-            const indexnos = [...new Set((meta as any[] || []).map((r: any) => r.indexno?.trim()).filter(Boolean))] as string[];
-            if (indexnos.length) {
-               const students = await ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { indexno: true } });
-               const foundIndexnos = new Set(students.map((s: any) => s.indexno));
-               const missingStudents = indexnos.filter((idx) => !foundIndexnos.has(idx));
-               if (missingStudents.length) {
-                  return res.status(400).json({
-                     message: `Batch not committed: ${missingStudents.length} of ${indexnos.length} student index number(s) could not be found: ${missingStudents.join(', ')}. Please check and correct them before committing this batch.`,
-                     failedCount: missingStudents.length,
-                     totalCount: indexnos.length,
-                     errors: missingStudents.map((indexno) => ({ indexno, reason: 'Student index number not found' })),
-                  });
-               }
+            // This module only ever updates an existing assessment record --
+            // it never creates one -- so the row that must exist is the
+            // assessment (matched on session/course/semester/indexno/type),
+            // not a `student` table entry. Checking against `student` here
+            // would wrongly reject valid updates for indexnos that have
+            // assessment history but no (or a stale) student record.
+            const existing = await ais.assessment.findMany({
+               where: {
+                  sessionId,
+                  OR: (meta as any[] || []).map((r: any) => ({
+                     courseId: r.courseId,
+                     semesterNum: Number(r.semesterNum),
+                     indexno: r.indexno?.trim(),
+                     type: r.scoreType,
+                  })),
+               },
+               select: { courseId: true, semesterNum: true, indexno: true, type: true },
+            });
+            const foundKeys = new Set(existing.map((a: any) => `${a.courseId}|${a.semesterNum}|${a.indexno}|${a.type}`));
+            const missingRecords = (meta as any[] || []).filter((r: any) => !foundKeys.has(`${r.courseId}|${Number(r.semesterNum)}|${r.indexno?.trim()}|${r.scoreType}`));
+            if (missingRecords.length) {
+               const indexnos = [...new Set(missingRecords.map((r: any) => r.indexno?.trim()))];
+               return res.status(400).json({
+                  message: `Batch not committed: no matching assessment record found for ${missingRecords.length} of ${meta.length} student record(s): ${indexnos.join(', ')}. Please check the session, course, semester, and assessment type before committing this batch.`,
+                  failedCount: missingRecords.length,
+                  totalCount: meta.length,
+                  errors: indexnos.map((indexno) => ({ indexno, reason: 'No matching assessment record found' })),
+               });
             }
 
             // Commit each record inside a transaction so a failure partway

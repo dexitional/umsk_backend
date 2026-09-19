@@ -4426,13 +4426,30 @@ class AisController {
                     include: { session: true }
                 });
                 if (resp) {
-                    // Flag rows whose indexno has no matching student so the UI can
-                    // highlight them before an approval attempt rejects the batch.
-                    const indexnos = [...new Set((resp.meta || []).map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }).filter(Boolean))];
-                    if (indexnos.length) {
-                        const students = yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { indexno: true } });
-                        const foundIndexnos = new Set(students.map((s) => s.indexno));
-                        resp.meta = resp.meta.map((r) => { var _a; return (Object.assign(Object.assign({}, r), { studentExists: foundIndexnos.has((_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim()) })); });
+                    // Flag rows with no matching assessment record (the row an
+                    // approval actually updates) so the UI can highlight them before
+                    // an approval attempt rejects the batch. Checking the `student`
+                    // table here would be wrong: this module only updates existing
+                    // assessment rows, which can outlive or predate a student record.
+                    const meta = resp.meta || [];
+                    if (meta.length) {
+                        const existing = yield ais.assessment.findMany({
+                            where: {
+                                sessionId: resp.sessionId,
+                                OR: meta.map((r) => {
+                                    var _a;
+                                    return ({
+                                        courseId: r.courseId,
+                                        semesterNum: Number(r.semesterNum),
+                                        indexno: (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(),
+                                        type: r.scoreType,
+                                    });
+                                }),
+                            },
+                            select: { courseId: true, semesterNum: true, indexno: true, type: true },
+                        });
+                        const foundKeys = new Set(existing.map((a) => `${a.courseId}|${a.semesterNum}|${a.indexno}|${a.type}`));
+                        resp.meta = meta.map((r) => { var _a; return (Object.assign(Object.assign({}, r), { studentExists: foundKeys.has(`${r.courseId}|${Number(r.semesterNum)}|${(_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim()}|${r.scoreType}`) })); });
                     }
                     return res.status(200).json(resp);
                 }
@@ -4468,19 +4485,37 @@ class AisController {
                             errors: indexnos.map((indexno) => ({ indexno, reason: 'Exam score is missing' })),
                         });
                     }
-                    const indexnos = [...new Set((meta || []).map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }).filter(Boolean))];
-                    if (indexnos.length) {
-                        const students = yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { indexno: true } });
-                        const foundIndexnos = new Set(students.map((s) => s.indexno));
-                        const missingStudents = indexnos.filter((idx) => !foundIndexnos.has(idx));
-                        if (missingStudents.length) {
-                            return res.status(400).json({
-                                message: `Batch not committed: ${missingStudents.length} of ${indexnos.length} student index number(s) could not be found: ${missingStudents.join(', ')}. Please check and correct them before committing this batch.`,
-                                failedCount: missingStudents.length,
-                                totalCount: indexnos.length,
-                                errors: missingStudents.map((indexno) => ({ indexno, reason: 'Student index number not found' })),
-                            });
-                        }
+                    // This module only ever updates an existing assessment record --
+                    // it never creates one -- so the row that must exist is the
+                    // assessment (matched on session/course/semester/indexno/type),
+                    // not a `student` table entry. Checking against `student` here
+                    // would wrongly reject valid updates for indexnos that have
+                    // assessment history but no (or a stale) student record.
+                    const existing = yield ais.assessment.findMany({
+                        where: {
+                            sessionId,
+                            OR: (meta || []).map((r) => {
+                                var _a;
+                                return ({
+                                    courseId: r.courseId,
+                                    semesterNum: Number(r.semesterNum),
+                                    indexno: (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(),
+                                    type: r.scoreType,
+                                });
+                            }),
+                        },
+                        select: { courseId: true, semesterNum: true, indexno: true, type: true },
+                    });
+                    const foundKeys = new Set(existing.map((a) => `${a.courseId}|${a.semesterNum}|${a.indexno}|${a.type}`));
+                    const missingRecords = (meta || []).filter((r) => { var _a; return !foundKeys.has(`${r.courseId}|${Number(r.semesterNum)}|${(_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim()}|${r.scoreType}`); });
+                    if (missingRecords.length) {
+                        const indexnos = [...new Set(missingRecords.map((r) => { var _a; return (_a = r.indexno) === null || _a === void 0 ? void 0 : _a.trim(); }))];
+                        return res.status(400).json({
+                            message: `Batch not committed: no matching assessment record found for ${missingRecords.length} of ${meta.length} student record(s): ${indexnos.join(', ')}. Please check the session, course, semester, and assessment type before committing this batch.`,
+                            failedCount: missingRecords.length,
+                            totalCount: meta.length,
+                            errors: indexnos.map((indexno) => ({ indexno, reason: 'No matching assessment record found' })),
+                        });
                     }
                     // Commit each record inside a transaction so a failure partway
                     // through rolls back cleanly instead of leaving the batch
