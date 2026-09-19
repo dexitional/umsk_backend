@@ -90,15 +90,14 @@ model charge {
 // instead of debiting it. Mirrors charge's shape exactly; the sign
 // difference is applied at the studentAccount.amount level, not here.
 model refund {
-  id        String       @id @default(uuid())
+  id        String   @id @default(uuid())
   studentId String?
   title     String
-  type      chargeGroup?
-  currency  currency     @default(GHC)
+  currency  currency @default(GHC)
   amount    Float
-  posted    Boolean      @default(true)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  posted    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   student        student?         @relation(fields: [studentId], references: [id])
   studentAccount studentAccount[]

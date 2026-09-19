@@ -570,7 +570,7 @@ class FmsController {
                 delete req.body.bankaccId;
                 delete req.body.programId;
                 const resp = yield fms.bill.create({
-                    data: Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -596,7 +596,7 @@ class FmsController {
                     where: {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
-                    data: Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -729,20 +729,20 @@ class FmsController {
     }
     postCharge(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
+            var _a, _b;
             try {
                 const { studentId } = req.body;
                 delete req.body.studentId;
                 console.log(req.body);
                 const resp = yield fms.charge.create({
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
+                    data: Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
                             createMany: {
                                 data: [{
                                         studentId,
                                         narrative: "test",
                                         amount: (_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.amount,
                                         type: 'CHARGE',
-                                        currency: (_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.currency,
+                                        currency: 'GHC',
                                     }]
                             }
                         } })
@@ -750,7 +750,7 @@ class FmsController {
                 if (resp) {
                     // Retire Account
                     const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_b = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _b === void 0 ? void 0 : _b.amount } });
                     // Create record in student account
                     res.status(200).json(resp);
                 }
@@ -766,13 +766,13 @@ class FmsController {
     }
     updateCharge(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
+            var _a, _b, _c;
             try {
                 const { studentId } = req.body;
                 delete req.body.studentId;
                 const resp = yield fms.charge.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
+                    data: Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
                             updateMany: {
                                 where: { studentId },
                                 data: {
@@ -780,7 +780,7 @@ class FmsController {
                                     narrative: (_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.title,
                                     amount: (_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.amount,
                                     type: 'CHARGE',
-                                    currency: (_c = req === null || req === void 0 ? void 0 : req.body) === null || _c === void 0 ? void 0 : _c.currency,
+                                    currency: 'GHC',
                                 }
                             }
                         } })
@@ -788,7 +788,7 @@ class FmsController {
                 if (resp) {
                     // Retire Accounts
                     const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_d = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _d === void 0 ? void 0 : _d.amount } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount } });
                     // Return Response
                     res.status(200).json(resp);
                 }
@@ -896,19 +896,19 @@ class FmsController {
     }
     postRefund(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
+            var _a, _b, _c;
             try {
                 const { studentId } = req.body;
                 delete req.body.studentId;
                 const resp = yield fms.refund.create({
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
+                    data: Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
                             createMany: {
                                 data: [{
                                         studentId,
                                         narrative: (_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.title,
                                         amount: -1 * ((_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.amount),
                                         type: 'REFUND',
-                                        currency: (_c = req === null || req === void 0 ? void 0 : req.body) === null || _c === void 0 ? void 0 : _c.currency,
+                                        currency: 'GHC',
                                     }]
                             }
                         } })
@@ -916,7 +916,7 @@ class FmsController {
                 if (resp) {
                     // Retire Account
                     const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_d = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _d === void 0 ? void 0 : _d.amount } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount } });
                     res.status(200).json(resp);
                 }
                 else {
@@ -931,13 +931,13 @@ class FmsController {
     }
     updateRefund(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
+            var _a, _b, _c;
             try {
                 const { studentId } = req.body;
                 delete req.body.studentId;
                 const resp = yield fms.refund.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
+                    data: Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
                             updateMany: {
                                 where: { refundId: (0, paramStr_1.paramStr)(req.params.id) },
                                 data: {
@@ -945,7 +945,7 @@ class FmsController {
                                     narrative: (_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.title,
                                     amount: -1 * ((_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.amount),
                                     type: 'REFUND',
-                                    currency: (_c = req === null || req === void 0 ? void 0 : req.body) === null || _c === void 0 ? void 0 : _c.currency,
+                                    currency: 'GHC',
                                 }
                             }
                         } })
@@ -953,7 +953,7 @@ class FmsController {
                 if (resp) {
                     // Retire Accounts
                     const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_d = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _d === void 0 ? void 0 : _d.amount } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount } });
                     res.status(200).json(resp);
                 }
                 else {
@@ -1128,7 +1128,7 @@ class FmsController {
     }
     postPayment(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
+            var _a, _b;
             try {
                 const { studentId, transtypeId, bankaccId, collectorId, amount } = req.body;
                 delete req.body.studentId;
@@ -1138,13 +1138,13 @@ class FmsController {
                 const narrative = `Payment of ${transtypeId == 8 ? 'Graduation' : transtypeId == 3 ? 'Resit' : transtypeId == 8 ? 'Late Registration' : 'Academic'} Fees`;
                 const st = yield fms.student.findUnique({ where: { id: studentId }, select: { entryGroup: true, indexno: true } });
                 const resp = yield fms.transaction.create({
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), collectorId && ({ collector: { connect: { id: collectorId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), studentId && ({ student: { connect: { id: studentId } } })), transtypeId && ({ transtype: { connect: { id: transtypeId } } })), transtypeId && [2, 3, 4, 8].includes(Number(transtypeId)) && ({ studentAccount: { createMany: { data: [{ studentId, narrative, amount: (-1 * ((_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.amount)), type: 'PAYMENT', currency: (_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.currency }] } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), collectorId && ({ collector: { connect: { id: collectorId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), studentId && ({ student: { connect: { id: studentId } } })), transtypeId && ({ transtype: { connect: { id: transtypeId } } })), transtypeId && [2, 3, 4, 8].includes(Number(transtypeId)) && ({ studentAccount: { createMany: { data: [{ studentId, narrative, amount: (-1 * ((_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.amount)), type: 'PAYMENT', currency: 'GHC' }] } } }))
                 });
                 if (resp) {
                     // Retire Student Account Balance after Fees,Late,Resit,Graduation transaction
                     if ([2, 3, 4, 8].includes(Number(transtypeId))) {
                         const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                        yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount } });
+                        yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_b = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _b === void 0 ? void 0 : _b.amount } });
                     }
                     // If Resit - Run Resit operations
                     if (transtypeId == 3) {
@@ -1191,7 +1191,7 @@ class FmsController {
     }
     updatePayment(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
+            var _a, _b;
             try {
                 const { studentId, transtypeId, bankaccId, collectorId } = req.body;
                 delete req.body.studentId;
@@ -1201,13 +1201,13 @@ class FmsController {
                 const narrative = `Payment of ${transtypeId == 8 ? 'Graduation' : transtypeId == 3 ? 'Resit' : transtypeId == 8 ? 'Late Registration' : 'Academic'} Fees`;
                 const resp = yield fms.transaction.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), collectorId && ({ collector: { connect: { id: collectorId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), studentId && ({ student: { connect: { id: studentId } } })), transtypeId && ({ transtype: { connect: { id: transtypeId } } })), transtypeId && ['2', '3', '4', '8'].includes(transtypeId) && ({ studentAccount: { updateMany: { data: { studentId, narrative, amount: (-1 * ((_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.amount)), type: 'PAYMENT', currency: (_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.currency } } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), collectorId && ({ collector: { connect: { id: collectorId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), studentId && ({ student: { connect: { id: studentId } } })), transtypeId && ({ transtype: { connect: { id: transtypeId } } })), transtypeId && ['2', '3', '4', '8'].includes(transtypeId) && ({ studentAccount: { updateMany: { data: { studentId, narrative, amount: (-1 * ((_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.amount)), type: 'PAYMENT', currency: 'GHC' } } } }))
                 });
                 if (resp) {
                     // Retire Student Account Balance after Fees,Late,Resit,Graduation transaction
                     if (['2', '3', '4', '8'].includes(transtypeId)) {
                         const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                        yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount } });
+                        yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_b = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _b === void 0 ? void 0 : _b.amount } });
                     }
                     res.status(200).json(resp);
                 }

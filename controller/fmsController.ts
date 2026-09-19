@@ -534,6 +534,7 @@ export default class FmsController {
          const resp = await fms.bill.create({
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...sessionId && ({ session: { connect: { id: sessionId } } }),
                ...bankaccId && ({ bankacc: { connect: { id: bankaccId } } }),
                ...programId && ({ program: { connect: { id: programId } } }),
@@ -563,6 +564,7 @@ export default class FmsController {
             },
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...sessionId && ({ session: { connect: { id: sessionId } } }),
                ...bankaccId && ({ bankacc: { connect: { id: bankaccId } } }),
                ...programId && ({ program: { connect: { id: programId } } }),
@@ -706,6 +708,7 @@ export default class FmsController {
          const resp = await fms.charge.create({
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...studentId && ({ student: { connect: { id: studentId } } }),
                studentAccount: {
                   createMany: {
@@ -714,7 +717,7 @@ export default class FmsController {
                         narrative: "test",
                         amount: req?.body?.amount,
                         type: 'CHARGE',
-                        currency: req?.body?.currency,
+                        currency: 'GHC',
                      }]
                   }
                }
@@ -745,6 +748,7 @@ export default class FmsController {
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...studentId && ({ student: { connect: { id: studentId } } }),
                studentAccount: {
                   updateMany: {
@@ -754,7 +758,7 @@ export default class FmsController {
                         narrative: req?.body?.title,
                         amount: req?.body?.amount,
                         type: 'CHARGE',
-                        currency: req?.body?.currency,
+                        currency: 'GHC',
                      }
                   }
                }
@@ -872,6 +876,7 @@ export default class FmsController {
          const resp = await fms.refund.create({
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...studentId && ({ student: { connect: { id: studentId } } }),
                studentAccount: {
                   createMany: {
@@ -880,7 +885,7 @@ export default class FmsController {
                         narrative: req?.body?.title,
                         amount: -1 * req?.body?.amount,
                         type: 'REFUND',
-                        currency: req?.body?.currency,
+                        currency: 'GHC',
                      }]
                   }
                }
@@ -910,6 +915,7 @@ export default class FmsController {
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...studentId && ({ student: { connect: { id: studentId } } }),
                studentAccount: {
                   updateMany: {
@@ -919,7 +925,7 @@ export default class FmsController {
                         narrative: req?.body?.title,
                         amount: -1 * req?.body?.amount,
                         type: 'REFUND',
-                        currency: req?.body?.currency,
+                        currency: 'GHC',
                      }
                   }
                }
@@ -1113,12 +1119,13 @@ export default class FmsController {
          const resp: any = await fms.transaction.create({
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...collectorId && ({ collector: { connect: { id: collectorId } } }),
                ...bankaccId && ({ bankacc: { connect: { id: bankaccId } } }),
                ...studentId && ({ student: { connect: { id: studentId } } }),
                ...transtypeId && ({ transtype: { connect: { id: transtypeId } } }),
                // If Fees,Late,Resit,Graduation transaction
-               ...transtypeId && [2, 3, 4, 8].includes(Number(transtypeId)) && ({ studentAccount: { createMany: { data: [{ studentId, narrative, amount: (-1 * req?.body?.amount), type: 'PAYMENT', currency: req?.body?.currency }] } } }),
+               ...transtypeId && [2, 3, 4, 8].includes(Number(transtypeId)) && ({ studentAccount: { createMany: { data: [{ studentId, narrative, amount: (-1 * req?.body?.amount), type: 'PAYMENT', currency: 'GHC' }] } } }),
             }
          })
          if (resp) {
@@ -1183,12 +1190,13 @@ export default class FmsController {
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
+               currency: 'GHC', // the application only transacts in GHC
                ...collectorId && ({ collector: { connect: { id: collectorId } } }),
                ...bankaccId && ({ bankacc: { connect: { id: bankaccId } } }),
                ...studentId && ({ student: { connect: { id: studentId } } }),
                ...transtypeId && ({ transtype: { connect: { id: transtypeId } } }),
                // If Fees,Late,Resit,Graduation transaction
-               ...transtypeId && ['2', '3', '4', '8'].includes(transtypeId) && ({ studentAccount: { updateMany: { data: { studentId, narrative, amount: (-1 * req?.body?.amount), type: 'PAYMENT', currency: req?.body?.currency } } } }),
+               ...transtypeId && ['2', '3', '4', '8'].includes(transtypeId) && ({ studentAccount: { updateMany: { data: { studentId, narrative, amount: (-1 * req?.body?.amount), type: 'PAYMENT', currency: 'GHC' } } } }),
             }
          })
          if (resp) {
