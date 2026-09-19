@@ -12,6 +12,10 @@ import { completeType } from "@prisma/client";
 import { graduateSession } from "../drizzle/schema";
 const ais: any = prisma;
 
+// Exam Score Manager: exam scores are capped at 40 marks -- any upload or
+// edit containing a row above this is rejected outright.
+const EXAM_SCORE_MAX = 40;
+
 // Carries which student record broke a batch commit (e.g. backlog approval)
 // so callers can report the specific row instead of a generic 500.
 class BacklogRecordError extends Error {
@@ -4388,6 +4392,17 @@ export default class AisController {
                meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore })
             })
 
+            const overMax = meta.filter((r: any) => r.scoreExam != null && r.scoreExam > EXAM_SCORE_MAX);
+            if (overMax.length) {
+               const indexnos = [...new Set(overMax.map((r: any) => r.indexno))];
+               return res.status(400).json({
+                  message: `Upload rejected: exam score exceeds the maximum of ${EXAM_SCORE_MAX} for ${overMax.length} of ${meta.length} student record(s): ${indexnos.join(', ')}.`,
+                  failedCount: overMax.length,
+                  totalCount: meta.length,
+                  errors: indexnos.map((indexno) => ({ indexno, reason: `Exam score exceeds maximum of ${EXAM_SCORE_MAX}` })),
+               });
+            }
+
             resp = await ais.activityExam.create({
                data: {
                   title: `EXAM SCORE UPLOAD - ${moment().format('LLL')?.toUpperCase()} - ${createdBy}`,
@@ -4635,6 +4650,17 @@ export default class AisController {
                const scoreExam = req.body[`${i}_scoreExam`] != '' ? parseFloat(req.body[`${i}_scoreExam`]) : null;
                meta.push({ indexno, courseId, semesterNum: Number(semesterNum), scoreType, scoreExam })
             }
+
+         const overMax = meta.filter((r: any) => r.scoreExam != null && r.scoreExam > EXAM_SCORE_MAX);
+         if (overMax.length) {
+            const indexnos = [...new Set(overMax.map((r: any) => r.indexno))];
+            return res.status(400).json({
+               message: `Not saved: exam score exceeds the maximum of ${EXAM_SCORE_MAX} for ${overMax.length} of ${meta.length} student record(s): ${indexnos.join(', ')}.`,
+               failedCount: overMax.length,
+               totalCount: meta.length,
+               errors: indexnos.map((indexno) => ({ indexno, reason: `Exam score exceeds maximum of ${EXAM_SCORE_MAX}` })),
+            });
+         }
 
          const resp = await ais.activityExam.update({
             where: { id: paramStr(req.params.id) },

@@ -21,6 +21,9 @@ const paramStr_1 = require("../util/paramStr");
 const sheetScope_1 = require("../util/sheetScope");
 const resitScope_1 = require("../util/resitScope");
 const ais = client_1.prisma;
+// Exam Score Manager: exam scores are capped at 40 marks -- any upload or
+// edit containing a row above this is rejected outright.
+const EXAM_SCORE_MAX = 40;
 // Carries which student record broke a batch commit (e.g. backlog approval)
 // so callers can report the specific row instead of a generic 500.
 class BacklogRecordError extends Error {
@@ -4363,6 +4366,16 @@ class AisController {
                         examScore = examScore != '' ? parseFloat(examScore) : null;
                         meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore });
                     });
+                    const overMax = meta.filter((r) => r.scoreExam != null && r.scoreExam > EXAM_SCORE_MAX);
+                    if (overMax.length) {
+                        const indexnos = [...new Set(overMax.map((r) => r.indexno))];
+                        return res.status(400).json({
+                            message: `Upload rejected: exam score exceeds the maximum of ${EXAM_SCORE_MAX} for ${overMax.length} of ${meta.length} student record(s): ${indexnos.join(', ')}.`,
+                            failedCount: overMax.length,
+                            totalCount: meta.length,
+                            errors: indexnos.map((indexno) => ({ indexno, reason: `Exam score exceeds maximum of ${EXAM_SCORE_MAX}` })),
+                        });
+                    }
                     resp = yield ais.activityExam.create({
                         data: Object.assign(Object.assign({ title: `EXAM SCORE UPLOAD - ${(_a = (0, moment_1.default)().format('LLL')) === null || _a === void 0 ? void 0 : _a.toUpperCase()} - ${createdBy}`, tag: (tag === null || tag === void 0 ? void 0 : tag.trim()) || null, meta }, createdBy && ({ creator: { connect: { staffNo: createdBy } } })), sessionId && ({ session: { connect: { id: sessionId } } })),
                     });
@@ -4614,6 +4627,16 @@ class AisController {
                         const scoreExam = req.body[`${i}_scoreExam`] != '' ? parseFloat(req.body[`${i}_scoreExam`]) : null;
                         meta.push({ indexno, courseId, semesterNum: Number(semesterNum), scoreType, scoreExam });
                     }
+                const overMax = meta.filter((r) => r.scoreExam != null && r.scoreExam > EXAM_SCORE_MAX);
+                if (overMax.length) {
+                    const indexnos = [...new Set(overMax.map((r) => r.indexno))];
+                    return res.status(400).json({
+                        message: `Not saved: exam score exceeds the maximum of ${EXAM_SCORE_MAX} for ${overMax.length} of ${meta.length} student record(s): ${indexnos.join(', ')}.`,
+                        failedCount: overMax.length,
+                        totalCount: meta.length,
+                        errors: indexnos.map((indexno) => ({ indexno, reason: `Exam score exceeds maximum of ${EXAM_SCORE_MAX}` })),
+                    });
+                }
                 const resp = yield ais.activityExam.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
                     data: Object.assign({ meta }, sessionId && ({ session: { connect: { id: sessionId } } })),
