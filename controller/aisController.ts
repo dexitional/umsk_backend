@@ -1207,20 +1207,40 @@ export default class AisController {
          let indexno;
          const student = await ais.student.findUnique({
             where: { id: studentId },
-            include: { program: { select: { prefix: true } } },
+            include: { program: { select: { prefix: true, semesterTotal: true } } },
          })
          if (student?.indexno) throw ("Index number exists for student!")
-         // const students = await ais.$queryRaw`select * from ais_student where date_format(entryDate,'%m%y') = ${moment(student?.entryDate).format("MMYYYY")} and programId = ${student?.programId}`;
-         const students = await ais.$queryRaw`select * from ais_student where date_format(entryDate,'%m%y') = ${moment(student?.entryDate).format("MMYY")} and programId = ${student?.programId} and indexno is not null and (semesterNum = entrySemesterNum)`;
-         // console.log("index student: ", students,moment(student?.entryDate).format("MMYY"));
+
+         // AKATSICO INDEX NUMBER FORMAT: <duration><admission year><program prefix><4-digit sequence>
+         // e.g. "4252030001" for a B.Ed JHS (prefix "203", semesterTotal 8) student
+         // admitted in "20"25 --
+         //   4    = program duration in years, Math.ceil(semesterTotal / 2)
+         //   25   = admission year, derived from entryDate (else the current year)
+         //   203  = program prefix
+         //   0001 = sequence among this program's active (not completed/deferred),
+         //          already-indexed students admitted the same year
+         const admissionYear = (student?.entryDate ? moment(student.entryDate) : moment()).format("YY");
+         const duration = Math.ceil((student?.program?.semesterTotal || 0) / 2);
+         const prefix = student?.program?.prefix;
+
+         const peers = await ais.student.findMany({
+            where: {
+               programId: student?.programId,
+               indexno: { not: null },
+               completeStatus: false,
+               deferStatus: false,
+            },
+            select: { entryDate: true },
+         });
+         const cohort = peers.filter((p: any) => (p.entryDate ? moment(p.entryDate) : moment()).format("YY") === admissionYear);
+
          // AKATSICO INDEX NUMBER GENERATION
-         let studentCount = students?.length + 1;
+         let studentCount = cohort.length + 1;
          let loop = true;
          while (loop) {
             // Compute Index Number
             const count = studentCount.toString().length == 1 ? `000${studentCount}` : studentCount.toString().length == 2 ? `00${studentCount}` : studentCount.toString().length == 3 ? `0${studentCount}` : studentCount;
-            indexno = `${student?.program?.prefix}${moment(student?.entryDate || new Date()).format("MMYY")}${count}`
-            // console.log(student?.program?.prefix, moment(student?.entryDate || new Date()).format("MMYY"), studentCount, indexno)
+            indexno = `${duration}${admissionYear}${prefix}${count}`
             // Check If Index Number Exists
             const ck = await ais.student.findFirst({ where: { indexno } });
             if (ck) {
@@ -1229,10 +1249,6 @@ export default class AisController {
                loop = false;
             }
          }
-
-         // MLK INDEX NUMBER GENERATION
-         // const count = student?.progCount?.toString().length == 1 ? `00${student?.progCount}`  : student?.progCount?.toString().length == 2 ? `0${student?.progCount}` : student?.progCount;
-         // indexno = `${student?.program?.prefix}/${moment(student?.entryDate || new Date()).format("YY")}/${count}`
 
          const resp = await ais.student.update({
             where: { id: studentId },
