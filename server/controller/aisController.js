@@ -8,6 +8,17 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+var __rest = (this && this.__rest) || function (s, e) {
+    var t = {};
+    for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0)
+        t[p] = s[p];
+    if (s != null && typeof Object.getOwnPropertySymbols === "function")
+        for (var i = 0, p = Object.getOwnPropertySymbols(s); i < p.length; i++) {
+            if (e.indexOf(p[i]) < 0 && Object.prototype.propertyIsEnumerable.call(s, p[i]))
+                t[p[i]] = s[p[i]];
+        }
+    return t;
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -1395,6 +1406,95 @@ class AisController {
                 else {
                     res.status(202).json({ message: `no records found` });
                 }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    // Bulk-create students from an uploaded sheet. `ApplicantID` maps
+    // directly onto student.id (the same free-typed "Student Number" field
+    // the single-create form uses) -- there is no separate id auto-generation
+    // for students, unlike indexno. `yearGroup` (1 = Year 1, 2 = Year 2, ...)
+    // maps to the first-semester value of that year on student.semesterNum,
+    // matching the single-create form's "Program Year and Semester" options
+    // (YEAR 1 SEM1 = 1, YEAR 2 SEM1 = 3, YEAR 3 SEM1 = 5, ...).
+    uploadStudent(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const rows = req.body;
+                if (!(rows === null || rows === void 0 ? void 0 : rows.length))
+                    return res.status(202).json({ message: `no records found` });
+                const missingId = [];
+                const duplicateInSheet = [];
+                const seenIds = new Set();
+                const students = [];
+                rows.forEach((row, i) => {
+                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
+                    const id = (_b = (_a = row.ApplicantID) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim();
+                    if (!id) {
+                        missingId.push(`row ${i + 1}`);
+                        return;
+                    }
+                    if (seenIds.has(id)) {
+                        duplicateInSheet.push(id);
+                        return;
+                    }
+                    seenIds.add(id);
+                    const yearGroup = row.yearGroup != null && row.yearGroup !== '' ? Number(row.yearGroup) : null;
+                    const semesterNum = yearGroup ? (yearGroup - 1) * 2 + 1 : null;
+                    students.push({
+                        id,
+                        fname: ((_d = (_c = row.fname) === null || _c === void 0 ? void 0 : _c.toString()) === null || _d === void 0 ? void 0 : _d.trim()) || null,
+                        mname: ((_f = (_e = row.mname) === null || _e === void 0 ? void 0 : _e.toString()) === null || _f === void 0 ? void 0 : _f.trim()) || null,
+                        lname: ((_h = (_g = row.lname) === null || _g === void 0 ? void 0 : _g.toString()) === null || _h === void 0 ? void 0 : _h.trim()) || null,
+                        dob: row.dob ? new Date(row.dob) : null,
+                        semesterNum,
+                        gender: ((_k = (_j = row.gender) === null || _j === void 0 ? void 0 : _j.toString()) === null || _k === void 0 ? void 0 : _k.trim()) || null,
+                        email: ((_m = (_l = row.email) === null || _l === void 0 ? void 0 : _l.toString()) === null || _m === void 0 ? void 0 : _m.trim()) || null,
+                        phone: ((_p = (_o = row.phone) === null || _o === void 0 ? void 0 : _o.toString()) === null || _p === void 0 ? void 0 : _p.trim()) || null,
+                        address: ((_r = (_q = row.address) === null || _q === void 0 ? void 0 : _q.toString()) === null || _r === void 0 ? void 0 : _r.trim()) || null,
+                        hometown: ((_t = (_s = row.hometown) === null || _s === void 0 ? void 0 : _s.toString()) === null || _t === void 0 ? void 0 : _t.trim()) || null,
+                        programId: ((_v = (_u = row.programId) === null || _u === void 0 ? void 0 : _u.toString()) === null || _v === void 0 ? void 0 : _v.trim()) || null,
+                        majorId: ((_x = (_w = row.majorId) === null || _w === void 0 ? void 0 : _w.toString()) === null || _x === void 0 ? void 0 : _x.trim()) || null,
+                    });
+                });
+                if (missingId.length || duplicateInSheet.length) {
+                    return res.status(400).json({
+                        message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}.` : ''}`,
+                        errors: [
+                            ...missingId.map((r) => ({ id: r, reason: 'ApplicantID is required' })),
+                            ...duplicateInSheet.map((id) => ({ id, reason: 'Duplicate ApplicantID within the uploaded sheet' })),
+                        ],
+                    });
+                }
+                const existing = yield ais.student.findMany({ where: { id: { in: students.map((s) => s.id) } }, select: { id: true } });
+                if (existing.length) {
+                    const ids = existing.map((s) => s.id);
+                    return res.status(400).json({
+                        message: `Upload rejected: ${ids.length} of ${students.length} Applicant ID(s) already exist: ${ids.join(', ')}.`,
+                        failedCount: ids.length,
+                        totalCount: students.length,
+                        errors: ids.map((id) => ({ id, reason: 'ApplicantID already exists' })),
+                    });
+                }
+                const createdBy = req.userId;
+                // All-or-nothing so a bad row (e.g. an invalid programId/majorId)
+                // doesn't leave the batch half-created.
+                const resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    const created = [];
+                    for (const s of students) {
+                        const { programId, majorId } = s, rest = __rest(s, ["programId", "majorId"]);
+                        const row = yield tx.student.create({
+                            data: Object.assign(Object.assign(Object.assign({}, rest), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })),
+                        });
+                        created.push(row);
+                    }
+                    yield tx.log.create({ data: { action: `STUDENT_BULK_UPLOAD`, user: createdBy, meta: { count: created.length, ids: created.map((c) => c.id) } } });
+                    return created;
+                }));
+                res.status(200).json({ success: true, count: resp.length, data: resp });
             }
             catch (error) {
                 console.log(error);

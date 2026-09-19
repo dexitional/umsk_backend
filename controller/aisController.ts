@@ -1376,6 +1376,97 @@ export default class AisController {
       }
    }
 
+   // Bulk-create students from an uploaded sheet. `ApplicantID` maps
+   // directly onto student.id (the same free-typed "Student Number" field
+   // the single-create form uses) -- there is no separate id auto-generation
+   // for students, unlike indexno. `yearGroup` (1 = Year 1, 2 = Year 2, ...)
+   // maps to the first-semester value of that year on student.semesterNum,
+   // matching the single-create form's "Program Year and Semester" options
+   // (YEAR 1 SEM1 = 1, YEAR 2 SEM1 = 3, YEAR 3 SEM1 = 5, ...).
+   async uploadStudent(req: any, res: Response) {
+      try {
+         const rows = req.body;
+         if (!rows?.length) return res.status(202).json({ message: `no records found` });
+
+         const missingId: string[] = [];
+         const duplicateInSheet: string[] = [];
+         const seenIds = new Set<string>();
+         const students: any[] = [];
+
+         rows.forEach((row: any, i: number) => {
+            const id = row.ApplicantID?.toString()?.trim();
+            if (!id) { missingId.push(`row ${i + 1}`); return; }
+            if (seenIds.has(id)) { duplicateInSheet.push(id); return; }
+            seenIds.add(id);
+
+            const yearGroup = row.yearGroup != null && row.yearGroup !== '' ? Number(row.yearGroup) : null;
+            const semesterNum = yearGroup ? (yearGroup - 1) * 2 + 1 : null;
+
+            students.push({
+               id,
+               fname: row.fname?.toString()?.trim() || null,
+               mname: row.mname?.toString()?.trim() || null,
+               lname: row.lname?.toString()?.trim() || null,
+               dob: row.dob ? new Date(row.dob) : null,
+               semesterNum,
+               gender: row.gender?.toString()?.trim() || null,
+               email: row.email?.toString()?.trim() || null,
+               phone: row.phone?.toString()?.trim() || null,
+               address: row.address?.toString()?.trim() || null,
+               hometown: row.hometown?.toString()?.trim() || null,
+               programId: row.programId?.toString()?.trim() || null,
+               majorId: row.majorId?.toString()?.trim() || null,
+            });
+         });
+
+         if (missingId.length || duplicateInSheet.length) {
+            return res.status(400).json({
+               message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}.` : ''}`,
+               errors: [
+                  ...missingId.map((r) => ({ id: r, reason: 'ApplicantID is required' })),
+                  ...duplicateInSheet.map((id) => ({ id, reason: 'Duplicate ApplicantID within the uploaded sheet' })),
+               ],
+            });
+         }
+
+         const existing = await ais.student.findMany({ where: { id: { in: students.map((s) => s.id) } }, select: { id: true } });
+         if (existing.length) {
+            const ids = existing.map((s: any) => s.id);
+            return res.status(400).json({
+               message: `Upload rejected: ${ids.length} of ${students.length} Applicant ID(s) already exist: ${ids.join(', ')}.`,
+               failedCount: ids.length,
+               totalCount: students.length,
+               errors: ids.map((id: any) => ({ id, reason: 'ApplicantID already exists' })),
+            });
+         }
+
+         const createdBy = req.userId;
+         // All-or-nothing so a bad row (e.g. an invalid programId/majorId)
+         // doesn't leave the batch half-created.
+         const resp = await ais.$transaction(async (tx: any) => {
+            const created = [];
+            for (const s of students) {
+               const { programId, majorId, ...rest } = s;
+               const row = await tx.student.create({
+                  data: {
+                     ...rest,
+                     ...programId && ({ program: { connect: { id: programId } } }),
+                     ...majorId && ({ major: { connect: { id: majorId } } }),
+                  },
+               });
+               created.push(row);
+            }
+            await tx.log.create({ data: { action: `STUDENT_BULK_UPLOAD`, user: createdBy, meta: { count: created.length, ids: created.map((c: any) => c.id) } } });
+            return created;
+         });
+
+         res.status(200).json({ success: true, count: resp.length, data: resp });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
    async updateStudent(req: Request & any, res: Response) {
       try {
          const { titleId, programId, countryId, regionId, religionId, disabilityId, majorId, instituteEmail, indexno } = req.body

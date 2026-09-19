@@ -30,6 +30,12 @@ const CALENDAR_ADMIN_ROLES = ['calendar::admin'];
 // action and shouldn't rely on frontend button-hiding alone.
 const STUDENT_FINANCE_ROLES = ['student::admin', 'student::finance'];
 
+// Matches PgAISStudents.tsx's canCreateStudent gate -- bulk-creating
+// students is at least as sensitive as the single-create form, so it gets
+// the same backend-enforced check (the single-create POST /students route
+// itself predates this and is left as-is).
+const STUDENT_UPLOAD_ROLES = ['student::admin'];
+
 class AisRoute {
     
     router = Router();
@@ -78,6 +84,7 @@ class AisRoute {
       this.router.post('/students/mailgen', [verifyToken], this.controller.generateEmail);
       this.router.post('/students/pardon', [verifyToken, requireRole(STUDENT_FINANCE_ROLES)], this.controller.pardonStudent);
       this.router.post('/students', [verifyToken], this.controller.postStudent);
+      this.router.post('/students/upload', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadStudent);
       this.router.post('/students/publish', [verifyToken], this.controller.publishStudentTranscript);
       this.router.patch('/students/:id', [verifyToken], this.controller.updateStudent);
       this.router.delete('/students/:id', [verifyToken], this.controller.deleteStudent);
