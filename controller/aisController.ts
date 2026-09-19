@@ -3078,7 +3078,7 @@ export default class AisController {
    async fetchJobs(req: Request, res: Response) {
       const { page = 1, pageSize = 6, keyword = '' }: any = req.query;
       const offset = (page - 1) * pageSize;
-      let searchCondition = {}
+      let searchCondition: any = {}
       try {
          if (keyword) searchCondition = {
             where: {
@@ -3087,10 +3087,6 @@ export default class AisController {
                   { id: { contains: keyword } },
                ],
             },
-            include: {
-               level1: { select: { title: true, code: true } }
-            },
-
          }
          const resp = await ais.$transaction([
             ais.job.count({

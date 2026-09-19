@@ -3123,9 +3123,6 @@ class AisController {
                                 { id: { contains: keyword } },
                             ],
                         },
-                        include: {
-                            level1: { select: { title: true, code: true } }
-                        },
                     };
                 const resp = yield ais.$transaction([
                     ais.job.count(Object.assign({}, (searchCondition))),
