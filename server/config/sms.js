@@ -13,10 +13,8 @@ var axios = require('axios');
 module.exports = function (phone, msg, from) {
     return __awaiter(this, void 0, void 0, function* () {
         const data = {
-            //key : 'pgC2DPZTwdbe68qPkuo4G36bV', // Bulksmsgh
-            //key : 'B8pRALyxDgt4l5nRLOYVPoIm1', // Mnotify Kobby
-            key: 'TFkrdSQimG3aMBcBmCqaiwhsH', // Mnotify AUCC
-            from: from || 'AKATSICO',
+            key: process.env.UMS_SMS_KEY, // Mnotify AUCC
+            from: from || process.env.UMS_SENDERID,
             to: phone,
             content: msg,
         };
