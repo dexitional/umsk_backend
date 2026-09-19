@@ -4609,6 +4609,48 @@ export default class AisController {
       }
    }
 
+   // Edits a pending Exam Score batch's rows before it's committed. Mirrors
+   // updateBacklog's flat-form -> meta[] shape, narrowed to this module's
+   // fields (indexno, courseId, semesterNum, scoreType, scoreExam -- no
+   // classScore/scoreTotal/schemeId). Rejected once the batch is approved,
+   // since a committed batch's meta is the audit record of what was applied.
+   async updateExamScore(req: any, res: Response) {
+      try {
+         const existing = await ais.activityExam.findUnique({ where: { id: paramStr(req.params.id) } });
+         if (!existing) return res.status(202).json({ message: `No records found` });
+         if (existing.status) return res.status(400).json({ message: `Batch already committed -- pending batches only can be edited.` });
+
+         const { sessionId } = req.body;
+         let meta: any[] = [];
+         const metaNum = parseInt(req.body.metaNum);
+         if (metaNum)
+            for (let i = 1; i <= metaNum; i++) {
+               const indexno = req.body[`${i}_indexno`]?.trim();
+               const courseId = req.body[`${i}_courseId`];
+               const semesterNum = req.body[`${i}_semesterNum`];
+               const scoreType = req.body[`${i}_scoreType`];
+               const scoreExam = req.body[`${i}_scoreExam`] != '' ? parseFloat(req.body[`${i}_scoreExam`]) : null;
+               meta.push({ indexno, courseId, semesterNum: Number(semesterNum), scoreType, scoreExam })
+            }
+
+         const resp = await ais.activityExam.update({
+            where: { id: paramStr(req.params.id) },
+            data: {
+               meta,
+               ...sessionId && ({ session: { connect: { id: sessionId } } }),
+            },
+         })
+         if (resp) {
+            res.status(200).json({ success: true, data: resp })
+         } else {
+            res.status(202).json({ message: `No records found` })
+         }
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
    async postBacklog(req: any, res: Response) {
       try {
          const { sessionId, schemeId, type, userId } = req.body;

@@ -146,6 +146,7 @@ class AisRoute {
         this.router.get('/examscores/:id', [verifyToken], this.controller.fetchExamScore);
         this.router.post('/examscores/approve', [verifyToken], this.controller.approveExamScore);
         this.router.post('/examscores/upload', [verifyToken], this.controller.uploadExamScore);
+        this.router.patch('/examscores/:id', [verifyToken], this.controller.updateExamScore);
         /* Progression */
         this.router.get('/progression', [verifyToken], this.controller.fetchProgressions);
         this.router.get('/progression/:id', [verifyToken], this.controller.fetchProgression);
