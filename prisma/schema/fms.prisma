@@ -86,6 +86,26 @@ model charge {
   @@map("fms_charge")
 }
 
+// Opposite of charge -- credits (reduces) a student's account balance
+// instead of debiting it. Mirrors charge's shape exactly; the sign
+// difference is applied at the studentAccount.amount level, not here.
+model refund {
+  id        String       @id @default(uuid())
+  studentId String?
+  title     String
+  type      chargeGroup?
+  currency  currency     @default(GHC)
+  amount    Float
+  posted    Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  student        student?         @relation(fields: [studentId], references: [id])
+  studentAccount studentAccount[]
+
+  @@map("fms_refund")
+}
+
 model collector {
   id              String   @id @default(uuid())
   name            String   @db.VarChar(255)
@@ -158,6 +178,7 @@ model studentAccount {
   transactId String?
   sessionId  String?
   chargeId   String?
+  refundId   String?
   billId     String?
   type       transactType?
   narrative  String        @db.VarChar(255)
@@ -171,10 +192,12 @@ model studentAccount {
   transaction transaction? @relation(fields: [transactId], references: [id])
   session     session?     @relation(fields: [sessionId], references: [id])
   charge      charge?      @relation(fields: [chargeId], references: [id])
+  refund      refund?      @relation(fields: [refundId], references: [id])
   bill        bill?        @relation(fields: [billId], references: [id])
 
   @@index([billId])
   @@index([chargeId])
+  @@index([refundId])
   @@index([narrative])
   @@index([studentId])
   @@index([sessionId])

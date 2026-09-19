@@ -799,6 +799,168 @@ export default class FmsController {
    }
 
 
+   /* Refunds -- opposite of Charges: credits (reduces) a student's account
+      balance instead of debiting it. studentAccount.amount carries the sign
+      (there's no separate debit/credit column), so a refund writes a
+      negative amount, matching how postPayment already credits accounts,
+      rather than the positive amount a charge writes. */
+   async fetchRefunds(req: Request, res: Response) {
+      const { page = 1, pageSize = 9, keyword = '' }: any = req.query;
+      const offset = (page - 1) * pageSize;
+      let searchCondition = {}
+      try {
+         if (keyword) searchCondition = {
+            where: {
+               OR: [
+                  { id: { contains: keyword } },
+                  { title: { contains: keyword } },
+                  { student: { id: { contains: keyword } } },
+                  { student: { indexno: { contains: keyword } } },
+                  { student: { fname: { contains: keyword } } },
+                  { student: { lname: { contains: keyword } } },
+               ],
+            }
+         }
+         const resp = await fms.$transaction([
+            fms.refund.count({
+               ...(searchCondition),
+            }),
+            fms.refund.findMany({
+               ...(searchCondition),
+               include: { student: { include: { program: true } } },
+               skip: offset,
+               take: Number(pageSize),
+               orderBy: { createdAt: 'desc' }
+            })
+         ]);
+
+         if (resp && resp[1]?.length) {
+            res.status(200).json({
+               totalPages: Math.ceil(resp[0] / pageSize) ?? 0,
+               totalData: resp[1]?.length,
+               data: resp[1],
+            })
+         } else {
+            res.status(204).json({ message: `no records found` })
+         }
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   async fetchRefund(req: Request, res: Response) {
+      try {
+         const resp = await fms.refund.findUnique({
+            where: { id: paramStr(req.params.id) }
+         })
+         if (resp) {
+            res.status(200).json(resp)
+         } else {
+            res.status(204).json({ message: `no record found` })
+         }
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   async postRefund(req: Request, res: Response) {
+      try {
+         const { studentId } = req.body
+         delete req.body.studentId;
+         const resp = await fms.refund.create({
+            data: {
+               ...req.body,
+               ...studentId && ({ student: { connect: { id: studentId } } }),
+               studentAccount: {
+                  createMany: {
+                     data: [{
+                        studentId,
+                        narrative: req?.body?.title,
+                        amount: -1 * req?.body?.amount,
+                        type: 'REFUND',
+                        currency: req?.body?.currency,
+                     }]
+                  }
+               }
+            }
+         })
+         if (resp) {
+            // Retire Account
+            const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+            await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount } })
+            res.status(200).json(resp)
+         } else {
+            res.status(204).json({ message: `no records found` })
+         }
+
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   async updateRefund(req: Request, res: Response) {
+      try {
+         const { studentId } = req.body
+         delete req.body.studentId;
+
+         const resp = await fms.refund.update({
+            where: { id: paramStr(req.params.id) },
+            data: {
+               ...req.body,
+               ...studentId && ({ student: { connect: { id: studentId } } }),
+               studentAccount: {
+                  updateMany: {
+                     where: { refundId: paramStr(req.params.id) },
+                     data: {
+                        studentId,
+                        narrative: req?.body?.title,
+                        amount: -1 * req?.body?.amount,
+                        type: 'REFUND',
+                        currency: req?.body?.currency,
+                     }
+                  }
+               }
+            }
+         })
+         if (resp) {
+            // Retire Accounts
+            const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+            await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount } })
+            res.status(200).json(resp)
+         } else {
+            res.status(204).json({ message: `No records found` })
+         }
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   async deleteRefund(req: Request, res: Response) {
+      try {
+         const bs = await fms.refund.update({
+            where: { id: paramStr(req.params.id) },
+            data: { studentAccount: { deleteMany: { refundId: paramStr(req.params.id) } } }
+         })
+         if (bs) {
+            const { studentId }: any = bs;
+            const resp = await fms.refund.delete({ where: { id: paramStr(req.params.id) } })
+            const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+            await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount } })
+            res.status(200).json(resp)
+         } else {
+            res.status(204).json({ message: `No records deleted` })
+         }
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+
    /* Payments */
    async fetchPayments(req: Request, res: Response) {
       const { page = 1, pageSize = 9, keyword = '' }: any = req.query;

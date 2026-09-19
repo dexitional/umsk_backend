@@ -218,6 +218,7 @@ model student {
   transwift          transwift[]
   resit              resit[]
   charge             charge[]
+  refund             refund[]
   transaction        transaction[]
   studentAccount     studentAccount[]
   assessment         assessment[]

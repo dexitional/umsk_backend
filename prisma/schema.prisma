@@ -163,6 +163,7 @@ enum transactType {
   CHARGE
   BILL
   PAYMENT
+  REFUND
 }
 
 enum sessionMode {

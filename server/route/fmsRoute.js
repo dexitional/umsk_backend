@@ -15,6 +15,8 @@ const CHARGE_ADMIN_ROLES = ['charge::admin'];
 // "Fine Late" is triggered from the Student Accounts page (account::admin),
 // not a role held under the charges:: module tag.
 const CHARGE_LATE_ROLES = ['account::admin'];
+const REFUND_VIEW_ROLES = ['refund::admin', 'refund::clerk'];
+const REFUND_ADMIN_ROLES = ['refund::admin'];
 // Payments ("Fees Payments") and Other Payments ("Transacts") are two
 // different frontend modules/roles that both write through this same
 // backend surface (fetchPayment/postPayment/updatePayment/deletePayment,
@@ -56,6 +58,12 @@ class FmsRoute {
         this.router.post('/charges', requireRole(CHARGE_ADMIN_ROLES), this.controller.postCharge);
         this.router.patch('/charges/:id', requireRole(CHARGE_ADMIN_ROLES), this.controller.updateCharge);
         this.router.delete('/charges/:id', requireRole(CHARGE_ADMIN_ROLES), this.controller.deleteCharge);
+        /* Refunds */
+        this.router.get('/refunds', requireRole(REFUND_VIEW_ROLES), this.controller.fetchRefunds);
+        this.router.get('/refunds/:id', requireRole(REFUND_VIEW_ROLES), this.controller.fetchRefund);
+        this.router.post('/refunds', requireRole(REFUND_ADMIN_ROLES), this.controller.postRefund);
+        this.router.patch('/refunds/:id', requireRole(REFUND_ADMIN_ROLES), this.controller.updateRefund);
+        this.router.delete('/refunds/:id', requireRole(REFUND_ADMIN_ROLES), this.controller.deleteRefund);
         /* Payments */
         this.router.get('/payments', requireRole(PAYMENT_VIEW_ROLES), this.controller.fetchPayments);
         this.router.get('/payments/other', requireRole(PAYMENT_VIEW_ROLES), this.controller.fetchPaymentOthers);

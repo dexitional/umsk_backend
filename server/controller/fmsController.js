@@ -829,6 +829,168 @@ class FmsController {
             }
         });
     }
+    /* Refunds -- opposite of Charges: credits (reduces) a student's account
+       balance instead of debiting it. studentAccount.amount carries the sign
+       (there's no separate debit/credit column), so a refund writes a
+       negative amount, matching how postPayment already credits accounts,
+       rather than the positive amount a charge writes. */
+    fetchRefunds(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c;
+            const { page = 1, pageSize = 9, keyword = '' } = req.query;
+            const offset = (page - 1) * pageSize;
+            let searchCondition = {};
+            try {
+                if (keyword)
+                    searchCondition = {
+                        where: {
+                            OR: [
+                                { id: { contains: keyword } },
+                                { title: { contains: keyword } },
+                                { student: { id: { contains: keyword } } },
+                                { student: { indexno: { contains: keyword } } },
+                                { student: { fname: { contains: keyword } } },
+                                { student: { lname: { contains: keyword } } },
+                            ],
+                        }
+                    };
+                const resp = yield fms.$transaction([
+                    fms.refund.count(Object.assign({}, (searchCondition))),
+                    fms.refund.findMany(Object.assign(Object.assign({}, (searchCondition)), { include: { student: { include: { program: true } } }, skip: offset, take: Number(pageSize), orderBy: { createdAt: 'desc' } }))
+                ]);
+                if (resp && ((_a = resp[1]) === null || _a === void 0 ? void 0 : _a.length)) {
+                    res.status(200).json({
+                        totalPages: (_b = Math.ceil(resp[0] / pageSize)) !== null && _b !== void 0 ? _b : 0,
+                        totalData: (_c = resp[1]) === null || _c === void 0 ? void 0 : _c.length,
+                        data: resp[1],
+                    });
+                }
+                else {
+                    res.status(204).json({ message: `no records found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    fetchRefund(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resp = yield fms.refund.findUnique({
+                    where: { id: (0, paramStr_1.paramStr)(req.params.id) }
+                });
+                if (resp) {
+                    res.status(200).json(resp);
+                }
+                else {
+                    res.status(204).json({ message: `no record found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    postRefund(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c, _d;
+            try {
+                const { studentId } = req.body;
+                delete req.body.studentId;
+                const resp = yield fms.refund.create({
+                    data: Object.assign(Object.assign(Object.assign({}, req.body), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
+                            createMany: {
+                                data: [{
+                                        studentId,
+                                        narrative: (_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.title,
+                                        amount: -1 * ((_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.amount),
+                                        type: 'REFUND',
+                                        currency: (_c = req === null || req === void 0 ? void 0 : req.body) === null || _c === void 0 ? void 0 : _c.currency,
+                                    }]
+                            }
+                        } })
+                });
+                if (resp) {
+                    // Retire Account
+                    const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_d = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _d === void 0 ? void 0 : _d.amount } });
+                    res.status(200).json(resp);
+                }
+                else {
+                    res.status(204).json({ message: `no records found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    updateRefund(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c, _d;
+            try {
+                const { studentId } = req.body;
+                delete req.body.studentId;
+                const resp = yield fms.refund.update({
+                    where: { id: (0, paramStr_1.paramStr)(req.params.id) },
+                    data: Object.assign(Object.assign(Object.assign({}, req.body), studentId && ({ student: { connect: { id: studentId } } })), { studentAccount: {
+                            updateMany: {
+                                where: { refundId: (0, paramStr_1.paramStr)(req.params.id) },
+                                data: {
+                                    studentId,
+                                    narrative: (_a = req === null || req === void 0 ? void 0 : req.body) === null || _a === void 0 ? void 0 : _a.title,
+                                    amount: -1 * ((_b = req === null || req === void 0 ? void 0 : req.body) === null || _b === void 0 ? void 0 : _b.amount),
+                                    type: 'REFUND',
+                                    currency: (_c = req === null || req === void 0 ? void 0 : req.body) === null || _c === void 0 ? void 0 : _c.currency,
+                                }
+                            }
+                        } })
+                });
+                if (resp) {
+                    // Retire Accounts
+                    const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_d = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _d === void 0 ? void 0 : _d.amount } });
+                    res.status(200).json(resp);
+                }
+                else {
+                    res.status(204).json({ message: `No records found` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    deleteRefund(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            try {
+                const bs = yield fms.refund.update({
+                    where: { id: (0, paramStr_1.paramStr)(req.params.id) },
+                    data: { studentAccount: { deleteMany: { refundId: (0, paramStr_1.paramStr)(req.params.id) } } }
+                });
+                if (bs) {
+                    const { studentId } = bs;
+                    const resp = yield fms.refund.delete({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
+                    const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+                    yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_a = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _a === void 0 ? void 0 : _a.amount } });
+                    res.status(200).json(resp);
+                }
+                else {
+                    res.status(204).json({ message: `No records deleted` });
+                }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
     /* Payments */
     fetchPayments(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
