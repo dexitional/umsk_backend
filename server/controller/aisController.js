@@ -4341,18 +4341,20 @@ class AisController {
     // and no schemeId, since this never creates an assessment record, only
     // updates the examScore (and recomputed totalScore) on an existing one.
     // Stages a pending activityExam batch the same way uploadBacklog does;
-    // approveExamScore commits it.
+    // approveExamScore commits it. `tag` is a free-text label the uploader
+    // gives the batch (picked in the upload popup alongside the file), not
+    // part of the sheet itself.
     uploadExamScore(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             var _a;
             try {
-                const data = req.body;
+                const { tag, rows } = req.body;
                 let resp;
-                if (data === null || data === void 0 ? void 0 : data.length) {
+                if (rows === null || rows === void 0 ? void 0 : rows.length) {
                     const createdBy = req.userId;
-                    let sessionId = data[0].sessionId;
+                    let sessionId = rows[0].sessionId;
                     let meta = [];
-                    data === null || data === void 0 ? void 0 : data.map((row) => {
+                    rows === null || rows === void 0 ? void 0 : rows.map((row) => {
                         let { courseId, type, semesterNum, indexno, examScore } = row;
                         indexno = indexno.trim();
                         courseId = courseId.trim();
@@ -4362,7 +4364,7 @@ class AisController {
                         meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore });
                     });
                     resp = yield ais.activityExam.create({
-                        data: Object.assign(Object.assign({ title: `EXAM SCORE UPLOAD - ${(_a = (0, moment_1.default)().format('LLL')) === null || _a === void 0 ? void 0 : _a.toUpperCase()} - ${createdBy}`, meta }, createdBy && ({ creator: { connect: { staffNo: createdBy } } })), sessionId && ({ session: { connect: { id: sessionId } } })),
+                        data: Object.assign(Object.assign({ title: `EXAM SCORE UPLOAD - ${(_a = (0, moment_1.default)().format('LLL')) === null || _a === void 0 ? void 0 : _a.toUpperCase()} - ${createdBy}`, tag: (tag === null || tag === void 0 ? void 0 : tag.trim()) || null, meta }, createdBy && ({ creator: { connect: { staffNo: createdBy } } })), sessionId && ({ session: { connect: { id: sessionId } } })),
                     });
                 }
                 else

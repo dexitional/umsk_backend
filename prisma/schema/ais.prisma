@@ -421,6 +421,7 @@ model activityExam {
   id         String   @id @default(uuid())
   sessionId  String?
   title      String?
+  tag        String?
   meta       Json?
   status     Boolean  @default(false)
   approvedBy String?

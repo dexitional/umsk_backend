@@ -4365,17 +4365,19 @@ export default class AisController {
    // and no schemeId, since this never creates an assessment record, only
    // updates the examScore (and recomputed totalScore) on an existing one.
    // Stages a pending activityExam batch the same way uploadBacklog does;
-   // approveExamScore commits it.
+   // approveExamScore commits it. `tag` is a free-text label the uploader
+   // gives the batch (picked in the upload popup alongside the file), not
+   // part of the sheet itself.
    async uploadExamScore(req: any, res: Response) {
       try {
-         const data = req.body;
+         const { tag, rows } = req.body;
          let resp;
-         if (data?.length) {
+         if (rows?.length) {
             const createdBy: any = req.userId;
-            let sessionId = data[0].sessionId;
+            let sessionId = rows[0].sessionId;
             let meta: any = [];
 
-            data?.map((row: any) => {
+            rows?.map((row: any) => {
                let { courseId, type, semesterNum, indexno, examScore } = row;
                indexno = indexno.trim();
                courseId = courseId.trim();
@@ -4389,6 +4391,7 @@ export default class AisController {
             resp = await ais.activityExam.create({
                data: {
                   title: `EXAM SCORE UPLOAD - ${moment().format('LLL')?.toUpperCase()} - ${createdBy}`,
+                  tag: tag?.trim() || null,
                   meta,
                   ...createdBy && ({ creator: { connect: { staffNo: createdBy } } }),
                   ...sessionId && ({ session: { connect: { id: sessionId } } }),
