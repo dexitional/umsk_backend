@@ -64,25 +64,51 @@ export async function createGsuiteUser({
   email,
   password,
   firstName,
+  middleName,
   lastName,
   year,
-}: { email: string; password: string; firstName?: string; lastName?: string; year?: string | number }): Promise<GsuiteResult> {
+  phone,
+  personalEmail,
+  studentId,
+  indexno,
+  program,
+}: {
+  email: string; password: string; firstName?: string; middleName?: string; lastName?: string;
+  year?: string | number; phone?: string; personalEmail?: string; studentId?: string; indexno?: string; program?: string;
+}): Promise<GsuiteResult> {
   if (!isConfigured()) return { ok: false, skipped: true, error: 'GSuite integration not configured' };
   try {
     const directory = getDirectoryClient();
     const orgUnitPath = year
       ? await ensureStudentOrgUnit(directory, year)
       : (process.env.GSUITE_OU_PATH || '/Students');
+
+    // Biodata mapped onto the Directory API's native User fields --
+    // Google has no dedicated middle-name field, so it's folded into
+    // givenName (e.g. "Ebenezer Kwabena Blay"). studentId/indexno have no
+    // native field either, but externalIds ("organization"-typed, with a
+    // customType label) is exactly what it's for. Date of birth has no
+    // native or externalIds-style equivalent at all -- deliberately left
+    // out rather than stuffed into an unrelated field.
+    const externalIds = [
+      studentId && { type: 'custom', customType: 'Student ID', value: studentId },
+      indexno && { type: 'custom', customType: 'Index Number', value: indexno },
+    ].filter(Boolean);
+
     await directory.users.insert({
       requestBody: {
         primaryEmail: email,
         password,
         name: {
-          givenName: firstName || email.split('@')[0],
+          givenName: [firstName, middleName].filter(Boolean).join(' ') || email.split('@')[0],
           familyName: lastName || '.',
         },
         orgUnitPath,
         changePasswordAtNextLogin: false,
+        ...phone && { phones: [{ value: phone, type: 'mobile', primary: true }] },
+        ...personalEmail && personalEmail !== email && { emails: [{ address: personalEmail, type: 'home', primary: false }] },
+        ...externalIds.length && { externalIds },
+        ...program && { organizations: [{ department: program, primary: true, type: 'school' }] },
       },
     });
     return { ok: true };

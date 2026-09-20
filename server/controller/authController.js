@@ -27,7 +27,6 @@ const password_1 = require("../util/password");
 const path = require('path');
 const fs = require("fs");
 const sms = require("../config/sms");
-const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
 const gsuite_1 = require("../config/gsuite");
 const Auth = new authModel_1.default();
 class AuthController {
@@ -281,6 +280,14 @@ class AuthController {
                 const userByTag = yield sso.user.findFirst({ where: { tag } });
                 const isUser = userByTag && (0, password_1.verifyPassword)(userByTag.password, oldpassword) ? userByTag : null;
                 if (isUser) {
+                    // Alert and refuse rather than silently accepting a weak password
+                    // -- matches Google Workspace's own requirements, so a student's
+                    // portal password is never rejected when synced to their Google
+                    // account moments later.
+                    const strength = (0, password_1.isStrongPassword)(newpassword);
+                    if (!strength.ok) {
+                        return res.status(400).json({ message: strength.reason });
+                    }
                     const ups = yield sso.user.updateMany({
                         where: { tag },
                         data: { password: (0, password_1.hashPassword)(newpassword) }
@@ -324,7 +331,7 @@ class AuthController {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 let { tag, phone } = req.body;
-                const password = pwdgen();
+                const password = (0, password_1.generateStrongPassword)();
                 phone = phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
                 const user = yield sso.user.findFirst({ where: { OR: [{ tag }, { username: tag }] } });
                 if (user) {

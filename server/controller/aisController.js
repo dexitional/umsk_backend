@@ -1143,7 +1143,7 @@ class AisController {
             var _a;
             try {
                 const { studentId } = req.body;
-                const password = pwdgen();
+                const password = (0, password_1.generateStrongPassword)();
                 const isUser = yield ais.user.findFirst({ where: { tag: studentId } });
                 if (isUser)
                     throw ("Student Portal Account Exists!");
@@ -1187,7 +1187,7 @@ class AisController {
             var _a;
             try {
                 const { studentId } = req.body;
-                const password = pwdgen();
+                const password = (0, password_1.generateStrongPassword)();
                 const resp = yield ais.user.updateMany({
                     where: { tag: studentId },
                     // data: { password: sha1(password), unlockPin: password },
@@ -1339,12 +1339,12 @@ class AisController {
     }
     generateEmail(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a;
+            var _a, _b;
             try {
                 let count = 1;
                 let isNew = true;
                 const { studentId } = req.body;
-                const st = yield ais.student.findFirst({ where: { id: studentId } });
+                const st = yield ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
                 if (st === null || st === void 0 ? void 0 : st.instituteEmail) {
                     yield ais.user.updateMany({ where: { tag: studentId }, data: { username: st === null || st === void 0 ? void 0 : st.instituteEmail } });
                     throw ("mail already exists !");
@@ -1370,7 +1370,7 @@ class AisController {
                 // the only point where we have a plaintext password to hand to the
                 // new Google Workspace account below -- the portal only ever stores
                 // a hash, so there's nothing to "pipe in" otherwise.
-                const password = pwdgen();
+                const password = (0, password_1.generateStrongPassword)();
                 const resp = yield ais.student.update({ where: { id: studentId }, data: { instituteEmail } });
                 if (resp) {
                     // Update SSO User
@@ -1383,7 +1383,13 @@ class AisController {
                     // retryGsuiteSync) accounts that failed to provision.
                     try {
                         const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
-                        const gs = yield (0, gsuite_1.createGsuiteUser)({ email: instituteEmail, password, firstName: st === null || st === void 0 ? void 0 : st.fname, lastName: st === null || st === void 0 ? void 0 : st.lname, year: admissionYear });
+                        const gs = yield (0, gsuite_1.createGsuiteUser)({
+                            email: instituteEmail, password, year: admissionYear,
+                            firstName: st === null || st === void 0 ? void 0 : st.fname, middleName: st === null || st === void 0 ? void 0 : st.mname, lastName: st === null || st === void 0 ? void 0 : st.lname,
+                            phone: st === null || st === void 0 ? void 0 : st.phone, personalEmail: st === null || st === void 0 ? void 0 : st.email,
+                            studentId: st === null || st === void 0 ? void 0 : st.id, indexno: st === null || st === void 0 ? void 0 : st.indexno,
+                            program: (_b = st === null || st === void 0 ? void 0 : st.program) === null || _b === void 0 ? void 0 : _b.longName,
+                        });
                         if (gs.ok) {
                             yield ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
                             yield ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail } } });
@@ -1429,15 +1435,22 @@ class AisController {
     // resyncing its password instead.
     retryGsuiteSync(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             try {
                 const { studentId } = req.body;
-                const st = yield ais.student.findFirst({ where: { id: studentId } });
+                const st = yield ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
                 if (!(st === null || st === void 0 ? void 0 : st.instituteEmail))
                     return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
-                const password = pwdgen();
+                const password = (0, password_1.generateStrongPassword)();
                 yield ais.user.updateMany({ where: { tag: studentId }, data: { password: (0, password_1.hashPassword)(password) } });
                 const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
-                let gs = yield (0, gsuite_1.createGsuiteUser)({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname, year: admissionYear });
+                let gs = yield (0, gsuite_1.createGsuiteUser)({
+                    email: st.instituteEmail, password, year: admissionYear,
+                    firstName: st.fname, middleName: st.mname, lastName: st.lname,
+                    phone: st.phone, personalEmail: st.email,
+                    studentId: st.id, indexno: st.indexno,
+                    program: (_a = st === null || st === void 0 ? void 0 : st.program) === null || _a === void 0 ? void 0 : _a.longName,
+                });
                 if (!gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
                     gs = yield (0, gsuite_1.updateGsuitePassword)({ email: st.instituteEmail, password });
                 }

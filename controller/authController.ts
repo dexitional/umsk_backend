@@ -11,11 +11,10 @@ const jwt = require('jsonwebtoken');
 const { customAlphabet } = require("nanoid");
 const nanoid = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 8);
 const pin = customAlphabet("1234567890", 4);
-import { hashPassword, verifyPassword } from "../util/password";
+import { hashPassword, verifyPassword, generateStrongPassword, isStrongPassword } from "../util/password";
 const path = require('path');
 const fs = require("fs");
 const sms = require("../config/sms");
-const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
 import { updateGsuitePassword } from "../config/gsuite";
 const Auth = new AuthModel();
 export default class AuthController {
@@ -260,6 +259,14 @@ export default class AuthController {
       const userByTag = await sso.user.findFirst({ where: { tag } })
       const isUser = userByTag && verifyPassword(userByTag.password, oldpassword) ? userByTag : null;
       if (isUser) {
+        // Alert and refuse rather than silently accepting a weak password
+        // -- matches Google Workspace's own requirements, so a student's
+        // portal password is never rejected when synced to their Google
+        // account moments later.
+        const strength = isStrongPassword(newpassword);
+        if (!strength.ok) {
+          return res.status(400).json({ message: strength.reason });
+        }
         const ups = await sso.user.updateMany({
           where: { tag },
           data: { password: hashPassword(newpassword) }
@@ -299,7 +306,7 @@ export default class AuthController {
   async forgetPassword(req: Request, res: Response) {
     try {
       let { tag, phone } = req.body;
-      const password = pwdgen();
+      const password = generateStrongPassword();
       phone = phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
 
       const user = await sso.user.findFirst({ where: { OR: [{ tag }, { username: tag }] } });

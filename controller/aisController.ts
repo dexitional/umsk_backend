@@ -27,7 +27,7 @@ class BacklogRecordError extends Error {
     this.reason = reason;
   }
 }
-import { hashPassword } from "../util/password";
+import { hashPassword, generateStrongPassword } from "../util/password";
 const { customAlphabet } = require("nanoid");
 const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
 // unlockPin is a VarChar(4) column (a short quick-access PIN, distinct from
@@ -1103,7 +1103,7 @@ export default class AisController {
    async stageStudent(req: Request & any, res: Response) {
       try {
          const { studentId } = req.body
-         const password = pwdgen();
+         const password = generateStrongPassword();
          const isUser = await ais.user.findFirst({ where: { tag: studentId } })
          if (isUser) throw ("Student Portal Account Exists!")
          const ssoData = { tag: studentId, username: studentId, password: hashPassword(password), unlockPin: pin() }  // AKATSICO only
@@ -1147,7 +1147,7 @@ export default class AisController {
    async resetStudent(req: Request & any, res: Response) {
       try {
          const { studentId } = req.body;
-         const password = pwdgen();
+         const password = generateStrongPassword();
          const resp = await ais.user.updateMany({
             where: { tag: studentId },
             // data: { password: sha1(password), unlockPin: password },
@@ -1296,7 +1296,7 @@ export default class AisController {
          let count = 1;
          let isNew = true;
          const { studentId } = req.body;
-         const st = await ais.student.findFirst({ where: { id: studentId } });
+         const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
          if (st?.instituteEmail) {
             await ais.user.updateMany({ where: { tag: studentId }, data: { username: st?.instituteEmail } });
             throw ("mail already exists !");
@@ -1321,7 +1321,7 @@ export default class AisController {
          // the only point where we have a plaintext password to hand to the
          // new Google Workspace account below -- the portal only ever stores
          // a hash, so there's nothing to "pipe in" otherwise.
-         const password = pwdgen();
+         const password = generateStrongPassword();
          const resp = await ais.student.update({ where: { id: studentId }, data: { instituteEmail } });
          if (resp) {
             // Update SSO User
@@ -1335,7 +1335,13 @@ export default class AisController {
             // retryGsuiteSync) accounts that failed to provision.
             try {
                const admissionYear = (st?.entryDate ? moment(st.entryDate) : moment()).format('YYYY');
-               const gs = await createGsuiteUser({ email: instituteEmail, password, firstName: st?.fname, lastName: st?.lname, year: admissionYear });
+               const gs = await createGsuiteUser({
+                  email: instituteEmail, password, year: admissionYear,
+                  firstName: st?.fname, middleName: st?.mname, lastName: st?.lname,
+                  phone: st?.phone, personalEmail: st?.email,
+                  studentId: st?.id, indexno: st?.indexno,
+                  program: st?.program?.longName,
+               });
                if (gs.ok) {
                   await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
                   await ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: req?.userId, meta: { instituteEmail } } });
@@ -1379,14 +1385,20 @@ export default class AisController {
    async retryGsuiteSync(req: Request & any, res: Response) {
       try {
          const { studentId } = req.body;
-         const st = await ais.student.findFirst({ where: { id: studentId } });
+         const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
          if (!st?.instituteEmail) return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
 
-         const password = pwdgen();
+         const password = generateStrongPassword();
          await ais.user.updateMany({ where: { tag: studentId }, data: { password: hashPassword(password) } });
 
          const admissionYear = (st?.entryDate ? moment(st.entryDate) : moment()).format('YYYY');
-         let gs = await createGsuiteUser({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname, year: admissionYear });
+         let gs = await createGsuiteUser({
+            email: st.instituteEmail, password, year: admissionYear,
+            firstName: st.fname, middleName: st.mname, lastName: st.lname,
+            phone: st.phone, personalEmail: st.email,
+            studentId: st.id, indexno: st.indexno,
+            program: st?.program?.longName,
+         });
          if (!gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
             gs = await updateGsuitePassword({ email: st.instituteEmail, password });
          }

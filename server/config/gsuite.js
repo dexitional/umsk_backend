@@ -71,7 +71,7 @@ function ensureStudentOrgUnit(directory, year) {
     });
 }
 function createGsuiteUser(_a) {
-    return __awaiter(this, arguments, void 0, function* ({ email, password, firstName, lastName, year, }) {
+    return __awaiter(this, arguments, void 0, function* ({ email, password, firstName, middleName, lastName, year, phone, personalEmail, studentId, indexno, program, }) {
         var _b, _c, _d;
         if (!isConfigured())
             return { ok: false, skipped: true, error: 'GSuite integration not configured' };
@@ -80,17 +80,22 @@ function createGsuiteUser(_a) {
             const orgUnitPath = year
                 ? yield ensureStudentOrgUnit(directory, year)
                 : (process.env.GSUITE_OU_PATH || '/Students');
+            // Biodata mapped onto the Directory API's native User fields --
+            // Google has no dedicated middle-name field, so it's folded into
+            // givenName (e.g. "Ebenezer Kwabena Blay"). studentId/indexno have no
+            // native field either, but externalIds ("organization"-typed, with a
+            // customType label) is exactly what it's for. Date of birth has no
+            // native or externalIds-style equivalent at all -- deliberately left
+            // out rather than stuffed into an unrelated field.
+            const externalIds = [
+                studentId && { type: 'custom', customType: 'Student ID', value: studentId },
+                indexno && { type: 'custom', customType: 'Index Number', value: indexno },
+            ].filter(Boolean);
             yield directory.users.insert({
-                requestBody: {
-                    primaryEmail: email,
-                    password,
-                    name: {
-                        givenName: firstName || email.split('@')[0],
+                requestBody: Object.assign(Object.assign(Object.assign(Object.assign({ primaryEmail: email, password, name: {
+                        givenName: [firstName, middleName].filter(Boolean).join(' ') || email.split('@')[0],
                         familyName: lastName || '.',
-                    },
-                    orgUnitPath,
-                    changePasswordAtNextLogin: false,
-                },
+                    }, orgUnitPath, changePasswordAtNextLogin: false }, phone && { phones: [{ value: phone, type: 'mobile', primary: true }] }), personalEmail && personalEmail !== email && { emails: [{ address: personalEmail, type: 'home', primary: false }] }), externalIds.length && { externalIds }), program && { organizations: [{ department: program, primary: true, type: 'school' }] }),
             });
             return { ok: true };
         }
