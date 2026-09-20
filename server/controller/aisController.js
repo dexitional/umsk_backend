@@ -1349,7 +1349,11 @@ class AisController {
                     yield ais.user.updateMany({ where: { tag: studentId }, data: { username: st === null || st === void 0 ? void 0 : st.instituteEmail } });
                     throw ("mail already exists !");
                 }
-                let username = `${(_a = st === null || st === void 0 ? void 0 : st.fname) === null || _a === void 0 ? void 0 : _a.replaceAll(' ', '')}.${st === null || st === void 0 ? void 0 : st.lname}`.toLowerCase();
+                // Username = initials of fname + initials of every word in mname +
+                // full lname -- e.g. fname "Ebenezer", mname "Kwabena Blay", lname
+                // "Ackah" -> "ekbackah".
+                const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('');
+                let username = `${initials(st === null || st === void 0 ? void 0 : st.fname)}${initials(st === null || st === void 0 ? void 0 : st.mname)}${(_a = st === null || st === void 0 ? void 0 : st.lname) === null || _a === void 0 ? void 0 : _a.replaceAll(' ', '')}`.toLowerCase();
                 while (isNew) {
                     const ck = yield ais.student.findFirst({ where: { instituteEmail: { startsWith: `${username}${count > 1 ? count : ''}` } } });
                     if (ck)
@@ -1357,8 +1361,10 @@ class AisController {
                     else
                         isNew = false;
                 }
-                // Update Student Email
-                const instituteEmail = `${username}@${process.env.UMS_MAIL}`;
+                // Update Student Email -- append the collision-avoidance count from
+                // the loop above (previously computed but never actually used,
+                // silently letting two students land on the exact same email).
+                const instituteEmail = `${username}${count > 1 ? count : ''}@${process.env.UMS_MAIL}`;
                 // A fresh password is issued here (rather than leaving the portal
                 // password untouched, as this endpoint previously did) because it's
                 // the only point where we have a plaintext password to hand to the

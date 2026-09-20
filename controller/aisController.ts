@@ -1301,15 +1301,21 @@ export default class AisController {
             await ais.user.updateMany({ where: { tag: studentId }, data: { username: st?.instituteEmail } });
             throw ("mail already exists !");
          }
-         let username = `${st?.fname?.replaceAll(' ', '')}.${st?.lname}`.toLowerCase();
+         // Username = initials of fname + initials of every word in mname +
+         // full lname -- e.g. fname "Ebenezer", mname "Kwabena Blay", lname
+         // "Ackah" -> "ekbackah".
+         const initials = (name?: string | null) => (name || '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('');
+         let username = `${initials(st?.fname)}${initials(st?.mname)}${st?.lname?.replaceAll(' ', '')}`.toLowerCase();
 
          while (isNew) {
             const ck = await ais.student.findFirst({ where: { instituteEmail: { startsWith: `${username}${count > 1 ? count : ''}` } } });
             if (ck) count = count + 1;
             else isNew = false;
          }
-         // Update Student Email
-         const instituteEmail = `${username}@${process.env.UMS_MAIL}`;
+         // Update Student Email -- append the collision-avoidance count from
+         // the loop above (previously computed but never actually used,
+         // silently letting two students land on the exact same email).
+         const instituteEmail = `${username}${count > 1 ? count : ''}@${process.env.UMS_MAIL}`;
          // A fresh password is issued here (rather than leaving the portal
          // password untouched, as this endpoint previously did) because it's
          // the only point where we have a plaintext password to hand to the
