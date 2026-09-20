@@ -1328,7 +1328,8 @@ export default class AisController {
             // gsuiteSynced/gsuiteSyncedAt let staff see (and retry, via
             // retryGsuiteSync) accounts that failed to provision.
             try {
-               const gs = await createGsuiteUser({ email: instituteEmail, password, firstName: st?.fname, lastName: st?.lname });
+               const admissionYear = (st?.entryDate ? moment(st.entryDate) : moment()).format('YYYY');
+               const gs = await createGsuiteUser({ email: instituteEmail, password, firstName: st?.fname, lastName: st?.lname, year: admissionYear });
                if (gs.ok) {
                   await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
                   await ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: req?.userId, meta: { instituteEmail } } });
@@ -1378,7 +1379,8 @@ export default class AisController {
          const password = pwdgen();
          await ais.user.updateMany({ where: { tag: studentId }, data: { password: hashPassword(password) } });
 
-         let gs = await createGsuiteUser({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname });
+         const admissionYear = (st?.entryDate ? moment(st.entryDate) : moment()).format('YYYY');
+         let gs = await createGsuiteUser({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname, year: admissionYear });
          if (!gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
             gs = await updateGsuitePassword({ email: st.instituteEmail, password });
          }

@@ -7,8 +7,8 @@
 // given to the GSuite admin (GCP Console: enable Admin SDK API, create the
 // service account, download its JSON key; Workspace Admin Console: Security
 // > API Controls > Domain-wide Delegation, authorize the service account's
-// Client ID for the https://www.googleapis.com/auth/admin.directory.user
-// scope).
+// Client ID for the admin.directory.user and admin.directory.orgunit scopes
+// below).
 //
 // Until GSUITE_SERVICE_ACCOUNT_KEY_JSON and GSUITE_ADMIN_EMAIL are set in
 // .env, every call here is a no-op (returns { skipped: true }) rather than
@@ -27,7 +27,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createGsuiteUser = createGsuiteUser;
 exports.updateGsuitePassword = updateGsuitePassword;
 const { google } = require('googleapis');
-const SCOPES = ['https://www.googleapis.com/auth/admin.directory.user'];
+const SCOPES = [
+    'https://www.googleapis.com/auth/admin.directory.user',
+    'https://www.googleapis.com/auth/admin.directory.orgunit',
+];
 function isConfigured() {
     return !!(process.env.GSUITE_SERVICE_ACCOUNT_KEY_JSON && process.env.GSUITE_ADMIN_EMAIL);
 }
@@ -41,13 +44,42 @@ function getDirectoryClient() {
     });
     return google.admin({ version: 'directory_v1', auth: jwtClient });
 }
+// Students are organized one sub-OU per admission year under the base OU
+// (e.g. /Students/2025), mirroring this Workspace's existing /admitted_2024
+// convention. Creates the year sub-OU on demand if it doesn't exist yet --
+// confirmed via orgunits.get/insert directly against the live directory:
+// orgUnitPath is passed WITHOUT a leading slash to .get(), a missing OU
+// 404s with "Org unit not found", and .insert() takes the child's bare
+// `name` plus its `parentOrgUnitPath`.
+function ensureStudentOrgUnit(directory, year) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a;
+        const base = process.env.GSUITE_OU_PATH || '/Students';
+        const orgUnitPath = `${base}/${year}`;
+        try {
+            yield directory.orgunits.get({ customerId: 'my_customer', orgUnitPath: orgUnitPath.replace(/^\//, '') });
+        }
+        catch (error) {
+            if (((_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.status) !== 404)
+                throw error;
+            yield directory.orgunits.insert({
+                customerId: 'my_customer',
+                requestBody: { name: String(year), parentOrgUnitPath: base },
+            });
+        }
+        return orgUnitPath;
+    });
+}
 function createGsuiteUser(_a) {
-    return __awaiter(this, arguments, void 0, function* ({ email, password, firstName, lastName, }) {
+    return __awaiter(this, arguments, void 0, function* ({ email, password, firstName, lastName, year, }) {
         var _b, _c, _d;
         if (!isConfigured())
             return { ok: false, skipped: true, error: 'GSuite integration not configured' };
         try {
             const directory = getDirectoryClient();
+            const orgUnitPath = year
+                ? yield ensureStudentOrgUnit(directory, year)
+                : (process.env.GSUITE_OU_PATH || '/Students');
             yield directory.users.insert({
                 requestBody: {
                     primaryEmail: email,
@@ -56,7 +88,7 @@ function createGsuiteUser(_a) {
                         givenName: firstName || email.split('@')[0],
                         familyName: lastName || '.',
                     },
-                    orgUnitPath: process.env.GSUITE_OU_PATH || '/Students',
+                    orgUnitPath,
                     changePasswordAtNextLogin: false,
                 },
             });

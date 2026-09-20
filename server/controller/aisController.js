@@ -1376,7 +1376,8 @@ class AisController {
                     // gsuiteSynced/gsuiteSyncedAt let staff see (and retry, via
                     // retryGsuiteSync) accounts that failed to provision.
                     try {
-                        const gs = yield (0, gsuite_1.createGsuiteUser)({ email: instituteEmail, password, firstName: st === null || st === void 0 ? void 0 : st.fname, lastName: st === null || st === void 0 ? void 0 : st.lname });
+                        const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
+                        const gs = yield (0, gsuite_1.createGsuiteUser)({ email: instituteEmail, password, firstName: st === null || st === void 0 ? void 0 : st.fname, lastName: st === null || st === void 0 ? void 0 : st.lname, year: admissionYear });
                         if (gs.ok) {
                             yield ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
                             yield ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail } } });
@@ -1429,7 +1430,8 @@ class AisController {
                     return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
                 const password = pwdgen();
                 yield ais.user.updateMany({ where: { tag: studentId }, data: { password: (0, password_1.hashPassword)(password) } });
-                let gs = yield (0, gsuite_1.createGsuiteUser)({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname });
+                const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
+                let gs = yield (0, gsuite_1.createGsuiteUser)({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname, year: admissionYear });
                 if (!gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
                     gs = yield (0, gsuite_1.updateGsuitePassword)({ email: st.instituteEmail, password });
                 }
