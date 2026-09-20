@@ -28,6 +28,7 @@ const path = require('path');
 const fs = require("fs");
 const sms = require("../config/sms");
 const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
+const gsuite_1 = require("../config/gsuite");
 const Auth = new authModel_1.default();
 class AuthController {
     authenticateWithCredential(req, res) {
@@ -284,9 +285,29 @@ class AuthController {
                         where: { tag },
                         data: { password: (0, password_1.hashPassword)(newpassword) }
                     });
+                    // Keep the student's Google Workspace account password in sync too
+                    // -- best-effort, never blocks an already-successful password change.
+                    if ((isUser === null || isUser === void 0 ? void 0 : isUser.groupId) == 1) {
+                        const st = yield sso.student.findFirst({ where: { id: tag } });
+                        if (st === null || st === void 0 ? void 0 : st.instituteEmail) {
+                            try {
+                                const gs = yield (0, gsuite_1.updateGsuitePassword)({ email: st.instituteEmail, password: newpassword });
+                                if (gs.ok) {
+                                    yield sso.student.update({ where: { id: tag }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+                                }
+                                else if (!gs.skipped) {
+                                    yield sso.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: tag, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+                                    console.log('changePassword GSuite password sync failed:', gs.error);
+                                }
+                            }
+                            catch (gsError) {
+                                console.log('changePassword GSuite password sync threw:', gsError === null || gsError === void 0 ? void 0 : gsError.message);
+                            }
+                        }
+                    }
                     // Log Login Response
                     yield sso.log.create({ data: Object.assign({ action: `USER_PASSWORD_CHANGED`, user: tag, meta: req.body }, (isUser === null || isUser === void 0 ? void 0 : isUser.groupId) == 1 && ({ student: tag })) });
-                    // Response  
+                    // Response
                     res.status(200).json(ups);
                 }
                 else {
@@ -320,6 +341,23 @@ class AuthController {
                     const ups = yield sso.user.updateMany({
                         where: { tag: user.tag }, data: { password: (0, password_1.hashPassword)(password) }
                     });
+                    // Keep the student's Google Workspace account password in sync too
+                    // -- best-effort, never blocks an already-successful password reset.
+                    if ((user === null || user === void 0 ? void 0 : user.groupId) == 1 && (st === null || st === void 0 ? void 0 : st.instituteEmail)) {
+                        try {
+                            const gs = yield (0, gsuite_1.updateGsuitePassword)({ email: st.instituteEmail, password });
+                            if (gs.ok) {
+                                yield sso.student.update({ where: { id: st.id }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+                            }
+                            else if (!gs.skipped) {
+                                yield sso.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: tag, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+                                console.log('forgetPassword GSuite password sync failed:', gs.error);
+                            }
+                        }
+                        catch (gsError) {
+                            console.log('forgetPassword GSuite password sync threw:', gsError === null || gsError === void 0 ? void 0 : gsError.message);
+                        }
+                    }
                     // Send Password By SMS
                     if (st === null || st === void 0 ? void 0 : st.phone)
                         yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${st === null || st === void 0 ? void 0 : st.instituteEmail}, password: ${password}`);

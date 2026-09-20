@@ -35,6 +35,7 @@ const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
 const pin = customAlphabet("1234567890", 4);
 const sms = require('../config/sms');
 const ExcelJS = require('exceljs');
+import { createGsuiteUser, updateGsuitePassword } from '../config/gsuite';
 
 // Students who have no ais_activity_register row for this session — the
 // same "unregistered" semantics as the loadDashboard stats block below,
@@ -1154,11 +1155,30 @@ export default class AisController {
             include: true
          })
          if (resp?.count) {
+            const st = await ais.student.findFirst({ where: { id: studentId } });
+
+            // Keep the Google Workspace account's password in sync too --
+            // only if this student actually has one (instituteEmail set).
+            // Best-effort: never blocks or fails an already-successful
+            // portal password reset.
+            if (st?.instituteEmail) {
+               try {
+                  const gs = await updateGsuitePassword({ email: st.instituteEmail, password });
+                  if (gs.ok) {
+                     await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+                  } else if (!gs.skipped) {
+                     await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+                     console.log('resetStudent GSuite password sync failed:', gs.error)
+                  }
+               } catch (gsError: any) {
+                  console.log('resetStudent GSuite password sync threw:', gsError?.message)
+               }
+            }
+
             // Send Password By SMS — normalized the same way forgetPassword
             // does (authController.ts), and isolated in its own try/catch:
             // a gateway hiccup shouldn't turn an already-successful password
             // change into a 500 with no visibility into what actually failed.
-            const st = await ais.student.findFirst({ where: { id: studentId } });
             if (st?.phone) {
                const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
                try {
@@ -1290,18 +1310,96 @@ export default class AisController {
          }
          // Update Student Email
          const instituteEmail = `${username}@${process.env.UMS_MAIL}`;
+         // A fresh password is issued here (rather than leaving the portal
+         // password untouched, as this endpoint previously did) because it's
+         // the only point where we have a plaintext password to hand to the
+         // new Google Workspace account below -- the portal only ever stores
+         // a hash, so there's nothing to "pipe in" otherwise.
+         const password = pwdgen();
          const resp = await ais.student.update({ where: { id: studentId }, data: { instituteEmail } });
          if (resp) {
             // Update SSO User
-            await ais.user.updateMany({ where: { tag: studentId }, data: { username: instituteEmail } });
+            await ais.user.updateMany({ where: { tag: studentId }, data: { username: instituteEmail, password: hashPassword(password) } });
             // Log Login Response
             await ais.log.create({ data: { action: `STUDENT_EMAIL_GENERATED`, user: req?.userId, meta: { instituteEmail } } })
+
+            // Provision the Google Workspace account -- best-effort: this
+            // never blocks or fails the email-generation response itself.
+            // gsuiteSynced/gsuiteSyncedAt let staff see (and retry, via
+            // retryGsuiteSync) accounts that failed to provision.
+            try {
+               const gs = await createGsuiteUser({ email: instituteEmail, password, firstName: st?.fname, lastName: st?.lname });
+               if (gs.ok) {
+                  await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+                  await ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: req?.userId, meta: { instituteEmail } } });
+               } else if (!gs.skipped) {
+                  await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req?.userId, meta: { instituteEmail, error: gs.error } } });
+                  console.log('generateEmail GSuite provisioning failed:', gs.error)
+               }
+            } catch (gsError: any) {
+               console.log('generateEmail GSuite provisioning threw:', gsError?.message)
+            }
+
+            // Send Credentials By SMS — isolated in its own try/catch (matching
+            // stageStudent/resetStudent): a gateway hiccup shouldn't turn an
+            // already-successful email generation into a 500.
+            if (st?.phone) {
+               try {
+                  await sms(st.phone, `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`)
+               } catch (smsError: any) {
+                  console.log('generateEmail SMS send failed:', smsError?.message)
+               }
+            }
             // Return Response
             res.status(200).json(resp)
          } else {
             res.status(202).json({ message: `no records found` })
          }
 
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: 'Internal server error' })
+      }
+   }
+
+   // Manual retry for a student whose Google Workspace account failed to
+   // provision or fell out of sync (gsuiteSynced: false with an
+   // instituteEmail already set) -- e.g. after a Google API outage. Issues
+   // a fresh password (same reasoning as generateEmail: only plaintext we
+   // have to give Google is one minted right now) and tries to create the
+   // account; if Google reports it already exists, falls back to just
+   // resyncing its password instead.
+   async retryGsuiteSync(req: Request & any, res: Response) {
+      try {
+         const { studentId } = req.body;
+         const st = await ais.student.findFirst({ where: { id: studentId } });
+         if (!st?.instituteEmail) return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
+
+         const password = pwdgen();
+         await ais.user.updateMany({ where: { tag: studentId }, data: { password: hashPassword(password) } });
+
+         let gs = await createGsuiteUser({ email: st.instituteEmail, password, firstName: st.fname, lastName: st.lname });
+         if (!gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
+            gs = await updateGsuitePassword({ email: st.instituteEmail, password });
+         }
+
+         if (gs.ok) {
+            await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+            if (st?.phone) {
+               try {
+                  await sms(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`)
+               } catch (smsError: any) {
+                  console.log('retryGsuiteSync SMS send failed:', smsError?.message)
+               }
+            }
+            await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail } } });
+            return res.status(200).json({ success: true });
+         } else if (gs.skipped) {
+            return res.status(202).json({ message: `GSuite integration is not configured yet.` });
+         } else {
+            await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+            return res.status(500).json({ message: gs.error || 'GSuite sync failed' });
+         }
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: 'Internal server error' })

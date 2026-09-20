@@ -74,6 +74,7 @@ class AisRoute {
         this.router.post('/students/photo', [verifyToken], this.controller.changePhoto);
         this.router.post('/students/indexgen', [verifyToken], this.controller.generateIndex);
         this.router.post('/students/mailgen', [verifyToken], this.controller.generateEmail);
+        this.router.post('/students/gsuite-retry', [verifyToken], this.controller.retryGsuiteSync);
         this.router.post('/students/pardon', [verifyToken, requireRole(STUDENT_FINANCE_ROLES)], this.controller.pardonStudent);
         this.router.post('/students', [verifyToken], this.controller.postStudent);
         this.router.post('/students/upload', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadStudent);

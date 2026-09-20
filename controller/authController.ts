@@ -16,6 +16,7 @@ const path = require('path');
 const fs = require("fs");
 const sms = require("../config/sms");
 const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
+import { updateGsuitePassword } from "../config/gsuite";
 const Auth = new AuthModel();
 export default class AuthController {
 
@@ -263,9 +264,27 @@ export default class AuthController {
           where: { tag },
           data: { password: hashPassword(newpassword) }
         })
+        // Keep the student's Google Workspace account password in sync too
+        // -- best-effort, never blocks an already-successful password change.
+        if (isUser?.groupId == 1) {
+          const st = await sso.student.findFirst({ where: { id: tag } });
+          if (st?.instituteEmail) {
+            try {
+              const gs = await updateGsuitePassword({ email: st.instituteEmail, password: newpassword });
+              if (gs.ok) {
+                await sso.student.update({ where: { id: tag }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+              } else if (!gs.skipped) {
+                await sso.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: tag, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+                console.log('changePassword GSuite password sync failed:', gs.error)
+              }
+            } catch (gsError: any) {
+              console.log('changePassword GSuite password sync threw:', gsError?.message)
+            }
+          }
+        }
         // Log Login Response
         await sso.log.create({ data: { action: `USER_PASSWORD_CHANGED`, user: tag, meta: req.body, ...isUser?.groupId == 1 && ({ student: tag }) } })
-        // Response  
+        // Response
         res.status(200).json(ups)
       } else {
         res.status(202).json({ message: `Wrong password provided!` })
@@ -298,6 +317,21 @@ export default class AuthController {
         const ups = await sso.user.updateMany({
           where: { tag: user.tag }, data: { password: hashPassword(password) }
         })
+        // Keep the student's Google Workspace account password in sync too
+        // -- best-effort, never blocks an already-successful password reset.
+        if (user?.groupId == 1 && st?.instituteEmail) {
+          try {
+            const gs = await updateGsuitePassword({ email: st.instituteEmail, password });
+            if (gs.ok) {
+              await sso.student.update({ where: { id: (st as any).id }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+            } else if (!gs.skipped) {
+              await sso.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: tag, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+              console.log('forgetPassword GSuite password sync failed:', gs.error)
+            }
+          } catch (gsError: any) {
+            console.log('forgetPassword GSuite password sync threw:', gsError?.message)
+          }
+        }
         // Send Password By SMS
         if (st?.phone) await sms(st?.phone, `Hi! Your new credentials is username: ${st?.instituteEmail}, password: ${password}`)
         // Log Login Response

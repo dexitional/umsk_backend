@@ -201,6 +201,8 @@ model student {
   instituteAffliate String?            @db.VarChar(350)
   flagPardon        Boolean            @default(false)
   accountNet        Float?             @default(0) @db.Float
+  gsuiteSynced      Boolean            @default(false)
+  gsuiteSyncedAt    DateTime?
 
   title       title?      @relation(fields: [titleId], references: [id])
   nationality country?    @relation("studentNationality", fields: [nationalityId], references: [id])

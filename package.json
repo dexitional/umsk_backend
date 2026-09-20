@@ -26,6 +26,7 @@
     "exceljs": "^3.4.0",
     "express": "^5.2.1",
     "express-fileupload": "^1.4.0",
+    "googleapis": "^181.0.0",
     "helmet": "^7.0.0",
     "jimp": "^1.6.1",
     "jsonwebtoken": "^9.0.1",
