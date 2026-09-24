@@ -2190,7 +2190,7 @@ export default class AisController {
          }
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ message: friendlyDbError(error) })
       }
    }
 
