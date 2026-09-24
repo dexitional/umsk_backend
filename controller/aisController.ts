@@ -82,6 +82,117 @@ async function unresolvedResitStudentsForSession(trailSessionId: string) {
    return uniqueStudents;
 }
 
+// Core of the stageStudent route handler below -- module-level like the
+// helpers above, since it's also called directly from uploadStudent and
+// `this.` inside a detached route handler is undefined.
+// `sendSms` is skipped when called from the bulk upload pipeline (see
+// uploadStudent) since generateStudentEmail runs right after and sends
+// its own SMS with the real institute email -- sending this one first
+// would text a username (the bare studentId) that's overwritten a moment
+// later, misleading the student.
+async function stageStudentAccess(studentId: string, userId?: string, sendSms: boolean = true) {
+   const password = generateStrongPassword();
+   const isUser = await ais.user.findFirst({ where: { tag: studentId } })
+   if (isUser) throw new Error("Student Portal Account Exists!")
+   const ssoData = { tag: studentId, username: studentId, password: hashPassword(password), unlockPin: pin() }  // AKATSICO only
+   // Populate SSO Account
+   const resp = await ais.user.create({
+      data: {
+         ...ssoData,
+         group: { connect: { id: 1 } },
+      },
+   })
+   if (sendSms) {
+      const st = await ais.student.findFirst({ where: { id: studentId } });
+      if (st?.phone) {
+         try {
+            await sms(st.phone, `Hi! Your new credentials is username: ${st?.instituteEmail ?? studentId}, password: ${password}`)
+         } catch (smsError: any) {
+            console.log('stageStudentAccess SMS send failed:', smsError?.message)
+         }
+      }
+   }
+   // Log Login Response
+   await ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, meta: ssoData } })
+   return resp;
+}
+
+// Core of the generateEmail route handler below -- see stageStudentAccess
+// above for why this is a module-level function.
+async function generateStudentEmail(studentId: string, userId?: string, sendSms: boolean = true) {
+   let count = 1;
+   let isNew = true;
+   const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
+   if (st?.instituteEmail) {
+      await ais.user.updateMany({ where: { tag: studentId }, data: { username: st?.instituteEmail } });
+      throw new Error("mail already exists !");
+   }
+   // Username = initials of fname + initials of every word in mname +
+   // full lname -- e.g. fname "Ebenezer", mname "Kwabena Blay", lname
+   // "Ackah" -> "ekbackah".
+   const initials = (name?: string | null) => (name || '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('');
+   let username = `${initials(st?.fname)}${initials(st?.mname)}${st?.lname?.replaceAll(' ', '')}`.toLowerCase();
+
+   while (isNew) {
+      const ck = await ais.student.findFirst({ where: { instituteEmail: { startsWith: `${username}${count > 1 ? count : ''}` } } });
+      if (ck) count = count + 1;
+      else isNew = false;
+   }
+   // Update Student Email -- append the collision-avoidance count from
+   // the loop above (previously computed but never actually used,
+   // silently letting two students land on the exact same email).
+   const instituteEmail = `${username}${count > 1 ? count : ''}@${process.env.UMS_MAIL}`;
+   // A fresh password is issued here (rather than leaving the portal
+   // password untouched, as this endpoint previously did) because it's
+   // the only point where we have a plaintext password to hand to the
+   // new Google Workspace account below -- the portal only ever stores
+   // a hash, so there's nothing to "pipe in" otherwise.
+   const password = generateStrongPassword();
+   const resp = await ais.student.update({ where: { id: studentId }, data: { instituteEmail } });
+   if (resp) {
+      // Update SSO User
+      await ais.user.updateMany({ where: { tag: studentId }, data: { username: instituteEmail, password: hashPassword(password) } });
+      // Log Login Response
+      await ais.log.create({ data: { action: `STUDENT_EMAIL_GENERATED`, user: userId, meta: { instituteEmail } } })
+
+      // Provision the Google Workspace account -- best-effort: this
+      // never blocks or fails the email-generation response itself.
+      // gsuiteSynced/gsuiteSyncedAt let staff see (and retry, via
+      // retryGsuiteSync) accounts that failed to provision.
+      try {
+         const admissionYear = (st?.entryDate ? moment(st.entryDate) : moment()).format('YYYY');
+         const gs = await createGsuiteUser({
+            email: instituteEmail, password, year: admissionYear,
+            firstName: st?.fname, middleName: st?.mname, lastName: st?.lname,
+            phone: st?.phone, personalEmail: st?.email,
+            studentId: st?.id, indexno: st?.indexno,
+            program: st?.program?.longName,
+         });
+         if (gs.ok) {
+            await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+            await ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: userId, meta: { instituteEmail } } });
+         } else if (!gs.skipped) {
+            await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: userId, meta: { instituteEmail, error: gs.error } } });
+            console.log('generateStudentEmail GSuite provisioning failed:', gs.error)
+         }
+      } catch (gsError: any) {
+         console.log('generateStudentEmail GSuite provisioning threw:', gsError?.message)
+      }
+
+      // Send Credentials By SMS — isolated in its own try/catch (matching
+      // stageStudentAccess/resetStudent): a gateway hiccup shouldn't turn
+      // an already-successful email generation into a 500.
+      if (sendSms && st?.phone) {
+         try {
+            await sms(st.phone, `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`)
+         } catch (smsError: any) {
+            console.log('generateStudentEmail SMS send failed:', smsError?.message)
+         }
+      }
+   }
+   return resp;
+}
+
 export default class AisController {
 
    async fetchTest(req: Request, res: Response) {
@@ -1103,34 +1214,8 @@ export default class AisController {
    async stageStudent(req: Request & any, res: Response) {
       try {
          const { studentId } = req.body
-         const password = generateStrongPassword();
-         const isUser = await ais.user.findFirst({ where: { tag: studentId } })
-         if (isUser) throw ("Student Portal Account Exists!")
-         const ssoData = { tag: studentId, username: studentId, password: hashPassword(password), unlockPin: pin() }  // AKATSICO only
-         //   const ssoData = { tag:studentId, username:studentId, password:sha1(password), unlockPin: password }  // MLK & Others
-         // Populate SSO Account
-         const resp = await ais.user.create({
-            data: {
-               ...ssoData,
-               group: { connect: { id: 1 } },
-            },
-         })
+         const resp = await stageStudentAccess(studentId, req?.userId);
          if (resp) {
-            // Send Credentials By SMS — isolated in its own try/catch (matching
-            // resetStudent below): a gateway hiccup shouldn't turn an
-            // already-successful account creation into a 500 with no visibility
-            // into what actually failed.
-            const st = await ais.student.findFirst({ where: { id: studentId } });
-            if (st?.phone) {
-               try {
-                  await sms(st.phone, `Hi! Your new credentials is username: ${st?.instituteEmail ?? studentId}, password: ${password}`)
-               } catch (smsError: any) {
-                  console.log('stageStudent SMS send failed:', smsError?.message)
-               }
-            }
-            // Log Login Response
-            await ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: req?.userId, meta: ssoData } })
-            // Return Response
             res.status(200).json(resp)
          } else {
             res.status(202).json({ message: `no records found` })
@@ -1148,52 +1233,58 @@ export default class AisController {
       try {
          const { studentId } = req.body;
          const password = generateStrongPassword();
-         const resp = await ais.user.updateMany({
-            where: { tag: studentId },
-            // data: { password: sha1(password), unlockPin: password },
-            data: { password: hashPassword(password) },
-            include: true
-         })
-         if (resp?.count) {
-            const st = await ais.student.findFirst({ where: { id: studentId } });
+         const st = await ais.student.findFirst({ where: { id: studentId } });
 
-            // Keep the Google Workspace account's password in sync too --
-            // only if this student actually has one (instituteEmail set).
-            // Best-effort: never blocks or fails an already-successful
-            // portal password reset.
-            if (st?.instituteEmail) {
-               try {
-                  const gs = await updateGsuitePassword({ email: st.instituteEmail, password });
-                  if (gs.ok) {
-                     await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
-                  } else if (!gs.skipped) {
-                     await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
-                     console.log('resetStudent GSuite password sync failed:', gs.error)
-                  }
-               } catch (gsError: any) {
-                  console.log('resetStudent GSuite password sync threw:', gsError?.message)
-               }
-            }
-
-            // Send Password By SMS — normalized the same way forgetPassword
-            // does (authController.ts), and isolated in its own try/catch:
-            // a gateway hiccup shouldn't turn an already-successful password
-            // change into a 500 with no visibility into what actually failed.
-            if (st?.phone) {
-               const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-               try {
-                  await sms(phone, `Hi! Your new credentials is username: ${st?.instituteEmail ?? studentId}, password: ${password}`)
-               } catch (smsError: any) {
-                  console.log('resetStudent SMS send failed:', smsError?.message)
-               }
-            }
-            // Log Login Response
-            await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, meta: { password: hashPassword(password) } } })
-            // Return Password
-            res.status(200).json({ password })
+         // Some students have an instituteEmail (and even a synced GSuite
+         // account) without ever getting a portal login row -- e.g. Generate
+         // Student Email was clicked without Stage Student Access first, or
+         // data predates that guarantee. updateMany silently matches zero
+         // rows in that case, which used to report success with an
+         // undefined password. Reset now guarantees a working login either
+         // way: create the missing account instead of no-op'ing.
+         const existingUser = await ais.user.findFirst({ where: { tag: studentId } });
+         if (existingUser) {
+            await ais.user.update({ where: { id: existingUser.id }, data: { password: hashPassword(password) } });
          } else {
-            res.status(202).json({ message: `no records found` })
+            await ais.user.create({
+               data: { tag: studentId, username: st?.instituteEmail || studentId, password: hashPassword(password), unlockPin: pin(), group: { connect: { id: 1 } } },
+            });
          }
+
+         // Keep the Google Workspace account's password in sync too --
+         // only if this student actually has one (instituteEmail set).
+         // Best-effort: never blocks or fails an already-successful
+         // portal password reset.
+         if (st?.instituteEmail) {
+            try {
+               const gs = await updateGsuitePassword({ email: st.instituteEmail, password });
+               if (gs.ok) {
+                  await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+               } else if (!gs.skipped) {
+                  await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
+                  console.log('resetStudent GSuite password sync failed:', gs.error)
+               }
+            } catch (gsError: any) {
+               console.log('resetStudent GSuite password sync threw:', gsError?.message)
+            }
+         }
+
+         // Send Password By SMS — normalized the same way forgetPassword
+         // does (authController.ts), and isolated in its own try/catch:
+         // a gateway hiccup shouldn't turn an already-successful password
+         // change into a 500 with no visibility into what actually failed.
+         if (st?.phone) {
+            const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+            try {
+               await sms(phone, `Hi! Your new credentials is username: ${st?.instituteEmail ?? studentId}, password: ${password}`)
+            } catch (smsError: any) {
+               console.log('resetStudent SMS send failed:', smsError?.message)
+            }
+         }
+         // Log Login Response
+         await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, meta: { password: hashPassword(password) } } })
+         // Return Password
+         res.status(200).json({ password })
 
       } catch (error: any) {
          console.log(error)
@@ -1293,77 +1384,9 @@ export default class AisController {
 
    async generateEmail(req: Request & any, res: Response) {
       try {
-         let count = 1;
-         let isNew = true;
          const { studentId } = req.body;
-         const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
-         if (st?.instituteEmail) {
-            await ais.user.updateMany({ where: { tag: studentId }, data: { username: st?.instituteEmail } });
-            throw ("mail already exists !");
-         }
-         // Username = initials of fname + initials of every word in mname +
-         // full lname -- e.g. fname "Ebenezer", mname "Kwabena Blay", lname
-         // "Ackah" -> "ekbackah".
-         const initials = (name?: string | null) => (name || '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('');
-         let username = `${initials(st?.fname)}${initials(st?.mname)}${st?.lname?.replaceAll(' ', '')}`.toLowerCase();
-
-         while (isNew) {
-            const ck = await ais.student.findFirst({ where: { instituteEmail: { startsWith: `${username}${count > 1 ? count : ''}` } } });
-            if (ck) count = count + 1;
-            else isNew = false;
-         }
-         // Update Student Email -- append the collision-avoidance count from
-         // the loop above (previously computed but never actually used,
-         // silently letting two students land on the exact same email).
-         const instituteEmail = `${username}${count > 1 ? count : ''}@${process.env.UMS_MAIL}`;
-         // A fresh password is issued here (rather than leaving the portal
-         // password untouched, as this endpoint previously did) because it's
-         // the only point where we have a plaintext password to hand to the
-         // new Google Workspace account below -- the portal only ever stores
-         // a hash, so there's nothing to "pipe in" otherwise.
-         const password = generateStrongPassword();
-         const resp = await ais.student.update({ where: { id: studentId }, data: { instituteEmail } });
+         const resp = await generateStudentEmail(studentId, req?.userId);
          if (resp) {
-            // Update SSO User
-            await ais.user.updateMany({ where: { tag: studentId }, data: { username: instituteEmail, password: hashPassword(password) } });
-            // Log Login Response
-            await ais.log.create({ data: { action: `STUDENT_EMAIL_GENERATED`, user: req?.userId, meta: { instituteEmail } } })
-
-            // Provision the Google Workspace account -- best-effort: this
-            // never blocks or fails the email-generation response itself.
-            // gsuiteSynced/gsuiteSyncedAt let staff see (and retry, via
-            // retryGsuiteSync) accounts that failed to provision.
-            try {
-               const admissionYear = (st?.entryDate ? moment(st.entryDate) : moment()).format('YYYY');
-               const gs = await createGsuiteUser({
-                  email: instituteEmail, password, year: admissionYear,
-                  firstName: st?.fname, middleName: st?.mname, lastName: st?.lname,
-                  phone: st?.phone, personalEmail: st?.email,
-                  studentId: st?.id, indexno: st?.indexno,
-                  program: st?.program?.longName,
-               });
-               if (gs.ok) {
-                  await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
-                  await ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: req?.userId, meta: { instituteEmail } } });
-               } else if (!gs.skipped) {
-                  await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req?.userId, meta: { instituteEmail, error: gs.error } } });
-                  console.log('generateEmail GSuite provisioning failed:', gs.error)
-               }
-            } catch (gsError: any) {
-               console.log('generateEmail GSuite provisioning threw:', gsError?.message)
-            }
-
-            // Send Credentials By SMS — isolated in its own try/catch (matching
-            // stageStudent/resetStudent): a gateway hiccup shouldn't turn an
-            // already-successful email generation into a 500.
-            if (st?.phone) {
-               try {
-                  await sms(st.phone, `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`)
-               } catch (smsError: any) {
-                  console.log('generateEmail SMS send failed:', smsError?.message)
-               }
-            }
-            // Return Response
             res.status(200).json(resp)
          } else {
             res.status(202).json({ message: `no records found` })
@@ -1594,7 +1617,29 @@ export default class AisController {
             return created;
          });
 
-         res.status(200).json({ success: true, count: resp.length, data: resp });
+         // Auto-provision portal access + institute email (and, through it,
+         // the Google Workspace account) for every newly created student --
+         // mirrors the "Stage Account" then "Generate Email" buttons on
+         // AISAccountCard, so an uploaded student is immediately usable
+         // instead of needing 2 manual clicks each. Run outside the DB
+         // transaction above (these calls touch SMS/Google APIs, not just
+         // the database) and per-student, so one student's failure here
+         // can't undo another's already-committed account -- staff can
+         // finish provisioning any listed failures manually via that
+         // student's Account tab.
+         const provisioned: string[] = [];
+         const provisionErrors: { id: string; reason: string }[] = [];
+         for (const s of resp) {
+            try {
+               await stageStudentAccess(s.id, createdBy, false);
+               await generateStudentEmail(s.id, createdBy);
+               provisioned.push(s.id);
+            } catch (provisionError: any) {
+               provisionErrors.push({ id: s.id, reason: provisionError?.message || 'Failed to stage account / generate email' });
+            }
+         }
+
+         res.status(200).json({ success: true, count: resp.length, data: resp, provisioned: provisioned.length, provisionErrors });
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
