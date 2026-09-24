@@ -1223,7 +1223,11 @@ export default class AisController {
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
+         // stageStudentAccess throws a specific, user-facing reason (e.g.
+         // "Student Portal Account Exists!") -- surface it instead of
+         // masking it behind a generic message, matching postStudent and
+         // most other handlers in this file.
+         return res.status(500).json({ message: error.message || 'Internal server error' })
       }
    }
 
@@ -1288,7 +1292,7 @@ export default class AisController {
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
+         return res.status(500).json({ message: error.message || 'Internal server error' })
       }
    }
 
@@ -1394,7 +1398,9 @@ export default class AisController {
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
+         // generateStudentEmail throws a specific, user-facing reason (e.g.
+         // "mail already exists !") -- surface it instead of masking it.
+         return res.status(500).json({ message: error.message || 'Internal server error' })
       }
    }
 
@@ -1500,7 +1506,9 @@ export default class AisController {
                ...regionId && ({ region: { connect: { id: regionId } } }),
                ...religionId && ({ religion: { connect: { id: religionId } } }),
                ...disabilityId && ({ disability: { connect: { id: disabilityId } } }),
-               ...majorId && majorId == 'NONE' && ({ major: { disconnect: true } }),
+               // A new student has no prior major to disconnect -- `disconnect`
+               // is only valid on update(), not create(). "No major selected"
+               // just means the relation is left unset here.
                ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
             }
          })
@@ -1516,7 +1524,6 @@ export default class AisController {
                      ...regionId && ({ region: { connect: { id: regionId } } }),
                      ...religionId && ({ religion: { connect: { id: religionId } } }),
                      ...disabilityId && ({ disability: { connect: { id: disabilityId } } }),
-                     ...majorId && majorId == 'NONE' && ({ major: { disconnect: true } }),
                      ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
                   }
                }
@@ -2295,16 +2302,22 @@ export default class AisController {
             //       session: { default: true }
             //    },
             // });
-            resp = await ais.assessment.findMany({
-               include: {
-                  course: { select: { title: true, creditHour: true } },
-                  session: { select: { title: true } },
-               },
-               where: {
-                  indexno: st?.indexno,
-                  sessionId: session?.id
-               },
-            });
+            // Skip the query entirely when the student has no index number
+            // yet (e.g. before "Generate Index Number") -- Prisma rejects a
+            // bare `null` for a scalar filter, and a student with no index
+            // number can't have any assessment records tied to one anyway.
+            if (st?.indexno) {
+               resp = await ais.assessment.findMany({
+                  include: {
+                     course: { select: { title: true, creditHour: true } },
+                     session: { select: { title: true } },
+                  },
+                  where: {
+                     indexno: st.indexno,
+                     sessionId: session?.id
+                  },
+               });
+            }
          }
 
          // Resit Courses
@@ -2394,13 +2407,17 @@ export default class AisController {
                   })
             }
          }
-         // Get Resit Courses
-         const resitcourses: any = await ais.resit.findMany({
+         // Get Resit Courses -- skip the query entirely when the student
+         // has no index number yet (e.g. a freshly bulk-uploaded student
+         // before "Generate Index Number"): Prisma rejects a bare `null`
+         // for a scalar filter, and a student with no index number can't
+         // have any resit records tied to one anyway.
+         const resitcourses: any = indexno ? await ais.resit.findMany({
             include: { course: { select: { title: true, creditHour: true } } },
             where: {
                indexno, taken: false, trailSession: { semester: session?.semesterNum },
             }
-         })
+         }) : []
          if (student && resitcourses.length) {
             for (const course of resitcourses) {
                const isAdded = courses.find((c: any) => c.code == course.courseId);
@@ -7061,7 +7078,7 @@ export default class AisController {
          if (resp && resp[1]?.length) {
             console.log('Evals: ', resp);
             res.status(200).json({
-               totalPages: Math.ceil(resp[0] / pageSize) || 0,
+               totalPages: Math.ceil(resp[0].length / pageSize) || 0,
                totalData: resp[1]?.length,
                data: resp[1]
             });

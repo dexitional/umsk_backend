@@ -1268,7 +1268,11 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
+                // stageStudentAccess throws a specific, user-facing reason (e.g.
+                // "Student Portal Account Exists!") -- surface it instead of
+                // masking it behind a generic message, matching postStudent and
+                // most other handlers in this file.
+                return res.status(500).json({ message: error.message || 'Internal server error' });
             }
         });
     }
@@ -1334,7 +1338,7 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
+                return res.status(500).json({ message: error.message || 'Internal server error' });
             }
         });
     }
@@ -1446,7 +1450,9 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
+                // generateStudentEmail throws a specific, user-facing reason (e.g.
+                // "mail already exists !") -- surface it instead of masking it.
+                return res.status(500).json({ message: error.message || 'Internal server error' });
             }
         });
     }
@@ -1552,13 +1558,13 @@ class AisController {
                 if (req.body.dob)
                     req.body.dob = new Date(req.body.dob);
                 const resp = yield ais.student.create({
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
                 });
                 if (resp) {
                     // Log Login Response
                     yield ais.log.create({
                         data: {
-                            action: `STUDENT_CREATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
+                            action: `STUDENT_CREATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
                         }
                     });
                     // Return Response
@@ -2340,16 +2346,22 @@ class AisController {
                     //       session: { default: true }
                     //    },
                     // });
-                    resp = yield ais.assessment.findMany({
-                        include: {
-                            course: { select: { title: true, creditHour: true } },
-                            session: { select: { title: true } },
-                        },
-                        where: {
-                            indexno: st === null || st === void 0 ? void 0 : st.indexno,
-                            sessionId: session === null || session === void 0 ? void 0 : session.id
-                        },
-                    });
+                    // Skip the query entirely when the student has no index number
+                    // yet (e.g. before "Generate Index Number") -- Prisma rejects a
+                    // bare `null` for a scalar filter, and a student with no index
+                    // number can't have any assessment records tied to one anyway.
+                    if (st === null || st === void 0 ? void 0 : st.indexno) {
+                        resp = yield ais.assessment.findMany({
+                            include: {
+                                course: { select: { title: true, creditHour: true } },
+                                session: { select: { title: true } },
+                            },
+                            where: {
+                                indexno: st.indexno,
+                                sessionId: session === null || session === void 0 ? void 0 : session.id
+                            },
+                        });
+                    }
                 }
                 // Resit Courses
                 const resits = yield ais.resit.findMany({
@@ -2425,13 +2437,17 @@ class AisController {
                             courses.push(Object.assign({ code: course.courseId, course: (_a = course === null || course === void 0 ? void 0 : course.course) === null || _a === void 0 ? void 0 : _a.title, credit: (_b = course === null || course === void 0 ? void 0 : course.course) === null || _b === void 0 ? void 0 : _b.creditHour, type: course === null || course === void 0 ? void 0 : course.type, lock: course === null || course === void 0 ? void 0 : course.lock, sessionId: session === null || session === void 0 ? void 0 : session.id, schemeId: (_c = student === null || student === void 0 ? void 0 : student.program) === null || _c === void 0 ? void 0 : _c.schemeId, semesterNum: student === null || student === void 0 ? void 0 : student.semesterNum, indexno }, course.majorId && ({ major: (_d = course === null || course === void 0 ? void 0 : course.major) === null || _d === void 0 ? void 0 : _d.shortName })));
                     }
                 }
-                // Get Resit Courses
-                const resitcourses = yield ais.resit.findMany({
+                // Get Resit Courses -- skip the query entirely when the student
+                // has no index number yet (e.g. a freshly bulk-uploaded student
+                // before "Generate Index Number"): Prisma rejects a bare `null`
+                // for a scalar filter, and a student with no index number can't
+                // have any resit records tied to one anyway.
+                const resitcourses = indexno ? yield ais.resit.findMany({
                     include: { course: { select: { title: true, creditHour: true } } },
                     where: {
                         indexno, taken: false, trailSession: { semester: session === null || session === void 0 ? void 0 : session.semesterNum },
                     }
-                });
+                }) : [];
                 if (student && resitcourses.length) {
                     for (const course of resitcourses) {
                         const isAdded = courses.find((c) => c.code == course.courseId);
@@ -7022,7 +7038,7 @@ class AisController {
                 if (resp && ((_a = resp[1]) === null || _a === void 0 ? void 0 : _a.length)) {
                     console.log('Evals: ', resp);
                     res.status(200).json({
-                        totalPages: Math.ceil(resp[0] / pageSize) || 0,
+                        totalPages: Math.ceil(resp[0].length / pageSize) || 0,
                         totalData: (_b = resp[1]) === null || _b === void 0 ? void 0 : _b.length,
                         data: resp[1]
                     });
