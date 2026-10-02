@@ -1595,10 +1595,12 @@ class AisController {
                     return res.status(202).json({ message: `no records found` });
                 const missingId = [];
                 const duplicateInSheet = [];
+                const duplicateIndexInSheet = [];
                 const seenIds = new Set();
+                const seenIndexnos = new Set();
                 const students = [];
                 rows.forEach((row, i) => {
-                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
+                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3;
                     const id = (_b = (_a = row.ApplicantID) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim();
                     if (!id) {
                         missingId.push(`row ${i + 1}`);
@@ -1609,30 +1611,41 @@ class AisController {
                         return;
                     }
                     seenIds.add(id);
+                    // indexno is unique on ais_student; blank -> null (not yet issued).
+                    const indexno = ((_d = (_c = row.indexno) === null || _c === void 0 ? void 0 : _c.toString()) === null || _d === void 0 ? void 0 : _d.trim()) || null;
+                    if (indexno) {
+                        if (seenIndexnos.has(indexno))
+                            duplicateIndexInSheet.push(indexno);
+                        seenIndexnos.add(indexno);
+                    }
                     const yearGroup = row.yearGroup != null && row.yearGroup !== '' ? Number(row.yearGroup) : null;
                     const semesterNum = yearGroup ? (yearGroup - 1) * 2 + 1 : null;
                     students.push({
                         id,
-                        fname: ((_d = (_c = row.fname) === null || _c === void 0 ? void 0 : _c.toString()) === null || _d === void 0 ? void 0 : _d.trim()) || null,
-                        mname: ((_f = (_e = row.mname) === null || _e === void 0 ? void 0 : _e.toString()) === null || _f === void 0 ? void 0 : _f.trim()) || null,
-                        lname: ((_h = (_g = row.lname) === null || _g === void 0 ? void 0 : _g.toString()) === null || _h === void 0 ? void 0 : _h.trim()) || null,
+                        indexno,
+                        fname: ((_f = (_e = row.fname) === null || _e === void 0 ? void 0 : _e.toString()) === null || _f === void 0 ? void 0 : _f.trim()) || null,
+                        mname: ((_h = (_g = row.mname) === null || _g === void 0 ? void 0 : _g.toString()) === null || _h === void 0 ? void 0 : _h.trim()) || null,
+                        lname: ((_k = (_j = row.lname) === null || _j === void 0 ? void 0 : _j.toString()) === null || _k === void 0 ? void 0 : _k.trim()) || null,
                         dob: row.dob ? new Date(row.dob) : null,
                         semesterNum,
-                        gender: ((_k = (_j = row.gender) === null || _j === void 0 ? void 0 : _j.toString()) === null || _k === void 0 ? void 0 : _k.trim()) || null,
-                        email: ((_m = (_l = row.email) === null || _l === void 0 ? void 0 : _l.toString()) === null || _m === void 0 ? void 0 : _m.trim()) || null,
-                        phone: ((_p = (_o = row.phone) === null || _o === void 0 ? void 0 : _o.toString()) === null || _p === void 0 ? void 0 : _p.trim()) || null,
-                        address: ((_r = (_q = row.address) === null || _q === void 0 ? void 0 : _q.toString()) === null || _r === void 0 ? void 0 : _r.trim()) || null,
-                        hometown: ((_t = (_s = row.hometown) === null || _s === void 0 ? void 0 : _s.toString()) === null || _t === void 0 ? void 0 : _t.trim()) || null,
-                        programId: ((_v = (_u = row.programId) === null || _u === void 0 ? void 0 : _u.toString()) === null || _v === void 0 ? void 0 : _v.trim()) || null,
-                        majorId: ((_x = (_w = row.majorId) === null || _w === void 0 ? void 0 : _w.toString()) === null || _x === void 0 ? void 0 : _x.trim()) || null,
+                        gender: ((_m = (_l = row.gender) === null || _l === void 0 ? void 0 : _l.toString()) === null || _m === void 0 ? void 0 : _m.trim()) || null,
+                        email: ((_p = (_o = row.email) === null || _o === void 0 ? void 0 : _o.toString()) === null || _p === void 0 ? void 0 : _p.trim()) || null,
+                        phone: ((_r = (_q = row.phone) === null || _q === void 0 ? void 0 : _q.toString()) === null || _r === void 0 ? void 0 : _r.trim()) || null,
+                        address: ((_t = (_s = row.address) === null || _s === void 0 ? void 0 : _s.toString()) === null || _t === void 0 ? void 0 : _t.trim()) || null,
+                        hometown: ((_v = (_u = row.hometown) === null || _u === void 0 ? void 0 : _u.toString()) === null || _v === void 0 ? void 0 : _v.trim()) || null,
+                        programId: ((_x = (_w = row.programId) === null || _w === void 0 ? void 0 : _w.toString()) === null || _x === void 0 ? void 0 : _x.trim()) || null,
+                        majorId: ((_z = (_y = row.majorId) === null || _y === void 0 ? void 0 : _y.toString()) === null || _z === void 0 ? void 0 : _z.trim()) || null,
+                        // Either header spelling maps to the student's hall.
+                        instituteAffliate: ((_3 = (_2 = ((_1 = (_0 = row.HALL) !== null && _0 !== void 0 ? _0 : row['HALL OF AFFILIATION']) !== null && _1 !== void 0 ? _1 : row.instituteAffliate)) === null || _2 === void 0 ? void 0 : _2.toString()) === null || _3 === void 0 ? void 0 : _3.trim()) || null,
                     });
                 });
-                if (missingId.length || duplicateInSheet.length) {
+                if (missingId.length || duplicateInSheet.length || duplicateIndexInSheet.length) {
                     return res.status(400).json({
-                        message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}.` : ''}`,
+                        message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}. ` : ''}${duplicateIndexInSheet.length ? `Duplicate index number within the uploaded sheet: ${duplicateIndexInSheet.join(', ')}.` : ''}`,
                         errors: [
                             ...missingId.map((r) => ({ id: r, reason: 'ApplicantID is required' })),
                             ...duplicateInSheet.map((id) => ({ id, reason: 'Duplicate ApplicantID within the uploaded sheet' })),
+                            ...duplicateIndexInSheet.map((id) => ({ id, reason: 'Duplicate index number within the uploaded sheet' })),
                         ],
                     });
                 }
@@ -1644,6 +1657,18 @@ class AisController {
                         failedCount: ids.length,
                         totalCount: students.length,
                         errors: ids.map((id) => ({ id, reason: 'ApplicantID already exists' })),
+                    });
+                }
+                // Index numbers already held by another student would fail the
+                // unique constraint mid-transaction -- reject up front instead.
+                const indexnos = students.map((s) => s.indexno).filter(Boolean);
+                const takenIndex = indexnos.length ? yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { id: true, indexno: true } }) : [];
+                if (takenIndex.length) {
+                    return res.status(400).json({
+                        message: `Upload rejected: ${takenIndex.length} index number(s) already belong to existing students: ${takenIndex.map((s) => s.indexno).join(', ')}.`,
+                        failedCount: takenIndex.length,
+                        totalCount: students.length,
+                        errors: takenIndex.map((s) => ({ id: s.indexno, reason: `Index number already used by student ${s.id}` })),
                     });
                 }
                 const createdBy = req.userId;
@@ -1660,7 +1685,9 @@ class AisController {
                     }
                     yield tx.log.create({ data: { action: `STUDENT_BULK_UPLOAD`, user: createdBy, meta: { count: created.length, ids: created.map((c) => c.id) } } });
                     return created;
-                }));
+                    // Prisma's default 5s interactive-transaction timeout is too short
+                    // for a full cohort (1,000+ inserts); give large uploads room.
+                }), { maxWait: 10000, timeout: 300000 });
                 // Auto-provision portal access + institute email (and, through it,
                 // the Google Workspace account) for every newly created student --
                 // mirrors the "Stage Account" then "Generate Email" buttons on

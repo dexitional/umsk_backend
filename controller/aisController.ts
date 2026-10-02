@@ -1554,7 +1554,9 @@ export default class AisController {
 
          const missingId: string[] = [];
          const duplicateInSheet: string[] = [];
+         const duplicateIndexInSheet: string[] = [];
          const seenIds = new Set<string>();
+         const seenIndexnos = new Set<string>();
          const students: any[] = [];
 
          rows.forEach((row: any, i: number) => {
@@ -1563,11 +1565,19 @@ export default class AisController {
             if (seenIds.has(id)) { duplicateInSheet.push(id); return; }
             seenIds.add(id);
 
+            // indexno is unique on ais_student; blank -> null (not yet issued).
+            const indexno = row.indexno?.toString()?.trim() || null;
+            if (indexno) {
+               if (seenIndexnos.has(indexno)) duplicateIndexInSheet.push(indexno);
+               seenIndexnos.add(indexno);
+            }
+
             const yearGroup = row.yearGroup != null && row.yearGroup !== '' ? Number(row.yearGroup) : null;
             const semesterNum = yearGroup ? (yearGroup - 1) * 2 + 1 : null;
 
             students.push({
                id,
+               indexno,
                fname: row.fname?.toString()?.trim() || null,
                mname: row.mname?.toString()?.trim() || null,
                lname: row.lname?.toString()?.trim() || null,
@@ -1580,15 +1590,18 @@ export default class AisController {
                hometown: row.hometown?.toString()?.trim() || null,
                programId: row.programId?.toString()?.trim() || null,
                majorId: row.majorId?.toString()?.trim() || null,
+               // Either header spelling maps to the student's hall.
+               instituteAffliate: (row.HALL ?? row['HALL OF AFFILIATION'] ?? row.instituteAffliate)?.toString()?.trim() || null,
             });
          });
 
-         if (missingId.length || duplicateInSheet.length) {
+         if (missingId.length || duplicateInSheet.length || duplicateIndexInSheet.length) {
             return res.status(400).json({
-               message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}.` : ''}`,
+               message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}. ` : ''}${duplicateIndexInSheet.length ? `Duplicate index number within the uploaded sheet: ${duplicateIndexInSheet.join(', ')}.` : ''}`,
                errors: [
                   ...missingId.map((r) => ({ id: r, reason: 'ApplicantID is required' })),
                   ...duplicateInSheet.map((id) => ({ id, reason: 'Duplicate ApplicantID within the uploaded sheet' })),
+                  ...duplicateIndexInSheet.map((id) => ({ id, reason: 'Duplicate index number within the uploaded sheet' })),
                ],
             });
          }
@@ -1601,6 +1614,19 @@ export default class AisController {
                failedCount: ids.length,
                totalCount: students.length,
                errors: ids.map((id: any) => ({ id, reason: 'ApplicantID already exists' })),
+            });
+         }
+
+         // Index numbers already held by another student would fail the
+         // unique constraint mid-transaction -- reject up front instead.
+         const indexnos = students.map((s) => s.indexno).filter(Boolean);
+         const takenIndex = indexnos.length ? await ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { id: true, indexno: true } }) : [];
+         if (takenIndex.length) {
+            return res.status(400).json({
+               message: `Upload rejected: ${takenIndex.length} index number(s) already belong to existing students: ${takenIndex.map((s: any) => s.indexno).join(', ')}.`,
+               failedCount: takenIndex.length,
+               totalCount: students.length,
+               errors: takenIndex.map((s: any) => ({ id: s.indexno, reason: `Index number already used by student ${s.id}` })),
             });
          }
 
@@ -1622,7 +1648,9 @@ export default class AisController {
             }
             await tx.log.create({ data: { action: `STUDENT_BULK_UPLOAD`, user: createdBy, meta: { count: created.length, ids: created.map((c: any) => c.id) } } });
             return created;
-         });
+            // Prisma's default 5s interactive-transaction timeout is too short
+            // for a full cohort (1,000+ inserts); give large uploads room.
+         }, { maxWait: 10000, timeout: 300000 });
 
          // Auto-provision portal access + institute email (and, through it,
          // the Google Workspace account) for every newly created student --

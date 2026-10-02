@@ -7,3 +7,5 @@ backup/
 
 # CDN Photos
 public/ams/
+# Student credential exports and data files -- never commit or serve
+private/
