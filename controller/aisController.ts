@@ -2489,8 +2489,13 @@ export default class AisController {
 
    async postRegistration(req: Request, res: Response) {
       try {
-         const courses = req.body;
+         const courses = Array.isArray(req.body) ? req.body : [];
          const data: any = [], rdata: any = [];
+         if (!courses.length) return res.status(400).json({ message: "Please select at least one course before submitting your registration." });
+         // A student without an index number has nothing to key the
+         // registration on (Prisma also rejects a null scalar filter), so
+         // stop here with something the student can act on.
+         if (!courses[0]?.indexno) return res.status(400).json({ message: "Your index number has not been issued yet, so you can't register. Please contact the Academic Affairs office (Registry) to have it generated, then try again." });
          // Get Active Session Info -- no more MAIN/January-SUB stream split,
          // just the one default session.
          const st: any = await ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } })
@@ -2519,6 +2524,7 @@ export default class AisController {
          if (resitcourses?.length) {
             // Resit Session Info
             const rsession: any = await ais.resitSession.findFirst({ where: { default: true } })
+            if (!rsession) return res.status(400).json({ message: "Resit registration isn't open yet. Please deselect your resit course(s), or contact the Registry." });
             // Save Resit Registration
             for (const course of resitcourses) {
                const ups = await ais.resit.updateMany({
@@ -2540,21 +2546,23 @@ export default class AisController {
                if (ups) rdata.push(ups);
             }
          }
-         // Log Registration
+         // Log Registration -- keyed on the first non-resit course, or the
+         // first course when only resits were chosen.
+         const first = maincourses[0] || courses[0];
          const isLogged = await ais.activityRegister.findFirst({
             where: {
-               indexno: maincourses[0].indexno,
-               sessionId: maincourses[0].sessionId
+               indexno: first.indexno,
+               sessionId: first.sessionId
             }
          })
          if (!isLogged)
             await ais.activityRegister.createMany({
                data: [{
-                  indexno: maincourses[0].indexno,
-                  sessionId: maincourses[0].sessionId,
+                  indexno: first.indexno,
+                  sessionId: first.sessionId,
                   courses: courses?.length,
                   credits: courses?.reduce((sum: number, cur: any) => sum + cur.credit, 0),
-                  semesterNum: maincourses[0].semesterNum,
+                  semesterNum: first.semesterNum,
                   dump: courses
                }]
             })
@@ -2562,11 +2570,11 @@ export default class AisController {
             await ais.activityRegister.update({
                where: { id: isLogged?.id },
                data: {
-                  indexno: maincourses[0].indexno,
-                  sessionId: maincourses[0].sessionId,
+                  indexno: first.indexno,
+                  sessionId: first.sessionId,
                   courses: courses?.length,
                   credits: courses?.reduce((sum: number, cur: any) => sum + cur.credit, 0),
-                  semesterNum: maincourses[0].semesterNum,
+                  semesterNum: first.semesterNum,
                   dump: courses
                }
             })
@@ -2580,7 +2588,9 @@ export default class AisController {
          }
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error?.message || error })
+         // Raw Prisma/driver errors aren't meant for students — log them,
+         // return a readable message instead.
+         return res.status(500).json({ message: "We couldn't complete your registration because of a server error. Please try again, or contact the Registry if it keeps happening." })
       }
    }
 

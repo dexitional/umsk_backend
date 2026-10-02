@@ -2508,9 +2508,17 @@ class AisController {
     }
     postRegistration(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             try {
-                const courses = req.body;
+                const courses = Array.isArray(req.body) ? req.body : [];
                 const data = [], rdata = [];
+                if (!courses.length)
+                    return res.status(400).json({ message: "Please select at least one course before submitting your registration." });
+                // A student without an index number has nothing to key the
+                // registration on (Prisma also rejects a null scalar filter), so
+                // stop here with something the student can act on.
+                if (!((_a = courses[0]) === null || _a === void 0 ? void 0 : _a.indexno))
+                    return res.status(400).json({ message: "Your index number has not been issued yet, so you can't register. Please contact the Academic Affairs office (Registry) to have it generated, then try again." });
                 // Get Active Session Info -- no more MAIN/January-SUB stream split,
                 // just the one default session.
                 const st = yield ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } });
@@ -2540,6 +2548,8 @@ class AisController {
                 if (resitcourses === null || resitcourses === void 0 ? void 0 : resitcourses.length) {
                     // Resit Session Info
                     const rsession = yield ais.resitSession.findFirst({ where: { default: true } });
+                    if (!rsession)
+                        return res.status(400).json({ message: "Resit registration isn't open yet. Please deselect your resit course(s), or contact the Registry." });
                     // Save Resit Registration
                     for (const course of resitcourses) {
                         const ups = yield ais.resit.updateMany({
@@ -2561,21 +2571,23 @@ class AisController {
                             rdata.push(ups);
                     }
                 }
-                // Log Registration
+                // Log Registration -- keyed on the first non-resit course, or the
+                // first course when only resits were chosen.
+                const first = maincourses[0] || courses[0];
                 const isLogged = yield ais.activityRegister.findFirst({
                     where: {
-                        indexno: maincourses[0].indexno,
-                        sessionId: maincourses[0].sessionId
+                        indexno: first.indexno,
+                        sessionId: first.sessionId
                     }
                 });
                 if (!isLogged)
                     yield ais.activityRegister.createMany({
                         data: [{
-                                indexno: maincourses[0].indexno,
-                                sessionId: maincourses[0].sessionId,
+                                indexno: first.indexno,
+                                sessionId: first.sessionId,
                                 courses: courses === null || courses === void 0 ? void 0 : courses.length,
                                 credits: courses === null || courses === void 0 ? void 0 : courses.reduce((sum, cur) => sum + cur.credit, 0),
-                                semesterNum: maincourses[0].semesterNum,
+                                semesterNum: first.semesterNum,
                                 dump: courses
                             }]
                     });
@@ -2583,11 +2595,11 @@ class AisController {
                     yield ais.activityRegister.update({
                         where: { id: isLogged === null || isLogged === void 0 ? void 0 : isLogged.id },
                         data: {
-                            indexno: maincourses[0].indexno,
-                            sessionId: maincourses[0].sessionId,
+                            indexno: first.indexno,
+                            sessionId: first.sessionId,
                             courses: courses === null || courses === void 0 ? void 0 : courses.length,
                             credits: courses === null || courses === void 0 ? void 0 : courses.reduce((sum, cur) => sum + cur.credit, 0),
-                            semesterNum: maincourses[0].semesterNum,
+                            semesterNum: first.semesterNum,
                             dump: courses
                         }
                     });
@@ -2602,7 +2614,9 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: (error === null || error === void 0 ? void 0 : error.message) || error });
+                // Raw Prisma/driver errors aren't meant for students — log them,
+                // return a readable message instead.
+                return res.status(500).json({ message: "We couldn't complete your registration because of a server error. Please try again, or contact the Registry if it keeps happening." });
             }
         });
     }

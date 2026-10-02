@@ -1324,9 +1324,21 @@ export default class FmsController {
          // (apiToken/apiEnabled fields, built for exactly this automated
          // Bank API payment flow), so this was corrected to use it.
          const cl: any = await fms.collector.findFirst();
-         let { serviceId, amountPaid, currency, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
+         let { serviceId, amountPaid, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
          serviceId = Number(serviceId)
-         amountPaid = parseFloat(amountPaid?.toString()?.replace(",", ""))
+         // Banks send amounts as numbers or formatted strings ("1,250.00",
+         // "GHS 1,250.00") -- keep only digits/decimal point. The old
+         // replace(",", "") only stripped the first comma and passed NaN
+         // through to Prisma when the amount was missing or prefixed.
+         amountPaid = parseFloat(String(amountPaid ?? req.body?.amount ?? "").replace(/[^0-9.]/g, ""))
+         // The application only transacts in GHC (see postPayment); banks
+         // send the ISO code "GHS", which isn't a member of the currency enum.
+         const currency = 'GHC';
+
+         if (!cl) return res.status(200).json({ success: false, data: null, msg: "Payment collector is not configured" });
+         if (!Number.isFinite(amountPaid) || amountPaid <= 0) return res.status(200).json({ success: false, data: null, msg: "Invalid amount paid" });
+         if (!transRef) return res.status(200).json({ success: false, data: null, msg: "Missing transaction reference" });
+
          const tr = await fms.transaction.findFirst({ where: { transtag: transRef } })
 
          let data: any = {
@@ -1349,6 +1361,7 @@ export default class FmsController {
          } else {
             /* PAY FOR SERVICES */
             const st: any = await fms.student.findFirst({ where: { OR: [{ id: studentId }, { indexno: studentId }] }, include: { program: { select: { prefix: true } } } });
+            if (!st) return res.status(200).json({ success: false, data: null, msg: "Invalid Student ID or Index Number" });
             if (!tr) {
                const narrative = `Payment of ${serviceId == 8 ? 'Graduation' : serviceId == 3 ? 'Resit' : serviceId == 8 ? 'Late Registration' : 'Academic'} Fees`
                data = { ...data, studentId: st?.id }
@@ -1440,7 +1453,9 @@ export default class FmsController {
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         // Keep the bank API's { success, msg } shape; the raw Prisma error
+         // stays in the server log rather than going back to the bank.
+         return res.status(500).json({ success: false, data: null, msg: "Transaction could not be processed. Please retry or contact the institution." })
       }
    }
 

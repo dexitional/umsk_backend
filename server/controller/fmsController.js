@@ -1329,7 +1329,7 @@ class FmsController {
     }
     payService(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d, _e;
+            var _a, _b, _c, _d, _e, _f;
             try {
                 // Previously fms.vendor.findFirst() — vendor was an admissions-only
                 // table removed along with the rest of the admission system.
@@ -1337,9 +1337,22 @@ class FmsController {
                 // (apiToken/apiEnabled fields, built for exactly this automated
                 // Bank API payment flow), so this was corrected to use it.
                 const cl = yield fms.collector.findFirst();
-                let { serviceId, amountPaid, currency, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
+                let { serviceId, amountPaid, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
                 serviceId = Number(serviceId);
-                amountPaid = parseFloat((_a = amountPaid === null || amountPaid === void 0 ? void 0 : amountPaid.toString()) === null || _a === void 0 ? void 0 : _a.replace(",", ""));
+                // Banks send amounts as numbers or formatted strings ("1,250.00",
+                // "GHS 1,250.00") -- keep only digits/decimal point. The old
+                // replace(",", "") only stripped the first comma and passed NaN
+                // through to Prisma when the amount was missing or prefixed.
+                amountPaid = parseFloat(String((_b = amountPaid !== null && amountPaid !== void 0 ? amountPaid : (_a = req.body) === null || _a === void 0 ? void 0 : _a.amount) !== null && _b !== void 0 ? _b : "").replace(/[^0-9.]/g, ""));
+                // The application only transacts in GHC (see postPayment); banks
+                // send the ISO code "GHS", which isn't a member of the currency enum.
+                const currency = 'GHC';
+                if (!cl)
+                    return res.status(200).json({ success: false, data: null, msg: "Payment collector is not configured" });
+                if (!Number.isFinite(amountPaid) || amountPaid <= 0)
+                    return res.status(200).json({ success: false, data: null, msg: "Invalid amount paid" });
+                if (!transRef)
+                    return res.status(200).json({ success: false, data: null, msg: "Missing transaction reference" });
                 const tr = yield fms.transaction.findFirst({ where: { transtag: transRef } });
                 let data = {
                     collectorId: cl.id,
@@ -1358,6 +1371,8 @@ class FmsController {
                 else {
                     /* PAY FOR SERVICES */
                     const st = yield fms.student.findFirst({ where: { OR: [{ id: studentId }, { indexno: studentId }] }, include: { program: { select: { prefix: true } } } });
+                    if (!st)
+                        return res.status(200).json({ success: false, data: null, msg: "Invalid Student ID or Index Number" });
                     if (!tr) {
                         const narrative = `Payment of ${serviceId == 8 ? 'Graduation' : serviceId == 3 ? 'Resit' : serviceId == 8 ? 'Late Registration' : 'Academic'} Fees`;
                         data = Object.assign(Object.assign({}, data), { studentId: st === null || st === void 0 ? void 0 : st.id });
@@ -1368,7 +1383,7 @@ class FmsController {
                         if (ins) {
                             if ([2, 3, 4, 8].includes(serviceId)) {
                                 const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                                yield fms.student.update({ where: { id: studentId }, data: { accountNet: ((_b = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _b === void 0 ? void 0 : _b.amount) || 0 } });
+                                yield fms.student.update({ where: { id: studentId }, data: { accountNet: ((_c = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _c === void 0 ? void 0 : _c.amount) || 0 } });
                             }
                             /* For Resit Payments */
                             if (serviceId == 3) {
@@ -1401,7 +1416,7 @@ class FmsController {
                                 const cx = yield fms.studentAccount.findFirst({ where: { studentId, type: 'BILL' }, include: { bill: { select: { quota: true } } } });
                                 const px = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId, type: 'PAYMENT' } });
                                 // Compare All Payments to Bill Quota
-                                const isPassedIndex = (((_c = px === null || px === void 0 ? void 0 : px._sum) === null || _c === void 0 ? void 0 : _c.amount) >= (((_d = cx === null || cx === void 0 ? void 0 : cx.bill) === null || _d === void 0 ? void 0 : _d.quota) || 0) * (cx === null || cx === void 0 ? void 0 : cx.amount));
+                                const isPassedIndex = (((_d = px === null || px === void 0 ? void 0 : px._sum) === null || _d === void 0 ? void 0 : _d.amount) >= (((_e = cx === null || cx === void 0 ? void 0 : cx.bill) === null || _e === void 0 ? void 0 : _e.quota) || 0) * (cx === null || cx === void 0 ? void 0 : cx.amount));
                                 // Generate Index 
                                 if (!(st === null || st === void 0 ? void 0 : st.indexno) && isPassedIndex) {
                                     let indexno;
@@ -1412,7 +1427,7 @@ class FmsController {
                                     while (loop) {
                                         // Compute Index Number
                                         const count = studentCount.toString().length == 1 ? `000${studentCount}` : studentCount.toString().length == 2 ? `00${studentCount}` : studentCount.toString().length == 3 ? `0${studentCount}` : studentCount;
-                                        indexno = `${(_e = st === null || st === void 0 ? void 0 : st.program) === null || _e === void 0 ? void 0 : _e.prefix}${(0, moment_1.default)((st === null || st === void 0 ? void 0 : st.entryDate) || new Date()).format("MMYY")}${count}`;
+                                        indexno = `${(_f = st === null || st === void 0 ? void 0 : st.program) === null || _f === void 0 ? void 0 : _f.prefix}${(0, moment_1.default)((st === null || st === void 0 ? void 0 : st.entryDate) || new Date()).format("MMYY")}${count}`;
                                         // Check If Index Number Exists
                                         const ck = yield fms.student.findFirst({ where: { indexno } });
                                         if (ck) {
@@ -1443,7 +1458,9 @@ class FmsController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                // Keep the bank API's { success, msg } shape; the raw Prisma error
+                // stays in the server log rather than going back to the bank.
+                return res.status(500).json({ success: false, data: null, msg: "Transaction could not be processed. Please retry or contact the institution." });
             }
         });
     }
