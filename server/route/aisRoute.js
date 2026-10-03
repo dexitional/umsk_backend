@@ -71,7 +71,6 @@ class AisRoute {
         this.router.post('/students/stage', [verifyToken], this.controller.stageStudent);
         this.router.post('/students/reset', [verifyToken], this.controller.resetStudent);
         this.router.post('/students/forget', [verifyToken], this.controller.resetStudent);
-        this.router.post('/students/photo', [verifyToken], this.controller.changePhoto);
         this.router.post('/students/indexgen', [verifyToken], this.controller.generateIndex);
         this.router.post('/students/mailgen', [verifyToken], this.controller.generateEmail);
         this.router.post('/students/gsuite-retry', [verifyToken], this.controller.retryGsuiteSync);
@@ -270,7 +269,6 @@ class AisRoute {
         this.router.get('/staff/:id', [verifyToken], this.controller.fetchStaff);
         this.router.post('/staff/stage', [verifyToken], this.controller.stageStaff);
         this.router.post('/staff/reset', [verifyToken], this.controller.resetStaff);
-        this.router.post('/staff/photo', [verifyToken], this.controller.changeStaffPhoto);
         this.router.post('/staff/role', [verifyToken], this.controller.staffRole);
         this.router.post('/staff', [verifyToken], this.controller.postStaff);
         this.router.patch('/staff/:id', [verifyToken], this.controller.updateStaff);

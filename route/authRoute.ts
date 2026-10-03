@@ -33,8 +33,11 @@ class AuthRoute {
        this.router.post('/photos/rotate', this.controller.rotatePhoto);
        this.router.delete('/photos/:id', this.controller.removePhoto);
        /* SSO Pin Management */
-       this.router.post('/pins/generate', this.controller.resetStudentPins);
-       this.router.post('/pins/generate/:tag', this.controller.resetStudentPin);
+       // PIN resets require a logged-in user: they change credentials and are
+       // audit-logged with the acting user (was unauthenticated -- anyone could
+       // reset every student's PIN).
+       this.router.post('/pins/generate', [verifyToken], this.controller.resetStudentPins);
+       this.router.post('/pins/generate/:tag', [verifyToken], this.controller.resetStudentPin);
        this.router.get('/pins/send', this.controller.sendStudentPins);
        this.router.get('/pins/send/:tag', this.controller.sendStudentPin);
        

@@ -25,6 +25,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const moment_1 = __importDefault(require("moment"));
 const client_1 = require("../prisma/client");
+const auditAssessment_1 = require("../prisma/auditAssessment");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const helper_1 = require("../util/helper");
@@ -135,7 +136,8 @@ function stageStudentAccess(studentId_1, userId_1) {
             }
         }
         // Log Login Response
-        yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, meta: ssoData } });
+        // Never log credentials (ssoData carries the hash + unlock PIN).
+        yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, student: studentId, meta: { studentId, username: studentId } } });
         return resp;
     });
 }
@@ -1332,35 +1334,14 @@ class AisController {
                     }
                 }
                 // Log Login Response
-                yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { password: (0, password_1.hashPassword)(password) } } });
+                // Audit: who reset whose account (no credentials logged).
+                yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, student: studentId, meta: { studentId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
                 // Return Password
                 res.status(200).json({ password });
             }
             catch (error) {
                 console.log(error);
                 return res.status(500).json({ message: error.message || 'Internal server error' });
-            }
-        });
-    }
-    changePhoto(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const { studentId } = req.body;
-                const password = pwdgen();
-                const resp = yield ais.user.updateMany({
-                    where: { tag: studentId },
-                    data: { password: (0, password_1.hashPassword)(password) },
-                });
-                if (resp) {
-                    res.status(200).json({ password });
-                }
-                else {
-                    res.status(202).json({ message: `no records found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
             }
         });
     }
@@ -1791,10 +1772,12 @@ class AisController {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 console.log(req.body.assessmentId);
-                const resp = yield ais.$executeRaw `update ais_assessment set status = 1 where id = ${(0, paramStr_1.paramStr)(req.body.assessmentId)} and totalScore is not null`;
+                // Prisma (not raw SQL) so the change is captured by the
+                // ais_assessment audit trail (prisma/auditAssessment.ts).
+                const { count: resp } = yield ais.assessment.updateMany({ where: { id: (0, paramStr_1.paramStr)(req.body.assessmentId), NOT: { totalScore: null } }, data: { status: true } });
                 if (resp) {
                     // Log Response
-                    yield ais.log.create({ data: { action: `ASSESSMENT_PUBLISHED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: resp } });
+                    yield ais.log.create({ data: { action: `ASSESSMENT_PUBLISHED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { count: resp } } });
                     // Return Response
                     res.status(200).json(resp);
                 }
@@ -4513,7 +4496,7 @@ class AisController {
                     // partially committed, and report exactly which record(s) failed.
                     let resp;
                     try {
-                        resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                        resp = yield (0, auditAssessment_1.withBufferedAudit)(client_1.prismaBase, () => ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
                             let data = [];
                             if (type == 'ASSESSMENT') { // BACKLOG ASSESSMENT
                                 data = yield Promise.all(meta.map((r) => __awaiter(this, void 0, void 0, function* () {
@@ -4601,7 +4584,7 @@ class AisController {
                                 yield tx.activityBacklog.update({ where: { id }, data: { approvedBy, status: true } });
                             }
                             return committed;
-                        }));
+                        })));
                     }
                     catch (txError) {
                         if (txError instanceof BacklogRecordError) {
@@ -4874,7 +4857,7 @@ class AisController {
                     // partially committed, and report exactly which record(s) failed.
                     let resp;
                     try {
-                        resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                        resp = yield (0, auditAssessment_1.withBufferedAudit)(client_1.prismaBase, () => ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
                             // Updates an existing assessment record only -- sessionId,
                             // courseId, semesterNum, indexno, and scoreType (N/R) are
                             // used purely to find/confirm the right row, never to
@@ -4907,7 +4890,7 @@ class AisController {
                                 yield tx.activityExam.update({ where: { id }, data: { approvedBy, status: true } });
                             }
                             return committed;
-                        }));
+                        })));
                     }
                     catch (txError) {
                         if (txError instanceof BacklogRecordError) {
@@ -7513,6 +7496,8 @@ class AisController {
                     data: { password: (0, password_1.hashPassword)(password) },
                 });
                 if (resp === null || resp === void 0 ? void 0 : resp.count) {
+                    // Audit: who reset which staff account (no credentials logged).
+                    yield ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId: staffId.toString(), via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
                     if (st === null || st === void 0 ? void 0 : st.phone)
                         yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your credentials are Username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : staffId}, Password: ${password}`);
                     res.status(200).json({ password });
@@ -7537,28 +7522,6 @@ class AisController {
                 });
                 if (resp === null || resp === void 0 ? void 0 : resp.length) {
                     res.status(200).json(resp.map((r) => { var _a, _b, _c; return (Object.assign(Object.assign({}, r), { appRole: { title: (_a = r.appRole) === null || _a === void 0 ? void 0 : _a.title, app: (_c = (_b = r.appRole) === null || _b === void 0 ? void 0 : _b.appModule) === null || _c === void 0 ? void 0 : _c.app } })); }));
-                }
-                else {
-                    res.status(202).json({ message: `no records found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
-            }
-        });
-    }
-    changeStaffPhoto(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const { staffId } = req.body;
-                const password = pwdgen();
-                const resp = yield ais.user.updateMany({
-                    where: { tag: staffId },
-                    data: { password: (0, password_1.hashPassword)(password) },
-                });
-                if (resp) {
-                    res.status(200).json({ password });
                 }
                 else {
                     res.status(202).json({ message: `no records found` });

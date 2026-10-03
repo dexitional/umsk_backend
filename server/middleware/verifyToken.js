@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const requestContext_1 = require("../util/requestContext");
 const jwt = require("jsonwebtoken");
 const verifyToken = (req, res, next) => {
     let token = req.headers["x-access-token"];
@@ -13,7 +14,9 @@ const verifyToken = (req, res, next) => {
         req.userId = (_a = decoded === null || decoded === void 0 ? void 0 : decoded.user) === null || _a === void 0 ? void 0 : _a.tag;
         // Already embedded in the signed token at login (authController.ts) — no extra query needed.
         req.roles = (decoded === null || decoded === void 0 ? void 0 : decoded.roles) || [];
-        next();
+        // Everything downstream of this request (handlers, Prisma audit
+        // hooks) can read who is acting via getRequestContext().
+        requestContext_1.requestContext.run({ userId: req.userId, ip: req.ip, method: req.method, path: req.originalUrl }, () => next());
     });
 };
 module.exports = {

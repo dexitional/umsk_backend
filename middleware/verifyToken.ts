@@ -1,4 +1,5 @@
 import { Express, Request, Response, NextFunction} from 'express';
+import { requestContext } from '../util/requestContext';
 const jwt = require("jsonwebtoken");
 
 const verifyToken = (req: Request | any, res: Response, next: NextFunction) => {
@@ -13,7 +14,12 @@ const verifyToken = (req: Request | any, res: Response, next: NextFunction) => {
         req.userId = decoded?.user?.tag;
         // Already embedded in the signed token at login (authController.ts) — no extra query needed.
         req.roles = decoded?.roles || [];
-        next();
+        // Everything downstream of this request (handlers, Prisma audit
+        // hooks) can read who is acting via getRequestContext().
+        requestContext.run(
+          { userId: req.userId, ip: req.ip, method: req.method, path: req.originalUrl },
+          () => next()
+        );
     });
 };
 

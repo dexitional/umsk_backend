@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import moment from "moment";
-import { prisma } from "../prisma/client";
+import { prisma, prismaBase } from "../prisma/client";
+import { withBufferedAudit } from "../prisma/auditAssessment";
 
 import fs from "fs";
 import path from "path";
@@ -113,7 +114,8 @@ async function stageStudentAccess(studentId: string, userId?: string, sendSms: b
       }
    }
    // Log Login Response
-   await ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, meta: ssoData } })
+   // Never log credentials (ssoData carries the hash + unlock PIN).
+   await ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, student: studentId, meta: { studentId, username: studentId } } })
    return resp;
 }
 
@@ -1286,33 +1288,14 @@ export default class AisController {
             }
          }
          // Log Login Response
-         await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, meta: { password: hashPassword(password) } } })
+         // Audit: who reset whose account (no credentials logged).
+         await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, student: studentId, meta: { studentId, via: req?.originalUrl, smsSent: !!st?.phone } } })
          // Return Password
          res.status(200).json({ password })
 
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message || 'Internal server error' })
-      }
-   }
-
-   async changePhoto(req: Request, res: Response) {
-      try {
-         const { studentId } = req.body
-         const password = pwdgen();
-         const resp = await ais.user.updateMany({
-            where: { tag: studentId },
-            data: { password: hashPassword(password) },
-         })
-         if (resp) {
-            res.status(200).json({ password })
-         } else {
-            res.status(202).json({ message: `no records found` })
-         }
-
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
       }
    }
 
@@ -1760,10 +1743,12 @@ export default class AisController {
 
    async publishStudentTranscript(req: Request & any, res: Response) {
       try {console.log(req.body.assessmentId)
-         const resp = await ais.$executeRaw`update ais_assessment set status = 1 where id = ${paramStr(req.body.assessmentId)} and totalScore is not null`;
+         // Prisma (not raw SQL) so the change is captured by the
+         // ais_assessment audit trail (prisma/auditAssessment.ts).
+         const { count: resp } = await ais.assessment.updateMany({ where: { id: paramStr(req.body.assessmentId), NOT: { totalScore: null } }, data: { status: true } });
          if (resp) {
             // Log Response
-            await ais.log.create({ data: { action: `ASSESSMENT_PUBLISHED`, user: req?.userId, meta: resp } })
+            await ais.log.create({ data: { action: `ASSESSMENT_PUBLISHED`, user: req?.userId, meta: { count: resp } } })
             // Return Response
             res.status(200).json(resp)
          } else {
@@ -4516,7 +4501,7 @@ export default class AisController {
             // partially committed, and report exactly which record(s) failed.
             let resp: any;
             try {
-               resp = await ais.$transaction(async (tx: any) => {
+               resp = await withBufferedAudit(prismaBase, () => ais.$transaction(async (tx: any) => {
                   let data: any[] = [];
 
                   if (type == 'ASSESSMENT') { // BACKLOG ASSESSMENT
@@ -4601,7 +4586,7 @@ export default class AisController {
                      await tx.activityBacklog.update({ where: { id }, data: { approvedBy, status: true } });
                   }
                   return committed;
-               })
+               }))
             } catch (txError: any) {
                if (txError instanceof BacklogRecordError) {
                   console.log(txError)
@@ -4888,7 +4873,7 @@ export default class AisController {
             // partially committed, and report exactly which record(s) failed.
             let resp: any;
             try {
-               resp = await ais.$transaction(async (tx: any) => {
+               resp = await withBufferedAudit(prismaBase, () => ais.$transaction(async (tx: any) => {
                   // Updates an existing assessment record only -- sessionId,
                   // courseId, semesterNum, indexno, and scoreType (N/R) are
                   // used purely to find/confirm the right row, never to
@@ -4918,7 +4903,7 @@ export default class AisController {
                      await tx.activityExam.update({ where: { id }, data: { approvedBy, status: true } });
                   }
                   return committed;
-               })
+               }))
             } catch (txError: any) {
                if (txError instanceof BacklogRecordError) {
                   console.log(txError)
@@ -7539,7 +7524,7 @@ export default class AisController {
       }
    }
 
-   async resetStaff(req: Request, res: Response) {
+   async resetStaff(req: Request & any, res: Response) {
       try {
          const { staffId } = req.body
          const password = pwdgen();
@@ -7549,6 +7534,8 @@ export default class AisController {
             data: { password: hashPassword(password) },
          })
          if (resp?.count) {
+            // Audit: who reset which staff account (no credentials logged).
+            await ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req?.userId, meta: { staffId: staffId.toString(), via: req?.originalUrl, smsSent: !!st?.phone } } })
             if (st?.phone) await sms(st?.phone, `Hi! Your credentials are Username: ${st?.instituteEmail ?? staffId}, Password: ${password}`)
             res.status(200).json({ password })
          } else {
@@ -7579,27 +7566,6 @@ export default class AisController {
          return res.status(500).json({ message: 'Internal server error' })
       }
    }
-
-   async changeStaffPhoto(req: Request, res: Response) {
-      try {
-         const { staffId } = req.body
-         const password = pwdgen();
-         const resp = await ais.user.updateMany({
-            where: { tag: staffId },
-            data: { password: hashPassword(password) },
-         })
-         if (resp) {
-            res.status(200).json({ password })
-         } else {
-            res.status(202).json({ message: `no records found` })
-         }
-
-      } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
-      }
-   }
-
 
    async postStaff(req: Request, res: Response) {
       try {

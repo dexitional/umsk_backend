@@ -23,6 +23,7 @@ const evaRoute_1 = __importDefault(require("./route/evaRoute"));
 const evsRoute_1 = __importDefault(require("./route/evsRoute"));
 const fmsRoute_1 = __importDefault(require("./route/fmsRoute"));
 const hrsRoute_1 = __importDefault(require("./route/hrsRoute"));
+const logRoute_1 = __importDefault(require("./route/logRoute"));
 const node_http_1 = require("node:http");
 const express_fileupload_1 = __importDefault(require("express-fileupload"));
 // @ts-ignore: No type definitions available
@@ -79,6 +80,7 @@ class Routes {
         app.use("/api/ais", aisRoute_1.default); /** Academics API **/
         app.use("/api/fms", fmsRoute_1.default); /** Finance API **/
         app.use("/api/hrs", hrsRoute_1.default); /** HRS API **/
+        app.use("/api/logs", logRoute_1.default); /** Log Module API (audit::admin) **/
         app.use("/api/evs", evsRoute_1.default); /** Electa API **/
         app.use("/api/eva", evaRoute_1.default); /** Evaluation API **/
         app.use("/api/v1", apiRoute_1.default); /** Bank API **/

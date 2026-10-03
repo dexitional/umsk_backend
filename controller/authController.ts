@@ -290,7 +290,9 @@ export default class AuthController {
           }
         }
         // Log Login Response
-        await sso.log.create({ data: { action: `USER_PASSWORD_CHANGED`, user: tag, meta: req.body, ...isUser?.groupId == 1 && ({ student: tag }) } })
+        // Self-service: the account owner is both actor and subject. Never
+        // log req.body -- it carries the old and new passwords in plaintext.
+        await sso.log.create({ data: { action: `USER_PASSWORD_CHANGED`, user: tag, meta: { tag, selfService: true }, ...isUser?.groupId == 1 && ({ student: tag }) } })
         // Response
         res.status(200).json(ups)
       } else {
@@ -342,7 +344,9 @@ export default class AuthController {
         // Send Password By SMS
         if (st?.phone) await sms(st?.phone, `Hi! Your new credentials is username: ${st?.instituteEmail}, password: ${password}`)
         // Log Login Response
-        await sso.log.create({ data: { action: `FORGOT_PASSWORD_CHANGED`, user: tag, meta: req.body, ...user?.groupId == 1 && ({ student: tag }) } })
+        // Self-service: the matched account is both actor and subject (`tag`
+        // may be a username/email, so log the resolved account tag).
+        await sso.log.create({ data: { action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: !!st?.phone }, ...user?.groupId == 1 && ({ student: user.tag }) } })
         // Response  
         res.status(200).json({ success: true, data: ups });
       } else {
@@ -477,6 +481,8 @@ export default class AuthController {
             data: { unlockPin: pin() }
           })
         }))
+        // Audit: who reset every student's PIN (affected accounts listed; no PINs logged).
+        await sso.log.create({ data: { action: `STUDENT_PINS_RESET_ALL`, user: (req as any)?.userId, meta: { count: users.length, students: users.map((u: any) => u.tag) } } })
         res.status(200).json(resp)
       } else {
         res.status(202).json({ message: `Invalid request!` })
@@ -497,6 +503,8 @@ export default class AuthController {
           where: { tag },
           data: { unlockPin: pin() }
         })
+        // Audit: who reset this student's PIN (no PIN logged).
+        await sso.log.create({ data: { action: `STUDENT_PIN_RESET`, user: (req as any)?.userId, student: tag, meta: { studentId: tag } } })
         res.status(200).json(resp)
       } else {
         res.status(202).json({ message: `Invalid request!` })

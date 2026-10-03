@@ -9,6 +9,7 @@ import evaRoute from './route/evaRoute';
 import evsRoute from './route/evsRoute';
 import fmsRoute from './route/fmsRoute';
 import hrsRoute from './route/hrsRoute';
+import logRoute from './route/logRoute';
 
 import { createServer } from 'node:http';
 import fileUpload from 'express-fileupload';
@@ -75,6 +76,7 @@ export default class Routes {
     app.use("/api/ais", aisRoute);      /** Academics API **/
     app.use("/api/fms", fmsRoute);      /** Finance API **/
     app.use("/api/hrs", hrsRoute);      /** HRS API **/
+    app.use("/api/logs", logRoute);     /** Log Module API (audit::admin) **/
     app.use("/api/evs", evsRoute);      /** Electa API **/
     app.use("/api/eva", evaRoute);      /** Evaluation API **/
     app.use("/api/v1", apiRoute);       /** Bank API **/

@@ -313,7 +313,9 @@ class AuthController {
                         }
                     }
                     // Log Login Response
-                    yield sso.log.create({ data: Object.assign({ action: `USER_PASSWORD_CHANGED`, user: tag, meta: req.body }, (isUser === null || isUser === void 0 ? void 0 : isUser.groupId) == 1 && ({ student: tag })) });
+                    // Self-service: the account owner is both actor and subject. Never
+                    // log req.body -- it carries the old and new passwords in plaintext.
+                    yield sso.log.create({ data: Object.assign({ action: `USER_PASSWORD_CHANGED`, user: tag, meta: { tag, selfService: true } }, (isUser === null || isUser === void 0 ? void 0 : isUser.groupId) == 1 && ({ student: tag })) });
                     // Response
                     res.status(200).json(ups);
                 }
@@ -369,7 +371,9 @@ class AuthController {
                     if (st === null || st === void 0 ? void 0 : st.phone)
                         yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${st === null || st === void 0 ? void 0 : st.instituteEmail}, password: ${password}`);
                     // Log Login Response
-                    yield sso.log.create({ data: Object.assign({ action: `FORGOT_PASSWORD_CHANGED`, user: tag, meta: req.body }, (user === null || user === void 0 ? void 0 : user.groupId) == 1 && ({ student: tag })) });
+                    // Self-service: the matched account is both actor and subject (`tag`
+                    // may be a username/email, so log the resolved account tag).
+                    yield sso.log.create({ data: Object.assign({ action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } }, (user === null || user === void 0 ? void 0 : user.groupId) == 1 && ({ student: user.tag })) });
                     // Response  
                     res.status(200).json({ success: true, data: ups });
                 }
@@ -518,6 +522,8 @@ class AuthController {
                             data: { unlockPin: pin() }
                         });
                     })));
+                    // Audit: who reset every student's PIN (affected accounts listed; no PINs logged).
+                    yield sso.log.create({ data: { action: `STUDENT_PINS_RESET_ALL`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { count: users.length, students: users.map((u) => u.tag) } } });
                     res.status(200).json(resp);
                 }
                 else {
@@ -541,6 +547,8 @@ class AuthController {
                         where: { tag },
                         data: { unlockPin: pin() }
                     });
+                    // Audit: who reset this student's PIN (no PIN logged).
+                    yield sso.log.create({ data: { action: `STUDENT_PIN_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, student: tag, meta: { studentId: tag } } });
                     res.status(200).json(resp);
                 }
                 else {
