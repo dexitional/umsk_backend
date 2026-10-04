@@ -21,7 +21,7 @@ export default class AuthController {
 
   async authenticateWithCredential(req: Request, res: Response) {
     try {
-      let { username, password }: { username: string, password: string } = req.body;
+      let { username, password, client }: { username: string, password: string, client?: string } = req.body;
       if (!username) throw new Error('No username provided!');
       if (!password) throw new Error('No password provided!');
       // Trim only — case is already handled below without normalizing here.
@@ -90,10 +90,13 @@ export default class AuthController {
           }))
         ]
 
-        // Generate Session Token &
-        const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
+        // Generate Session Token -- 1 hour for the web portal; the student
+        // mobile app (client: "mobile") gets 30 days so students aren't signed
+        // out every hour. Changing the password re-issues credentials anyway.
+        const mobile = client === "mobile" && groupId == 1;
+        const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: mobile ? 60 * 60 * 24 * 30 : 60 * 60 });
         // Log Login Response
-        await sso.log.create({ data: { action: `${groupName?.toUpperCase()}_LOGIN_SUCCESS`, user: tag, meta: userdata, ...groupId == 1 && ({ student: tag }) } })
+        await sso.log.create({ data: { action: `${groupName?.toUpperCase()}_LOGIN_SUCCESS`, user: tag, meta: { ...userdata, client: mobile ? "mobile" : "web" }, ...groupId == 1 && ({ student: tag }) } })
         // Send Response to Client
         // console.log({ success: true, data: userdata, token });
         return res.status(200).json({ success: true, data: userdata, token });

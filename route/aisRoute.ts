@@ -72,6 +72,7 @@ class AisRoute {
       this.router.get('/students/:id', [verifyToken], this.controller.fetchStudent);
       this.router.get('/students/:id/transcript', [verifyToken], this.controller.fetchStudentTranscript);
       this.router.get('/students/:id/notice-summary', [verifyToken], this.controller.fetchStudentNoticeSummary);
+      this.router.get('/students/:id/circulars', [verifyToken], this.controller.fetchMyCirculars); // student app
       this.router.get('/students/:id/finance', [verifyToken], this.controller.fetchStudentFinance);
       this.router.get('/students/:id/activity', [verifyToken], this.controller.fetchStudentActivity);
       this.router.post('/students/transcripts', [verifyToken], this.controller.fetchStudentTranscripts);

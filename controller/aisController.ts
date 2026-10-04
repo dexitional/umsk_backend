@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import moment from "moment";
 import { prisma, prismaBase } from "../prisma/client";
 import { withBufferedAudit } from "../prisma/auditAssessment";
+import { broadcastCircular, studentAudiences } from "../util/pushBroadcast";
 
 import fs from "fs";
 import path from "path";
@@ -6331,6 +6332,28 @@ export default class AisController {
       }
    }
 
+   // Circulars (informer notices) addressed to the signed-in student, for the
+   // student app. A student can only read their own.
+   async fetchMyCirculars(req: Request & any, res: Response) {
+      try {
+         const id = paramStr(req.params.id);
+         if (req.userId != id) return res.status(403).json({ message: "You can only view your own circulars." });
+         const st: any = await ais.student.findUnique({ where: { id }, include: { program: { select: { semesterTotal: true, category: true } } } });
+         if (!st) return res.status(404).json({ message: "Student not found" });
+         const audiences = studentAudiences(st);
+         const items = audiences.length ? await ais.informer.findMany({
+            where: { status: true, receiver: { in: audiences as any } },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+            select: { id: true, reference: true, title: true, content: true, receiver: true, createdAt: true },
+         }) : [];
+         res.status(200).json({ audiences, items });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: 'Could not load circulars' })
+      }
+   }
+
    async sendNotice(req: Request, res: Response) {
       try {
          const resp = await ais.informer.findUnique({
@@ -6425,6 +6448,9 @@ export default class AisController {
                })
                receivers = rs?.map((r: any) => r?.phone);
             }
+
+            // Also push it to the student app (via akaweb) for student audiences.
+            void broadcastCircular(resp).catch(() => undefined);
 
             // Clean Receivers phone numbers
             const send = receivers?.map(async (phone: string) => {

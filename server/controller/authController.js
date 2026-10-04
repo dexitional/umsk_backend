@@ -34,7 +34,7 @@ class AuthController {
         return __awaiter(this, void 0, void 0, function* () {
             var _a, _b, _c;
             try {
-                let { username, password } = req.body;
+                let { username, password, client } = req.body;
                 if (!username)
                     throw new Error('No username provided!');
                 if (!password)
@@ -103,10 +103,13 @@ class AuthController {
                                 });
                             }))
                         ];
-                    // Generate Session Token &
-                    const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
+                    // Generate Session Token -- 1 hour for the web portal; the student
+                    // mobile app (client: "mobile") gets 30 days so students aren't signed
+                    // out every hour. Changing the password re-issues credentials anyway.
+                    const mobile = client === "mobile" && groupId == 1;
+                    const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: mobile ? 60 * 60 * 24 * 30 : 60 * 60 });
                     // Log Login Response
-                    yield sso.log.create({ data: Object.assign({ action: `${groupName === null || groupName === void 0 ? void 0 : groupName.toUpperCase()}_LOGIN_SUCCESS`, user: tag, meta: userdata }, groupId == 1 && ({ student: tag })) });
+                    yield sso.log.create({ data: Object.assign({ action: `${groupName === null || groupName === void 0 ? void 0 : groupName.toUpperCase()}_LOGIN_SUCCESS`, user: tag, meta: Object.assign(Object.assign({}, userdata), { client: mobile ? "mobile" : "web" }) }, groupId == 1 && ({ student: tag })) });
                     // Send Response to Client
                     // console.log({ success: true, data: userdata, token });
                     return res.status(200).json({ success: true, data: userdata, token });

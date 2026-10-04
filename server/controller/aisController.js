@@ -26,6 +26,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const moment_1 = __importDefault(require("moment"));
 const client_1 = require("../prisma/client");
 const auditAssessment_1 = require("../prisma/auditAssessment");
+const pushBroadcast_1 = require("../util/pushBroadcast");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const helper_1 = require("../util/helper");
@@ -6304,6 +6305,32 @@ class AisController {
             }
         });
     }
+    // Circulars (informer notices) addressed to the signed-in student, for the
+    // student app. A student can only read their own.
+    fetchMyCirculars(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                if (req.userId != id)
+                    return res.status(403).json({ message: "You can only view your own circulars." });
+                const st = yield ais.student.findUnique({ where: { id }, include: { program: { select: { semesterTotal: true, category: true } } } });
+                if (!st)
+                    return res.status(404).json({ message: "Student not found" });
+                const audiences = (0, pushBroadcast_1.studentAudiences)(st);
+                const items = audiences.length ? yield ais.informer.findMany({
+                    where: { status: true, receiver: { in: audiences } },
+                    orderBy: { createdAt: 'desc' },
+                    take: 100,
+                    select: { id: true, reference: true, title: true, content: true, receiver: true, createdAt: true },
+                }) : [];
+                res.status(200).json({ audiences, items });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: 'Could not load circulars' });
+            }
+        });
+    }
     sendNotice(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
@@ -6398,6 +6425,8 @@ class AisController {
                         });
                         receivers = rs === null || rs === void 0 ? void 0 : rs.map((r) => r === null || r === void 0 ? void 0 : r.phone);
                     }
+                    // Also push it to the student app (via akaweb) for student audiences.
+                    void (0, pushBroadcast_1.broadcastCircular)(resp).catch(() => undefined);
                     // Clean Receivers phone numbers
                     const send = receivers === null || receivers === void 0 ? void 0 : receivers.map((phone) => __awaiter(this, void 0, void 0, function* () {
                         const mobile = phone.replace('-', '').replace(' ', '').replace('+233', '0').replace('.', '').replace('_', '');
