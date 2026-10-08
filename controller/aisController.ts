@@ -6,8 +6,9 @@ import { broadcastCircular, studentAudiences } from "../util/pushBroadcast";
 
 import fs from "fs";
 import path from "path";
-import { friendlyDbError, getClass, getGrade, getGradePoint, getOrSetCache, stripBlank } from "../util/helper";
+import { friendlyDbError, getBillCodePrisma, getClass, getGrade, getGradePoint, getOrSetCache, stripBlank } from "../util/helper";
 import { paramStr } from "../util/paramStr";
+import { buildStatutoryReport, StatutoryReportError } from "../util/statutoryReport";
 import { isSheetAdmin, isSheetInScope, sheetScopeWhere } from "../util/sheetScope";
 import { isResitInScope, resitScopeWhere } from "../util/resitScope";
 import { completeType } from "@prisma/client";
@@ -29,6 +30,42 @@ class BacklogRecordError extends Error {
     this.reason = reason;
   }
 }
+
+// Display details for role holders (Access Control): staff by staffNo,
+// students by student id -- both are the sso user's tag.
+async function accessPeople(users: { tag: string; groupId?: number | null }[]) {
+   const tags = [...new Set(users.map((u) => u.tag).filter(Boolean))];
+   const out = new Map<string, { name?: string; detail?: string; unit?: string }>();
+   if (!tags.length) return out;
+   const [staff, students] = await Promise.all([
+      ais.staff.findMany({ where: { staffNo: { in: tags } }, select: { staffNo: true, fname: true, mname: true, lname: true, job: { select: { title: true } }, unit: { select: { title: true } } } }),
+      ais.student.findMany({ where: { id: { in: tags } }, select: { id: true, fname: true, mname: true, lname: true, program: { select: { shortName: true } } } }),
+   ]);
+   const full = (p: any) => [p.fname, p.mname, p.lname].filter(Boolean).join(' ');
+   for (const s of staff) out.set(s.staffNo, { name: full(s), detail: s.job?.title || 'Staff', unit: s.unit?.title });
+   for (const s of students) if (!out.has(s.id)) out.set(s.id, { name: full(s), detail: 'Student', unit: s.program?.shortName });
+   return out;
+}
+
+// Backlog assessment scores, from the entry form or an upload row. Class
+// is the sum of Quiz + Midsem + Assignment (as on score sheets: scoreA /
+// scoreC / scoreB) -- an older entry with no breakdown keeps its class
+// score -- and Total is Class + Exam. A legacy row with neither class nor
+// exam keeps whatever total it was given.
+const scoreNum = (v: any) => (v === '' || v == null || Number.isNaN(parseFloat(v)) ? null : parseFloat(v));
+function backlogScores(raw: { quiz?: any; midsem?: any; assignment?: any; classScore?: any; examScore?: any; totalScore?: any }) {
+   const scoreQuiz = scoreNum(raw.quiz), scoreMidsem = scoreNum(raw.midsem), scoreAssignment = scoreNum(raw.assignment);
+   const parts = [scoreQuiz, scoreMidsem, scoreAssignment];
+   const scoreClass = parts.every((x) => x == null) ? scoreNum(raw.classScore) : parts.reduce((a: number, x) => a + (x ?? 0), 0);
+   const scoreExam = scoreNum(raw.examScore);
+   const scoreTotal = scoreClass == null && scoreExam == null ? scoreNum(raw.totalScore) : (scoreClass ?? 0) + (scoreExam ?? 0);
+   return { scoreQuiz, scoreMidsem, scoreAssignment, scoreClass, scoreExam, scoreTotal };
+}
+// Form fields for row i of the backlog entry form.
+const backlogFormScores = (body: any, i: number) => backlogScores({
+   quiz: body[`${i}_scoreQuiz`], midsem: body[`${i}_scoreMidsem`], assignment: body[`${i}_scoreAssignment`],
+   classScore: body[`${i}_scoreClass`], examScore: body[`${i}_scoreExam`], totalScore: body[`${i}_scoreTotal`],
+});
 import { hashPassword, generateStrongPassword } from "../util/password";
 const { customAlphabet } = require("nanoid");
 const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
@@ -108,7 +145,8 @@ async function stageStudentAccess(studentId: string, userId?: string, sendSms: b
       const st = await ais.student.findFirst({ where: { id: studentId } });
       if (st?.phone) {
          try {
-            await sms(st.phone, `Hi! Your new credentials is username: ${st?.instituteEmail ?? studentId}, password: ${password}`)
+            // Quote the username just stored (login matches on it), not instituteEmail.
+            await sms(st.phone, `Hi! Your new credentials is username: ${resp.username}, password: ${password}`)
          } catch (smsError: any) {
             console.log('stageStudentAccess SMS send failed:', smsError?.message)
          }
@@ -196,6 +234,121 @@ async function generateStudentEmail(studentId: string, userId?: string, sendSms:
    return resp;
 }
 
+// A student editing their own record (student portal web form, Akatsico
+// mobile app) via PATCH /students/:id. Only these fields are accepted --
+// anything else in the body (status flags, programme, entryDate, email...)
+// is ignored, since those stay admin-only.
+const STUDENT_SELF_TEXT_FIELDS = ['phone', 'email', 'hometown', 'address', 'ghcardNo'];
+const STUDENT_SELF_RELATIONS: Record<string, string> = { titleId: 'title', religionId: 'religion', regionId: 'region', countryId: 'country' };
+
+class StudentSelfEditError extends Error {}
+
+async function updateOwnStudentProfile(studentId: string, body: any) {
+   const st = await ais.student.findUnique({ where: { id: studentId } });
+   if (!st) throw new StudentSelfEditError('Student record not found!');
+
+   const data: any = {};
+   const changed: string[] = [];
+   for (const k of STUDENT_SELF_TEXT_FIELDS) {
+      if (body[k] === undefined) continue;
+      data[k] = body[k]?.toString()?.trim() || null;
+   }
+   for (const [k, rel] of Object.entries(STUDENT_SELF_RELATIONS)) {
+      if (body[k]) data[rel] = { connect: { id: body[k] } };
+   }
+   if (body.majorId) data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
+
+   // Date of Birth -- self-editable once. Re-submitting the current value
+   // (the form always posts it) is not an edit and doesn't use it up.
+   if (body.dob) {
+      const ymd = body.dob.toString().slice(0, 10);
+      const dob = new Date(`${ymd}T00:00:00.000Z`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || isNaN(dob.getTime())) throw new StudentSelfEditError('Invalid Date of Birth!');
+      if (st.dob?.toISOString()?.slice(0, 10) !== ymd) {
+         if (st.dobEditedAt) throw new StudentSelfEditError('Date of Birth has already been changed once. Contact the College Registry for further corrections.');
+         const age = moment().diff(moment.utc(ymd), 'years');
+         if (age < 10 || age > 100) throw new StudentSelfEditError('Date of Birth is out of range!');
+         data.dob = dob;
+         data.dobEditedAt = new Date();
+         changed.push('dob');
+      }
+   }
+
+   // Hall of Affiliation -- self-editable once, and only to a hall already
+   // in use (halls come in via the student upload's HALL column).
+   if (body.instituteAffliate) {
+      const hall = body.instituteAffliate.toString().trim();
+      if ((st.instituteAffliate || '').trim().toUpperCase() !== hall.toUpperCase()) {
+         if (st.affiliateEditedAt) throw new StudentSelfEditError('Hall of Affiliation has already been changed once. Contact the College Registry for further corrections.');
+         const known = await ais.student.findFirst({ where: { instituteAffliate: hall }, select: { instituteAffliate: true } });
+         if (!known) throw new StudentSelfEditError('Unknown Hall of Affiliation!');
+         data.instituteAffliate = known.instituteAffliate;
+         data.affiliateEditedAt = new Date();
+         changed.push('instituteAffliate');
+      }
+   }
+
+   const resp = await ais.student.update({ where: { id: studentId }, data });
+   await ais.log.create({
+      data: {
+         action: `STUDENT_PROFILE_SELF_UPDATED`, user: studentId, student: studentId, meta: {
+            fields: Object.keys(data),
+            ...changed.includes('dob') && ({ dob: { from: st.dob, to: data.dob } }),
+            ...changed.includes('instituteAffliate') && ({ instituteAffliate: { from: st.instituteAffliate, to: data.instituteAffliate } }),
+         }
+      }
+   });
+   return resp;
+}
+
+// Service letters: only the letter's own fields are saved. Letters are
+// fetched by category tag (e.g. 'def', 'vc'), so a tag may be used once.
+const LETTER_FIELDS = ['title', 'tag', 'signatory', 'signature', 'template', 'cc'];
+function letterFields(body: any) {
+   const data: any = {};
+   for (const k of LETTER_FIELDS) if (body?.[k] !== undefined) data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
+   if (body?.status !== undefined) data.status = body.status === true || body.status === 'true' || body.status == 1;
+   return data;
+}
+const letterTagClash = (tag: string, exceptId?: string) =>
+   ais.letter.findFirst({ where: { tag, ...(exceptId && { id: { not: exceptId } }) }, select: { title: true } });
+
+// Admission letters (ams_letter): one active template per programme,
+// printed for its newly admitted first years (Year 1, not completed or
+// graduated). Each printed letter carries the student, the default session
+// and the programme's first-year bill for that session (for ::fee_amount).
+const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'signatory', 'signature', 'template'];
+function admissionLetterFields(body: any) {
+   const data: any = {};
+   for (const k of ADMISSION_LETTER_FIELDS) if (body?.[k] !== undefined) data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
+   if (body?.status !== undefined) data.status = body.status === true || body.status === 'true' || body.status == 1;
+   if (data.programId === '') data.programId = null;
+   return data;
+}
+const ADMISSION_STUDENT_SELECT = {
+   id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true,
+   entryDate: true, entryGroup: true, residentialStatus: true, address: true, hometown: true, phone: true, email: true,
+   deferStatus: true, programId: true,
+   title: { select: { label: true } },
+   program: { select: { id: true, longName: true, shortName: true, category: true, semesterTotal: true } },
+   major: { select: { longName: true, shortName: true } },
+};
+const FIRST_YEAR_WHERE = { semesterNum: { in: [1, 2] }, completeStatus: false, graduateStatus: false };
+
+async function admissionPrintBundle(programId: string, students: any[]) {
+   const [letter, session] = await Promise.all([
+      ais.admissionLetter.findFirst({ where: { programId, status: true }, orderBy: { updatedAt: 'desc' } }),
+      ais.session.findFirst({ where: { default: true } }),
+   ]);
+   const bills = session ? await ais.bill.findMany({
+      where: { sessionId: session.id, programId, status: true, OR: getBillCodePrisma(1) },
+      include: { bankacc: true },
+      orderBy: { createdAt: 'desc' },
+   }) : [];
+   const billFor = (s: any) => bills.find((b: any) => b.type === (s.entryGroup || 'GH')) || bills[0] || null;
+   return { letter, session, students: students.map((s: any) => ({ ...s, bill: billFor(s) })) };
+}
+
 export default class AisController {
 
    async fetchTest(req: Request, res: Response) {
@@ -217,6 +370,23 @@ export default class AisController {
    }
 
    /* Reports */
+   // GTEC statutory return: one table per request, as its own Excel file
+   // laid out exactly like GTEC's sample (see util/statutoryReport.ts).
+   async exportStatutoryReport(req: Request, res: Response) {
+      try {
+         const { table, gsession } = req.body;
+         const { file, workbook } = await buildStatutoryReport(String(table || ''), { gsession: gsession || undefined });
+         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+         res.setHeader('Content-Disposition', `attachment; filename="${file}.xlsx"`);
+         res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+         await workbook.xlsx.write(res);
+         res.end();
+      } catch (error: any) {
+         console.log(error)
+         return res.status(error instanceof StatutoryReportError ? 400 : 500).json({ message: error.message || 'Report generation failed' })
+      }
+   }
+
    async loadReport(req: Request, res: Response) {
       try {
          let { type, program, major, year, session, gsession, rsession, category } = req.body;
@@ -1250,10 +1420,11 @@ export default class AisController {
          // undefined password. Reset now guarantees a working login either
          // way: create the missing account instead of no-op'ing.
          const existingUser = await ais.user.findFirst({ where: { tag: studentId } });
+         let account: any;
          if (existingUser) {
-            await ais.user.update({ where: { id: existingUser.id }, data: { password: hashPassword(password) } });
+            account = await ais.user.update({ where: { id: existingUser.id }, data: { password: hashPassword(password) } });
          } else {
-            await ais.user.create({
+            account = await ais.user.create({
                data: { tag: studentId, username: st?.instituteEmail || studentId, password: hashPassword(password), unlockPin: pin(), group: { connect: { id: 1 } } },
             });
          }
@@ -1283,7 +1454,7 @@ export default class AisController {
          if (st?.phone) {
             const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
             try {
-               await sms(phone, `Hi! Your new credentials is username: ${st?.instituteEmail ?? studentId}, password: ${password}`)
+               await sms(phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`)
             } catch (smsError: any) {
                console.log('resetStudent SMS send failed:', smsError?.message)
             }
@@ -1667,6 +1838,13 @@ export default class AisController {
 
    async updateStudent(req: Request & any, res: Response) {
       try {
+         // Student callers get the restricted self-service update, and only
+         // on their own record.
+         if (req.groupId == 1) {
+            if (paramStr(req.params.id) !== req.userId) return res.status(403).json({ message: 'You can only update your own profile!' });
+            const resp = await updateOwnStudentProfile(req.userId, req.body);
+            return res.status(200).json(resp);
+         }
          const { titleId, programId, countryId, regionId, religionId, disabilityId, majorId, instituteEmail, indexno } = req.body
          delete req.body.titleId; delete req.body.programId;
          delete req.body.countryId; delete req.body.regionId;
@@ -1717,6 +1895,18 @@ export default class AisController {
          } else {
             res.status(202).json({ message: `No records found` })
          }
+      } catch (error: any) {
+         console.log(error)
+         return res.status(error instanceof StudentSelfEditError ? 400 : 500).json({ message: error.message })
+      }
+   }
+
+   // Halls of Affiliation in use -- options for the student portal's
+   // one-time Hall of Affiliation edit (see updateOwnStudentProfile).
+   async fetchHalls(req: Request, res: Response) {
+      try {
+         const rows = await ais.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } }, orderBy: { instituteAffliate: 'asc' } });
+         res.status(200).json(rows.map((r: any) => r.instituteAffliate?.trim()).filter(Boolean))
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
@@ -4512,6 +4702,9 @@ export default class AisController {
                            const cs = await tx.course.findUnique({ where: { id: r.courseId } });
                            // Log Existing Data
                            await tx.log.create({ data: { action: `BACKLOG_${type}`, user: req.userId, student: r.indexno.trim(), meta: as } });
+                           // Quiz / Midsem / Assignment (scoreA / scoreC / scoreB). Older
+                           // backlogs without the breakdown leave existing values alone.
+                           const parts = 'scoreQuiz' in r ? { scoreA: r.scoreQuiz ?? null, scoreB: r.scoreAssignment ?? null, scoreC: r.scoreMidsem ?? null } : {};
                            // Upsert New Data
                            return await tx.assessment.upsert({
                               where: {
@@ -4521,6 +4714,7 @@ export default class AisController {
                                  indexno: r.indexno.trim(),
                                  courseId: r.courseId,
                                  semesterNum: Number(r.semesterNum),
+                                 ...parts,
                                  classScore: r.scoreClass,
                                  examScore: r.scoreExam,
                                  totalScore: r.scoreTotal,
@@ -4532,6 +4726,7 @@ export default class AisController {
                               },
                               update: {
                                  semesterNum: Number(r.semesterNum),
+                                 ...parts,
                                  classScore: r.scoreClass,
                                  examScore: r.scoreExam,
                                  totalScore: r.scoreTotal,
@@ -4628,19 +4823,16 @@ export default class AisController {
             let meta: any = [];
 
             data?.map(async (row: any) => {
-               let { courseId, type, status, semesterNum, indexno, classScore, examScore, totalScore } = row;
-               indexno = indexno.trim();
-               courseId = courseId.trim();
-               schemeId = schemeId.trim();
-               type = type.trim();
+               let { courseId, type, status, semesterNum, indexno, quiz, midsem, assignment, classScore, examScore, totalScore } = row;
+               // Excel cells may come through as numbers.
+               indexno = String(indexno ?? '').trim();
+               courseId = String(courseId ?? '').trim();
+               schemeId = String(schemeId ?? '').trim();
+               type = String(type ?? '').trim();
                semesterNum = +semesterNum;
-
-               classScore = classScore != '' ? parseFloat(classScore) : null;
-               examScore = examScore != '' ? parseFloat(examScore) : null;
-               totalScore = totalScore != '' ? parseFloat(totalScore) : null;
                status = !!status;
 
-               meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreClass: classScore, scoreExam: examScore, scoreTotal: totalScore })
+               meta.push({ indexno, courseId, semesterNum, scoreType: type, ...backlogScores({ quiz, midsem, assignment, classScore, examScore, totalScore }) })
             })
 
             resp = await ais.activityBacklog.create({
@@ -4671,10 +4863,11 @@ export default class AisController {
    }
 
    // Exam Score Manager upload -- a narrower clone of uploadBacklog. The
-   // sample/upload file only has exam score, sessionId, semesterNum,
-   // courseId, indexno, and type (scoreType N/R): no classScore/totalScore
-   // and no schemeId, since this never creates an assessment record, only
-   // updates the examScore (and recomputed totalScore) on an existing one.
+   // sample/upload file has exam score, sessionId, schemeId, semesterNum,
+   // courseId, indexno, and type (scoreType N/R): no classScore/totalScore.
+   // schemeId only sets the exam maximum the scores are validated against
+   // -- this never creates an assessment record, only updates the
+   // examScore (and recomputed totalScore) on an existing one.
    // Stages a pending activityExam batch the same way uploadBacklog does;
    // approveExamScore commits it. `tag` is a free-text label the uploader
    // gives the batch (picked in the upload popup alongside the file), not
@@ -4688,25 +4881,46 @@ export default class AisController {
             let sessionId = rows[0].sessionId;
             let meta: any = [];
 
+            // Each row's exam score is checked against the exam maximum of the
+            // grading scheme named in the file (schemeId column, from the
+            // upload sample) -- EXAM_SCORE_MAX when the file has no scheme.
+            const schemeIds = [...new Set(rows.map((r: any) => String(r.schemeId ?? '').trim()).filter(Boolean))] as string[];
+            const schemes = schemeIds.length ? await ais.scheme.findMany({ where: { id: { in: schemeIds } }, select: { id: true, scoreRange: true } }) : [];
+            const unknownSchemes = schemeIds.filter((id) => !schemes.some((sc: any) => sc.id === id));
+            if (unknownSchemes.length) {
+               return res.status(400).json({ message: `Upload rejected: grading scheme not found (${unknownSchemes.join(', ')}). Please generate a new upload sample.` });
+            }
+            const examMaxOf = (schemeId: any) => {
+               const range: any = schemes.find((sc: any) => sc.id === String(schemeId ?? '').trim())?.scoreRange;
+               const v = Number(range?.exam);
+               return v > 0 ? v : EXAM_SCORE_MAX;
+            };
+
+            const errors: { indexno: string; reason: string }[] = [];
             rows?.map((row: any) => {
                let { courseId, type, semesterNum, indexno, examScore } = row;
-               indexno = indexno.trim();
-               courseId = courseId.trim();
-               type = type.trim();
+               // Excel cells may come through as numbers.
+               indexno = String(indexno ?? '').trim();
+               courseId = String(courseId ?? '').trim();
+               type = String(type ?? '').trim();
                semesterNum = +semesterNum;
-               examScore = examScore != '' ? parseFloat(examScore) : null;
+               const raw = String(examScore ?? '').trim();
+               const max = examMaxOf(row.schemeId);
+               examScore = raw === '' ? null : Number(raw);
+               if (examScore != null && Number.isNaN(examScore)) errors.push({ indexno, reason: `exam score "${raw}" is not a number` });
+               else if (examScore != null && examScore < 0) errors.push({ indexno, reason: `exam score ${examScore} is below 0` });
+               else if (examScore != null && examScore > max) errors.push({ indexno, reason: `exam score ${examScore} exceeds the maximum of ${max}` });
 
                meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore })
             })
 
-            const overMax = meta.filter((r: any) => r.scoreExam != null && r.scoreExam > EXAM_SCORE_MAX);
-            if (overMax.length) {
-               const indexnos = [...new Set(overMax.map((r: any) => r.indexno))];
+            if (errors.length) {
+               const shown = errors.slice(0, 15).map((e) => `${e.indexno} (${e.reason})`).join('; ');
                return res.status(400).json({
-                  message: `Upload rejected: exam score exceeds the maximum of ${EXAM_SCORE_MAX} for ${overMax.length} of ${meta.length} student record(s): ${indexnos.join(', ')}.`,
-                  failedCount: overMax.length,
+                  message: `Upload rejected: ${errors.length} of ${meta.length} student record(s) have an invalid exam score: ${shown}${errors.length > 15 ? `; and ${errors.length - 15} more` : ''}.`,
+                  failedCount: errors.length,
                   totalCount: meta.length,
-                  errors: indexnos.map((indexno) => ({ indexno, reason: `Exam score exceeds maximum of ${EXAM_SCORE_MAX}` })),
+                  errors,
                });
             }
 
@@ -4999,13 +5213,10 @@ export default class AisController {
                const courseId = req.body[`${i}_courseId`];
                const semesterNum = req.body[`${i}_semesterNum`];
                const scoreType = req.body[`${i}_scoreType`];
-               const scoreClass = parseFloat(req.body[`${i}_scoreClass`]);
-               const scoreExam = parseFloat(req.body[`${i}_scoreExam`]);
-               const scoreTotal = parseFloat(req.body[`${i}_scoreTotal`]);
                if (type == 'REGISTRATION')
                   meta.push({ indexno, courseId, semesterNum, scoreType })
                else if (type == 'ASSESSMENT')
-                  meta.push({ indexno, courseId, semesterNum, scoreType, scoreClass, scoreExam, scoreTotal })
+                  meta.push({ indexno, courseId, semesterNum, scoreType, ...backlogFormScores(req.body, i) })
                else
                   meta.push({ indexno, courseId, semesterNum })
             }
@@ -5045,13 +5256,10 @@ export default class AisController {
                const courseId = req.body[`${i}_courseId`];
                const semesterNum = req.body[`${i}_semesterNum`];
                const scoreType = req.body[`${i}_scoreType`];
-               const scoreClass = parseFloat(req.body[`${i}_scoreClass`]);
-               const scoreExam = parseFloat(req.body[`${i}_scoreExam`]);
-               const scoreTotal = parseFloat(req.body[`${i}_scoreTotal`]);
                if (type == 'REGISTRATION')
                   meta.push({ indexno, courseId, semesterNum, scoreType })
                else if (type == 'ASSESSMENT')
-                  meta.push({ indexno, courseId, semesterNum, scoreType, scoreClass, scoreExam, scoreTotal })
+                  meta.push({ indexno, courseId, semesterNum, scoreType, ...backlogFormScores(req.body, i) })
                else
                   meta.push({ indexno, courseId, semesterNum })
             }
@@ -6828,12 +7036,13 @@ export default class AisController {
 
    async postLetter(req: Request, res: Response) {
       try {
+         const data = letterFields(req.body);
+         const missing = ['title', 'tag', 'signature'].filter((k) => !data[k]);
+         if (missing.length) return res.status(400).json({ message: `Please provide: ${missing.join(', ')}.` });
+         const clash = await letterTagClash(data.tag);
+         if (clash) return res.status(400).json({ message: `A letter already uses this category ("${clash.title}"). Edit that letter instead.` });
 
-         const resp = await ais.letter.create({
-            data: {
-               ...req.body,
-            },
-         })
+         const resp = await ais.letter.create({ data: { signatory: '', template: '', ...data } })
          if (resp) {
             res.status(200).json(resp)
          } else {
@@ -6848,14 +7057,14 @@ export default class AisController {
 
    async updateLetter(req: Request, res: Response) {
       try {
-         const resp = await ais.letter.update({
-            where: {
-               id: paramStr(req.params.id)
-            },
-            data: {
-               ...req.body,
-            }
-         })
+         const id = paramStr(req.params.id);
+         const data = letterFields(req.body);
+         if ('title' in data && !data.title) return res.status(400).json({ message: 'Title is required.' });
+         if (data.tag) {
+            const clash = await letterTagClash(data.tag, id);
+            if (clash) return res.status(400).json({ message: `Another letter already uses this category ("${clash.title}").` });
+         }
+         const resp = await ais.letter.update({ where: { id }, data })
          if (resp) {
             res.status(200).json(resp)
          } else {
@@ -7425,6 +7634,252 @@ export default class AisController {
       }
    }
 
+   /* Access Control -- role assignment by person, on the App > Module > Role
+      catalogue. A person holds at most one role per module. */
+
+   // Everything the Access Control page shows: the active catalogue with
+   // each role's holders, and each person who holds a role.
+   async fetchAccessOverview(req: Request, res: Response) {
+      try {
+         const [apps, assignments] = await Promise.all([
+            ais.app.findMany({
+               where: { status: true },
+               orderBy: { createdAt: 'asc' },
+               select: {
+                  tag: true, title: true,
+                  appModules: {
+                     where: { status: true },
+                     orderBy: { createdAt: 'asc' },
+                     select: {
+                        id: true, tag: true, title: true, description: true,
+                        appRoles: { where: { status: true }, orderBy: { createdAt: 'asc' }, select: { id: true, title: true, description: true } },
+                     },
+                  },
+               },
+            }),
+            ais.userRole.findMany({
+               orderBy: { createdAt: 'asc' },
+               select: {
+                  id: true, roleMeta: true, createdAt: true, appRoleId: true,
+                  user: { select: { id: true, tag: true, groupId: true } },
+                  appRole: { select: { title: true, status: true, appModule: { select: { tag: true, title: true, app: { select: { tag: true } } } } } },
+               },
+            }),
+         ]);
+         const people = await accessPeople(assignments.map((a: any) => a.user).filter(Boolean));
+
+         const holdersByRole = new Map<number, any[]>();
+         const byUser = new Map<string, any>();
+         for (const a of assignments) {
+            if (!a.user) continue;
+            const person = people.get(a.user.tag);
+            const roleTag = `${a.appRole?.appModule?.tag}::${a.appRole?.title?.toLowerCase()}`;
+            if (!holdersByRole.has(a.appRoleId)) holdersByRole.set(a.appRoleId, []);
+            holdersByRole.get(a.appRoleId)!.push({ userRoleId: a.id, tag: a.user.tag, name: person?.name, groupId: a.user.groupId, assignedAt: a.createdAt });
+            if (!byUser.has(a.user.tag)) byUser.set(a.user.tag, { ...person, tag: a.user.tag, groupId: a.user.groupId, roles: [] });
+            byUser.get(a.user.tag).roles.push({
+               userRoleId: a.id, roleId: a.appRoleId, role: roleTag, title: a.appRole?.title,
+               module: a.appRole?.appModule?.tag, moduleTitle: a.appRole?.appModule?.title, app: a.appRole?.appModule?.app?.tag,
+               active: !!a.appRole?.status, note: a.roleMeta, assignedAt: a.createdAt,
+            });
+         }
+
+         res.status(200).json({
+            apps: apps.map((app: any) => ({
+               tag: app.tag, title: app.title,
+               modules: app.appModules.map((m: any) => ({
+                  id: m.id, tag: m.tag, title: m.title, description: m.description,
+                  roles: m.appRoles.map((r: any) => ({
+                     id: r.id, title: r.title, description: r.description,
+                     role: `${m.tag}::${r.title?.toLowerCase()}`,
+                     holders: holdersByRole.get(r.id) ?? [],
+                  })),
+               })),
+            })),
+            users: [...byUser.values()].sort((a, b) => (a.name || a.tag).localeCompare(b.name || b.tag)),
+         });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   // One person's access: who they are and the role ids they hold.
+   async fetchUserAccess(req: Request, res: Response) {
+      try {
+         const tag = paramStr(req.params.tag).trim();
+         const user = await ais.user.findFirst({ where: { tag }, select: { id: true, tag: true, groupId: true } });
+         const person = (await accessPeople(user ? [user] : [{ tag, groupId: 2 }])).get(tag);
+         const roles = user ? await ais.userRole.findMany({ where: { userId: user.id }, select: { id: true, appRoleId: true, roleMeta: true, createdAt: true } }) : [];
+         res.status(200).json({
+            ...person, tag, groupId: user?.groupId ?? null, hasAccount: !!user,
+            roles: roles.map((r: any) => ({ userRoleId: r.id, roleId: r.appRoleId, note: r.roleMeta, assignedAt: r.createdAt })),
+         });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   // Replace a person's roles with exactly `roleIds`: validates the set,
+   // then grants/revokes only the difference in one transaction and logs it.
+   async saveUserAccess(req: any, res: Response) {
+      try {
+         const tag = paramStr(req.params.tag).trim();
+         const roleIds: number[] = [...new Set<number>((req.body?.roleIds || []).map(Number).filter((n: number) => Number.isInteger(n) && n > 0))];
+         const note = String(req.body?.note ?? '').trim().slice(0, 255);
+
+         const user = await ais.user.findFirst({ where: { tag }, select: { id: true, tag: true } });
+         if (!user) return res.status(400).json({ message: `${tag} has no portal account yet. Stage their account first, then assign roles.` });
+
+         const roles = roleIds.length ? await ais.appRole.findMany({
+            where: { id: { in: roleIds } },
+            select: { id: true, title: true, status: true, appModule: { select: { tag: true, title: true } } },
+         }) : [];
+         const missing = roleIds.filter((id) => !roles.some((r: any) => r.id === id));
+         if (missing.length) return res.status(400).json({ message: `Unknown role(s): ${missing.join(', ')}. Reload the page and try again.` });
+
+         // One role per module.
+         const perModule = new Map<string, any[]>();
+         for (const r of roles) {
+            const k = r.appModule?.tag;
+            if (!perModule.has(k)) perModule.set(k, []);
+            perModule.get(k)!.push(r);
+         }
+         const clashes = [...perModule.values()].filter((rs) => rs.length > 1);
+         if (clashes.length) {
+            return res.status(400).json({ message: `Only one role per module is allowed: ${clashes.map((rs) => `${rs[0].appModule?.title || rs[0].appModule?.tag} (${rs.map((r: any) => r.title).join(' / ')})`).join('; ')}.` });
+         }
+
+         const current = await ais.userRole.findMany({
+            where: { userId: user.id },
+            select: { id: true, appRoleId: true, appRole: { select: { title: true, appModule: { select: { tag: true } } } } },
+         });
+         const tagOf = (r: any) => `${r.appModule?.tag}::${r.title?.toLowerCase()}`;
+         const toRevoke = current.filter((c: any) => !roleIds.includes(c.appRoleId));
+         const toGrant = roles.filter((r: any) => !current.some((c: any) => c.appRoleId === r.id));
+         const inactive = toGrant.filter((r: any) => !r.status);
+         if (inactive.length) return res.status(400).json({ message: `Disabled role(s) can't be granted: ${inactive.map(tagOf).join(', ')}.` });
+
+         // Don't let an administrator lock themselves out of this page.
+         if (tag === req.userId && toRevoke.some((c: any) => tagOf(c.appRole) === 'access::admin')) {
+            return res.status(400).json({ message: `You can't remove your own Access Control admin role -- you'd lose access to role management. Ask another administrator to do it.` });
+         }
+
+         if (toRevoke.length || toGrant.length) {
+            await ais.$transaction([
+               ...(toRevoke.length ? [ais.userRole.deleteMany({ where: { id: { in: toRevoke.map((c: any) => c.id) } } })] : []),
+               ...toGrant.map((r: any) => ais.userRole.create({ data: { userId: user.id, appRoleId: r.id, roleMeta: note } })),
+               ais.log.create({
+                  data: {
+                     action: 'USER_ROLES_UPDATED', user: req.userId,
+                     meta: { tag, granted: toGrant.map(tagOf), revoked: toRevoke.map((c: any) => tagOf(c.appRole)), note: note || null },
+                  },
+               }),
+            ]);
+         }
+         res.status(200).json({ granted: toGrant.map(tagOf), revoked: toRevoke.map((c: any) => tagOf(c.appRole)) });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   /* Admission Letters */
+
+   async fetchAdmissionLetters(req: Request, res: Response) {
+      try {
+         const resp = await ais.admissionLetter.findMany({
+            select: { id: true, title: true, category: true, status: true, programId: true, updatedAt: true, program: { select: { shortName: true, longName: true, category: true } } },
+            orderBy: [{ status: 'desc' }, { updatedAt: 'desc' }],
+         })
+         res.status(200).json(resp)
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   async fetchAdmissionLetter(req: Request, res: Response) {
+      try {
+         const resp = await ais.admissionLetter.findUnique({ where: { id: paramStr(req.params.id) }, include: { program: { select: { shortName: true, longName: true, category: true } } } })
+         if (resp) res.status(200).json(resp)
+         else res.status(404).json({ message: `Admission letter not found` })
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   // Shared create/update validation: programme must exist; a programme
+   // has at most one active letter (the one printed).
+   async saveAdmissionLetter(req: Request, res: Response) {
+      try {
+         const id = req.params.id ? paramStr(req.params.id) : null;
+         const data = admissionLetterFields(req.body);
+         const existing = id ? await ais.admissionLetter.findUnique({ where: { id } }) : null;
+         if (id && !existing) return res.status(404).json({ message: 'Admission letter not found' });
+         const merged = { status: true, ...existing, ...data };
+         const missing = ['title', 'programId', 'signature'].filter((k) => !merged[k]);
+         if (missing.length) return res.status(400).json({ message: `Please provide: ${missing.map((k) => (k === 'programId' ? 'programme' : k)).join(', ')}.` });
+         const program = await ais.program.findUnique({ where: { id: merged.programId }, select: { longName: true, category: true } });
+         if (!program) return res.status(400).json({ message: 'Selected programme not found.' });
+         if (!data.category && !existing) data.category = program.category || 'UG';
+         if (merged.status) {
+            const clash = await ais.admissionLetter.findFirst({ where: { programId: merged.programId, status: true, ...(id && { id: { not: id } }) }, select: { title: true } });
+            if (clash) return res.status(400).json({ message: `${program.longName} already has an active admission letter ("${clash.title}"). Deactivate or edit that one instead.` });
+         }
+         const resp = id
+            ? await ais.admissionLetter.update({ where: { id }, data })
+            : await ais.admissionLetter.create({ data: { signatory: '', template: '', ...data } });
+         res.status(200).json(resp)
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   async deleteAdmissionLetter(req: Request, res: Response) {
+      try {
+         const resp = await ais.admissionLetter.delete({ where: { id: paramStr(req.params.id) } })
+         res.status(200).json(resp)
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
+   // Print data for one student (?studentId=) or all newly admitted first
+   // years of a programme (?programId=).
+   async fetchAdmissionLetterPrint(req: Request, res: Response) {
+      try {
+         const studentId = String(req.query.studentId || '').trim();
+         const programId = String(req.query.programId || '').trim();
+         let students: any[] = [];
+         let pid = programId;
+         if (studentId) {
+            const st = await ais.student.findUnique({ where: { id: studentId }, select: ADMISSION_STUDENT_SELECT });
+            if (!st) return res.status(404).json({ message: 'Student not found.' });
+            if (!st.programId) return res.status(400).json({ message: 'This student has no programme, so no admission letter applies.' });
+            students = [st];
+            pid = st.programId;
+         } else if (programId) {
+            students = await ais.student.findMany({ where: { programId, ...FIRST_YEAR_WHERE }, select: ADMISSION_STUDENT_SELECT, orderBy: [{ lname: 'asc' }, { fname: 'asc' }] });
+         } else {
+            return res.status(400).json({ message: 'Choose a student or a programme.' });
+         }
+         const bundle = await admissionPrintBundle(pid, students);
+         if (!bundle.letter) {
+            const program = await ais.program.findUnique({ where: { id: pid }, select: { longName: true } });
+            return res.status(400).json({ message: `No active admission letter for ${program?.longName || 'this programme'}. Create one under Admission Letters first.` });
+         }
+         res.status(200).json(bundle)
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: error.message })
+      }
+   }
+
    async checkUser(req: Request, res: Response) {
       try {
          const { userId } = req.body
@@ -7520,14 +7975,19 @@ export default class AisController {
       }
    }
 
-   async stageStaff(req: Request, res: Response) {
+   async stageStaff(req: Request & any, res: Response) {
       try {
-         const { staffId } = req.body;
+         const staffId = req.body?.staffId?.toString()?.trim();
+         if (!staffId) throw new Error("No staff number provided!")
          const password = pwdgen();
-         const st = await ais.staff.findFirst({ where: { staffNo: staffId.toString() } })
-         const isUser = await ais.user.findFirst({ where: { tag: staffId.toString(), groupId: 2 } })
-         if (isUser) throw ("Staff User Account Exists!")
-         const ssoData = { tag: staffId.toString(), username: st?.instituteEmail ? st?.instituteEmail.trim() : staffId.toString(), password: hashPassword(password) }  // Others
+         const st = await ais.staff.findFirst({ where: { staffNo: staffId } })
+         // Login resolves staff details from the staff row (authController),
+         // so a portal account without one can sign in but has no profile.
+         if (!st) throw new Error("Staff record not found!")
+         const isUser = await ais.user.findFirst({ where: { tag: staffId, groupId: 2 } })
+         if (isUser) throw new Error("Staff User Account Exists!")
+         // `||` (not `??`): some staff rows carry an empty-string instituteEmail.
+         const ssoData = { tag: staffId, username: st?.instituteEmail?.trim() || staffId, password: hashPassword(password) }  // Others
          // Populate SSO Account
          const resp = await ais.user.create({
             data: {
@@ -7536,41 +7996,58 @@ export default class AisController {
             },
          })
          if (resp) {
-            // Send Password By SMS
-            if (st?.phone) await sms(st?.phone, `Hi! Your new credentials are Username: ${st?.instituteEmail ?? staffId}, Password: ${password}`)
-            // Send Password By Email
-            res.status(200).json({ ...resp, password })
+            // Send Password By SMS -- quote the username actually stored on the
+            // account (login matches on sso_user.username), not instituteEmail.
+            if (st?.phone) {
+               const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+               try {
+                  await sms(phone, `Hi! Your new credentials are Username: ${resp.username}, Password: ${password}`)
+               } catch (smsError: any) {
+                  console.log('stageStaff SMS send failed:', smsError?.message)
+               }
+            }
+            // Audit: who staged which staff account (no credentials logged).
+            await ais.log.create({ data: { action: `STAFF_ACCOUNT_STAGED`, user: req?.userId, meta: { staffId, username: resp.username, via: req?.originalUrl, smsSent: !!st?.phone } } })
+            // Never return the password hash to the client.
+            const { password: _hash, unlockPin: _pin, ...account } = resp;
+            res.status(200).json({ ...account, password })
          } else {
             res.status(202).json({ message: `no records found` })
          }
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
+         return res.status(500).json({ message: error.message || 'Internal server error' })
       }
    }
 
    async resetStaff(req: Request & any, res: Response) {
       try {
-         const { staffId } = req.body
+         const staffId = req.body?.staffId?.toString()?.trim();
+         if (!staffId) throw new Error("No staff number provided!")
          const password = pwdgen();
-         const st = await ais.staff.findFirst({ where: { staffNo: staffId.toString() } })
-         const resp = await ais.user.updateMany({
-            where: { tag: staffId.toString(), groupId: 2 },
-            data: { password: hashPassword(password) },
-         })
-         if (resp?.count) {
-            // Audit: who reset which staff account (no credentials logged).
-            await ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req?.userId, meta: { staffId: staffId.toString(), via: req?.originalUrl, smsSent: !!st?.phone } } })
-            if (st?.phone) await sms(st?.phone, `Hi! Your credentials are Username: ${st?.instituteEmail ?? staffId}, Password: ${password}`)
-            res.status(200).json({ password })
-         } else {
-            res.status(202).json({ message: `no records found` })
+         const st = await ais.staff.findFirst({ where: { staffNo: staffId } })
+         const user = await ais.user.findFirst({ where: { tag: staffId, groupId: 2 } })
+         if (!user) return res.status(202).json({ message: `No staff user account found. Stage the account first.` })
+         await ais.user.update({ where: { id: user.id }, data: { password: hashPassword(password) } })
+         // Audit: who reset which staff account (no credentials logged).
+         await ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req?.userId, meta: { staffId, via: req?.originalUrl, smsSent: !!st?.phone } } })
+         // Send Password By SMS -- quote the account's real login username
+         // (login matches on sso_user.username), which can differ from
+         // staff.instituteEmail or be set when that column is null/empty.
+         if (st?.phone) {
+            const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+            try {
+               await sms(phone, `Hi! Your credentials are Username: ${user.username}, Password: ${password}`)
+            } catch (smsError: any) {
+               console.log('resetStaff SMS send failed:', smsError?.message)
+            }
          }
+         res.status(200).json({ username: user.username, password })
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: 'Internal server error' })
+         return res.status(500).json({ message: error.message || 'Internal server error' })
       }
    }
 

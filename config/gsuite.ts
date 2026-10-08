@@ -117,6 +117,57 @@ export async function createGsuiteUser({
   }
 }
 
+// Moves an existing account to a new primary address (e.g. after a
+// surname correction). Google keeps the old address as an alias, so mail
+// sent to it still arrives and the password, mailbox and Drive are untouched.
+export async function renameGsuiteUser({
+  oldEmail,
+  newEmail,
+  firstName,
+  middleName,
+  lastName,
+}: { oldEmail: string; newEmail: string; firstName?: string; middleName?: string; lastName?: string }): Promise<GsuiteResult> {
+  if (!isConfigured()) return { ok: false, skipped: true, error: 'GSuite integration not configured' };
+  try {
+    const directory = getDirectoryClient();
+    await directory.users.update({
+      userKey: oldEmail,
+      requestBody: {
+        primaryEmail: newEmail,
+        name: {
+          givenName: [firstName, middleName].filter(Boolean).join(' ') || newEmail.split('@')[0],
+          familyName: lastName || '.',
+        },
+      },
+    });
+    return { ok: true };
+  } catch (error: any) {
+    return { ok: false, error: error?.response?.data?.error?.message || error?.message || 'Unknown GSuite error' };
+  }
+}
+
+// Re-stamps the Student ID / Index Number externalIds (as set by
+// createGsuiteUser) after a student's id or index number changes. Google
+// replaces the whole externalIds list on update, so both are always sent.
+export async function updateGsuiteStudentIds({
+  email,
+  studentId,
+  indexno,
+}: { email: string; studentId?: string; indexno?: string | null }): Promise<GsuiteResult> {
+  if (!isConfigured()) return { ok: false, skipped: true, error: 'GSuite integration not configured' };
+  try {
+    const directory = getDirectoryClient();
+    const externalIds = [
+      studentId && { type: 'custom', customType: 'Student ID', value: studentId },
+      indexno && { type: 'custom', customType: 'Index Number', value: indexno },
+    ].filter(Boolean);
+    await directory.users.update({ userKey: email, requestBody: { externalIds } });
+    return { ok: true };
+  } catch (error: any) {
+    return { ok: false, error: error?.response?.data?.error?.message || error?.message || 'Unknown GSuite error' };
+  }
+}
+
 export async function updateGsuitePassword({
   email,
   password,

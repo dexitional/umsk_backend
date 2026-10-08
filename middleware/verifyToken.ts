@@ -12,6 +12,7 @@ const verifyToken = (req: Request | any, res: Response, next: NextFunction) => {
     jwt.verify(token, process.env.SECRET, (err: any, decoded: any) => {
         if (err) return res.status(401).send({ success: false, msg: "Unauthorized!",});
         req.userId = decoded?.user?.tag;
+        req.groupId = decoded?.user?.group_id; // 1 = student, 2 = staff
         // Already embedded in the signed token at login (authController.ts) — no extra query needed.
         req.roles = decoded?.roles || [];
         // Everything downstream of this request (handlers, Prisma audit

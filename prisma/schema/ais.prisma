@@ -156,6 +156,7 @@ model program {
   sheet      sheet[]
   bill       bill[]
   major      major[]
+  admissionLetters admissionLetter[]
 
   @@map("ais_program")
 }
@@ -203,6 +204,10 @@ model student {
   accountNet        Float?             @default(0) @db.Float
   gsuiteSynced      Boolean            @default(false)
   gsuiteSyncedAt    DateTime?
+  // Set when the student changes dob / instituteAffliate from the student
+  // portal -- each may be self-edited once; admins can still change both.
+  dobEditedAt       DateTime?
+  affiliateEditedAt DateTime?
 
   title       title?      @relation(fields: [titleId], references: [id])
   nationality country?    @relation("studentNationality", fields: [nationalityId], references: [id])
@@ -809,4 +814,25 @@ model evaluationResponse {
 
   @@unique([evaluationId, questionId])
   @@map("evaluation_response")
+}
+
+// Admission letter templates (restored ams_letter). Each is tied to a
+// programme (category UG by default); the active one is printed for the
+// programme's newly admitted first years.
+model admissionLetter {
+  id        String          @id @default(uuid())
+  programId String?
+  category  programCategory @default(UG)
+  title     String          @db.VarChar(350)
+  signatory String          @db.Text
+  signature String          @db.LongText
+  template  String          @db.LongText
+  status    Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  program program? @relation(fields: [programId], references: [id])
+
+  @@index([programId])
+  @@map("ams_letter")
 }

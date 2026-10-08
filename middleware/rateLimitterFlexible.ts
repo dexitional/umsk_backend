@@ -7,7 +7,9 @@ const { RateLimiterMemory, RateLimiterMySQL } = require("rate-limiter-flexible")
 
 const opts = {
   storeClient: db,
-  dbName: 'ums',
+  // The app's own database (.env MYSQL_DB), so each deployment keeps its
+  // counters in its own `rate` table.
+  dbName: process.env.MYSQL_DB,
   tableName: 'rate', // all limiters store data in one table
   duration: 3,   // Per Second
   points: 1    // Requests
@@ -20,21 +22,33 @@ const opts = {
 
 const rateLimiter: any = new RateLimiterMySQL(opts, (err: any) => console.log(err))
 
-// Login is unauthenticated (no req.userId yet), so this is keyed by IP rather
-// than user, with a much looser window than voteLimiter -- a real user
+// Login throttle, keyed by the submitted username so each account gets its own
+// quota. It used to be keyed by req.ip, but behind nginx every request had the
+// same (loopback) IP, so the whole institution shared one 5-attempt bucket --
+// one person mistyping locked everyone out, and every login queued on the
+// same `rate` row. Usernames match case-insensitively in MySQL, so the key is
+// lowercased to stop case variations getting fresh quotas. Falls back to the
+// IP when no username is sent. Looser window than voteLimiter: a real user
 // mistyping their password a couple of times shouldn't get locked out.
 const loginLimiterOpts = {
   storeClient: db,
-  dbName: 'ums',
+  dbName: process.env.MYSQL_DB,
   tableName: 'rate',
   keyPrefix: 'login',
   duration: 900,  // 15 minutes
-  points: 5       // Attempts
+  points: 5,      // Attempts
+  // If MySQL errors (e.g. "Too many connections"), keep throttling in memory
+  // instead of rejecting -- which used to answer every login with a 429.
+  insuranceLimiter: new RateLimiterMemory({ points: 5, duration: 900 }),
 };
 const loginRateLimiter: any = new RateLimiterMySQL(loginLimiterOpts, (err: any) => console.log(err))
+const loginKey = (req: Request & any) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
+  return username ? `user:${username.slice(0, 255)}` : `ip:${req.ip}`;
+};
 const loginLimiter: any = (req: Request & any, res: Response, next: NextFunction) => {
   loginRateLimiter
-    .consume(req.ip)
+    .consume(loginKey(req))
     .then((rateLimiterRes: any) => {
       res.setHeader('Retry-After', rateLimiterRes.msBeforeNext / 1000);
       res.setHeader('X-RateLimit-Limit', loginLimiterOpts.points);
@@ -42,7 +56,15 @@ const loginLimiter: any = (req: Request & any, res: Response, next: NextFunction
       res.setHeader('X-RateLimit-Reset', new Date(Date.now() + rateLimiterRes.msBeforeNext).toISOString());
       next();
     })
-    .catch(() => {
+    .catch((rej: any) => {
+      // Only a used-up quota is a 429. A store error (if even the in-memory
+      // fallback fails) must not lock every user out -- the password check
+      // still guards the account.
+      if (rej instanceof Error) {
+        console.log('loginLimiter store error:', rej.message);
+        return next();
+      }
+      res.setHeader('Retry-After', String(Math.ceil((rej?.msBeforeNext || 0) / 1000)));
       res.status(429).json({ message: 'Too many login attempts, please try again later.' });
     });
 };

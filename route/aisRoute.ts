@@ -36,6 +36,21 @@ const STUDENT_FINANCE_ROLES = ['student::admin', 'student::finance'];
 // itself predates this and is left as-is).
 const STUDENT_UPLOAD_ROLES = ['student::admin'];
 
+// Matches AISNav.tsx's gate on the System Reports page.
+const REPORT_ROLES = ['acareport::admin'];
+
+// Matches AISNav.tsx's gate on the User Roles (Access Control) page. A
+// dedicated role, separate from hrm::admin (HR records), so managing staff
+// records doesn't by itself let someone grant any role.
+const ROLE_ADMIN_ROLES = ['access::admin'];
+
+// Matches the Service Letter pages' create/edit/delete gate (sletter::admin).
+const LETTER_ADMIN_ROLES = ['sletter::admin'];
+// Admission letter templates live with the Academic Letters module; printing
+// them is also open to the student module (Student page, Programme > Students).
+const LETTER_VIEW_ROLES = ['sletter::admin', 'sletter::clerk'];
+const ADMISSION_PRINT_ROLES = ['sletter::admin', 'sletter::clerk', 'student::admin', 'student::clerk', 'student::registry'];
+
 class AisRoute {
     
     router = Router();
@@ -47,7 +62,8 @@ class AisRoute {
 
     initializeRoute(){
       this.router.get('/dash', this.controller.loadDashboard);
-      this.router.post('/report', this.controller.loadReport);
+      this.router.post('/report', [verifyToken, requireRole(REPORT_ROLES)], this.controller.loadReport);
+      this.router.post('/report/statutory', [verifyToken, requireRole(REPORT_ROLES)], this.controller.exportStatutoryReport);
       
        
       this.router.get('/test', this.controller.fetchTest);
@@ -88,6 +104,7 @@ class AisRoute {
       this.router.post('/students/upload', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadStudent);
       this.router.post('/students/publish', [verifyToken], this.controller.publishStudentTranscript);
       this.router.patch('/students/:id', [verifyToken], this.controller.updateStudent);
+      this.router.get('/halls', [verifyToken], this.controller.fetchHalls);
       this.router.delete('/students/:id', [verifyToken], this.controller.deleteStudent);
       this.router.delete('/students/transcript/:id', [verifyToken], this.controller.deleteStudentTranscript);
       
@@ -196,12 +213,20 @@ class AisRoute {
        this.router.delete('/circulars/:id', [verifyToken], this.controller.deleteScheme);
        
        /* Service Letters */
+       /* Admission Letters (ams_letter) -- before /letters/:id-style routes */
+       this.router.get('/admission-letters', [verifyToken, requireRole(LETTER_VIEW_ROLES)], this.controller.fetchAdmissionLetters);
+       this.router.get('/admission-letters/print', [verifyToken, requireRole(ADMISSION_PRINT_ROLES)], this.controller.fetchAdmissionLetterPrint);
+       this.router.get('/admission-letters/:id', [verifyToken, requireRole(LETTER_VIEW_ROLES)], this.controller.fetchAdmissionLetter);
+       this.router.post('/admission-letters', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.saveAdmissionLetter);
+       this.router.patch('/admission-letters/:id', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.saveAdmissionLetter);
+       this.router.delete('/admission-letters/:id', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.deleteAdmissionLetter);
+
        this.router.get('/letters', [verifyToken], this.controller.fetchLetters);
        this.router.get('/letters/:id', [verifyToken], this.controller.fetchLetter);
       //  this.router.post('/letters/approve', [verifyToken], this.controller.approveLetter);
-       this.router.post('/letters', [verifyToken], this.controller.postLetter);
-       this.router.patch('/letters/:id', [verifyToken], this.controller.updateLetter);
-       this.router.delete('/letters/:id', [verifyToken], this.controller.deleteLetter);
+       this.router.post('/letters', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.postLetter);
+       this.router.patch('/letters/:id', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.updateLetter);
+       this.router.delete('/letters/:id', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.deleteLetter);
       
       /* Transwift */
       this.router.get('/transwifts', [verifyToken], this.controller.fetchTranswifts);
@@ -329,16 +354,24 @@ class AisRoute {
       this.router.delete('/jobs/:id', [verifyToken], this.controller.deleteJob);
 
        /* User Roles */
-       this.router.get('/uroles', [verifyToken], this.controller.fetchURoles);
-       this.router.get('/uroles/:id', [verifyToken], this.controller.fetchURole);
-       this.router.post('/uroles/list', [verifyToken], this.controller.fetchURoleList);
-       this.router.post('/uroles', [verifyToken], this.controller.postURole);
-       this.router.patch('/uroles/:id', [verifyToken], this.controller.updateURole);
-       this.router.delete('/uroles/:id', [verifyToken], this.controller.deleteURole);
+       // Role management is for Access Control administrators only
+       // (access::admin, AISNav's gate) -- previously any signed-in user
+       // could grant themselves roles.
+       this.router.get('/uroles', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.fetchURoles);
+       this.router.get('/uroles/:id', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.fetchURole);
+       this.router.post('/uroles/list', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.fetchURoleList);
+       this.router.post('/uroles', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.postURole);
+       this.router.patch('/uroles/:id', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.updateURole);
+       this.router.delete('/uroles/:id', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.deleteURole);
+
+       /* Access Control */
+       this.router.get('/access', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.fetchAccessOverview);
+       this.router.get('/access/users/:tag', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.fetchUserAccess);
+       this.router.put('/access/users/:tag', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.saveUserAccess);
        this.router.post('/checkuser', [verifyToken], this.controller.checkUser);
        
       /* App Roles */
-      this.router.get('/aroles/list', [verifyToken], this.controller.fetchARoleList);
+      this.router.get('/aroles/list', [verifyToken, requireRole(ROLE_ADMIN_ROLES)], this.controller.fetchARoleList);
 
       /* Evaluations */
       this.router.get('/evaluations', [verifyToken], this.controller.fetchEvaluations);

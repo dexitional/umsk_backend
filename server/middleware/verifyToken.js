@@ -8,10 +8,11 @@ const verifyToken = (req, res, next) => {
     if (!token)
         return res.status(403).send({ success: false, msg: "No token provided!" });
     jwt.verify(token, process.env.SECRET, (err, decoded) => {
-        var _a;
+        var _a, _b;
         if (err)
             return res.status(401).send({ success: false, msg: "Unauthorized!", });
         req.userId = (_a = decoded === null || decoded === void 0 ? void 0 : decoded.user) === null || _a === void 0 ? void 0 : _a.tag;
+        req.groupId = (_b = decoded === null || decoded === void 0 ? void 0 : decoded.user) === null || _b === void 0 ? void 0 : _b.group_id; // 1 = student, 2 = staff
         // Already embedded in the signed token at login (authController.ts) — no extra query needed.
         req.roles = (decoded === null || decoded === void 0 ? void 0 : decoded.roles) || [];
         // Everything downstream of this request (handlers, Prisma audit

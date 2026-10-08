@@ -102,6 +102,10 @@ export default class AuthController {
         return res.status(200).json({ success: true, data: userdata, token });
 
       } else {
+        // Failed attempts weren't logged at all before -- no way to see brute-force
+        // or credential-stuffing activity in the audit trail. Logs the attempted
+        // username, not the password.
+        await sso.log.create({ data: { action: 'LOGIN_FAILED', user: username, meta: { ip: (req as any).clientIp || req.ip } } });
         return res.status(401).json({ success: false, message: "Invalid Credentials!" });
       }
 
@@ -134,6 +138,8 @@ export default class AuthController {
           }
           // Generate Session Token &
           const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
+          // Log Login Response
+          await sso.log.create({ data: { action: 'GOOGLE_LOGIN_SUCCESS', user: user.tag, meta: userdata } });
           // Send Response to Client
           res.status(200).json({ success: true, data: userdata, token });
 
@@ -159,6 +165,8 @@ export default class AuthController {
             }
             // Generate Session Token & 
             const token = jwt.sign(userdata || {}, process.env.SECRET, { expiresIn: 60 * 60 });
+            // Log Login Response
+            await sso.log.create({ data: { action: 'GOOGLE_LOGIN_SUCCESS', user: user.tag, meta: userdata } });
             // Send Response to Client
             res.status(200).json({ success: true, data: userdata, token });
 
@@ -170,6 +178,7 @@ export default class AuthController {
           }
         }
       } else {
+        await sso.log.create({ data: { action: 'GOOGLE_LOGIN_FAILED', user: email, meta: { ip: (req as any).clientIp || req.ip } } });
         res.status(401).json({
           success: false,
           message: "Invalid email account!",
@@ -344,8 +353,9 @@ export default class AuthController {
             console.log('forgetPassword GSuite password sync threw:', gsError?.message)
           }
         }
-        // Send Password By SMS
-        if (st?.phone) await sms(st?.phone, `Hi! Your new credentials is username: ${st?.instituteEmail}, password: ${password}`)
+        // Send Password By SMS -- quote the account's login username (login
+        // matches on sso_user.username); instituteEmail is null for most staff.
+        if (st?.phone) await sms(st?.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`)
         // Log Login Response
         // Self-service: the matched account is both actor and subject (`tag`
         // may be a username/email, so log the resolved account tag).

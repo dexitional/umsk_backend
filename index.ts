@@ -22,6 +22,10 @@ import { performBackup } from './util/backup';
 import { runCronJobs } from './util/cron';
 import { attachWebSocketServer } from './util/ws/server';
 const app: Express = express();
+// The API only ever receives traffic from nginx on this host (proxy_pass
+// http://127.0.0.1:5030), so trust X-Forwarded-For from loopback only;
+// otherwise req.ip is nginx's own address for every user.
+app.set('trust proxy', 'loopback');
 const server = createServer(app);
 const PORT = process.env.PORT || 5030;
 const requestIp = require('request-ip');

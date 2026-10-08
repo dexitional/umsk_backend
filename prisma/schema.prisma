@@ -195,6 +195,13 @@ enum staffStatus {
   RETIRED
   ABSENCE
   EXITED
+  PARTTIME
+}
+
+// Technical vs non-technical duties (GTEC Tables 15-16).
+enum dutyType {
+  TECHNICAL
+  NON_TECHNICAL
 }
 
 enum nssStatus {

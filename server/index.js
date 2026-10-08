@@ -35,6 +35,10 @@ const backup_1 = require("./util/backup");
 const cron_1 = require("./util/cron");
 const server_1 = require("./util/ws/server");
 const app = (0, express_1.default)();
+// The API only ever receives traffic from nginx on this host (proxy_pass
+// http://127.0.0.1:5030), so trust X-Forwarded-For from loopback only;
+// otherwise req.ip is nginx's own address for every user.
+app.set('trust proxy', 'loopback');
 const server = (0, node_http_1.createServer)(app);
 const PORT = process.env.PORT || 5030;
 const requestIp = require('request-ip');

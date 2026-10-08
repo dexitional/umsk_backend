@@ -25,6 +25,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createGsuiteUser = createGsuiteUser;
+exports.renameGsuiteUser = renameGsuiteUser;
+exports.updateGsuiteStudentIds = updateGsuiteStudentIds;
 exports.updateGsuitePassword = updateGsuitePassword;
 const { google } = require('googleapis');
 const SCOPES = [
@@ -97,6 +99,55 @@ function createGsuiteUser(_a) {
                         familyName: lastName || '.',
                     }, orgUnitPath, changePasswordAtNextLogin: false }, phone && { phones: [{ value: phone, type: 'mobile', primary: true }] }), personalEmail && personalEmail !== email && { emails: [{ address: personalEmail, type: 'home', primary: false }] }), externalIds.length && { externalIds }), program && { organizations: [{ department: program, primary: true, type: 'school' }] }),
             });
+            return { ok: true };
+        }
+        catch (error) {
+            return { ok: false, error: ((_d = (_c = (_b = error === null || error === void 0 ? void 0 : error.response) === null || _b === void 0 ? void 0 : _b.data) === null || _c === void 0 ? void 0 : _c.error) === null || _d === void 0 ? void 0 : _d.message) || (error === null || error === void 0 ? void 0 : error.message) || 'Unknown GSuite error' };
+        }
+    });
+}
+// Moves an existing account to a new primary address (e.g. after a
+// surname correction). Google keeps the old address as an alias, so mail
+// sent to it still arrives and the password, mailbox and Drive are untouched.
+function renameGsuiteUser(_a) {
+    return __awaiter(this, arguments, void 0, function* ({ oldEmail, newEmail, firstName, middleName, lastName, }) {
+        var _b, _c, _d;
+        if (!isConfigured())
+            return { ok: false, skipped: true, error: 'GSuite integration not configured' };
+        try {
+            const directory = getDirectoryClient();
+            yield directory.users.update({
+                userKey: oldEmail,
+                requestBody: {
+                    primaryEmail: newEmail,
+                    name: {
+                        givenName: [firstName, middleName].filter(Boolean).join(' ') || newEmail.split('@')[0],
+                        familyName: lastName || '.',
+                    },
+                },
+            });
+            return { ok: true };
+        }
+        catch (error) {
+            return { ok: false, error: ((_d = (_c = (_b = error === null || error === void 0 ? void 0 : error.response) === null || _b === void 0 ? void 0 : _b.data) === null || _c === void 0 ? void 0 : _c.error) === null || _d === void 0 ? void 0 : _d.message) || (error === null || error === void 0 ? void 0 : error.message) || 'Unknown GSuite error' };
+        }
+    });
+}
+// Re-stamps the Student ID / Index Number externalIds (as set by
+// createGsuiteUser) after a student's id or index number changes. Google
+// replaces the whole externalIds list on update, so both are always sent.
+function updateGsuiteStudentIds(_a) {
+    return __awaiter(this, arguments, void 0, function* ({ email, studentId, indexno, }) {
+        var _b, _c, _d;
+        if (!isConfigured())
+            return { ok: false, skipped: true, error: 'GSuite integration not configured' };
+        try {
+            const directory = getDirectoryClient();
+            const externalIds = [
+                studentId && { type: 'custom', customType: 'Student ID', value: studentId },
+                indexno && { type: 'custom', customType: 'Index Number', value: indexno },
+            ].filter(Boolean);
+            yield directory.users.update({ userKey: email, requestBody: { externalIds } });
             return { ok: true };
         }
         catch (error) {

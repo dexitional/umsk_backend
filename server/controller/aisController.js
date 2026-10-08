@@ -31,6 +31,7 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const helper_1 = require("../util/helper");
 const paramStr_1 = require("../util/paramStr");
+const statutoryReport_1 = require("../util/statutoryReport");
 const sheetScope_1 = require("../util/sheetScope");
 const resitScope_1 = require("../util/resitScope");
 const ais = client_1.prisma;
@@ -46,6 +47,47 @@ class BacklogRecordError extends Error {
         this.reason = reason;
     }
 }
+// Display details for role holders (Access Control): staff by staffNo,
+// students by student id -- both are the sso user's tag.
+function accessPeople(users) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a, _b, _c;
+        const tags = [...new Set(users.map((u) => u.tag).filter(Boolean))];
+        const out = new Map();
+        if (!tags.length)
+            return out;
+        const [staff, students] = yield Promise.all([
+            ais.staff.findMany({ where: { staffNo: { in: tags } }, select: { staffNo: true, fname: true, mname: true, lname: true, job: { select: { title: true } }, unit: { select: { title: true } } } }),
+            ais.student.findMany({ where: { id: { in: tags } }, select: { id: true, fname: true, mname: true, lname: true, program: { select: { shortName: true } } } }),
+        ]);
+        const full = (p) => [p.fname, p.mname, p.lname].filter(Boolean).join(' ');
+        for (const s of staff)
+            out.set(s.staffNo, { name: full(s), detail: ((_a = s.job) === null || _a === void 0 ? void 0 : _a.title) || 'Staff', unit: (_b = s.unit) === null || _b === void 0 ? void 0 : _b.title });
+        for (const s of students)
+            if (!out.has(s.id))
+                out.set(s.id, { name: full(s), detail: 'Student', unit: (_c = s.program) === null || _c === void 0 ? void 0 : _c.shortName });
+        return out;
+    });
+}
+// Backlog assessment scores, from the entry form or an upload row. Class
+// is the sum of Quiz + Midsem + Assignment (as on score sheets: scoreA /
+// scoreC / scoreB) -- an older entry with no breakdown keeps its class
+// score -- and Total is Class + Exam. A legacy row with neither class nor
+// exam keeps whatever total it was given.
+const scoreNum = (v) => (v === '' || v == null || Number.isNaN(parseFloat(v)) ? null : parseFloat(v));
+function backlogScores(raw) {
+    const scoreQuiz = scoreNum(raw.quiz), scoreMidsem = scoreNum(raw.midsem), scoreAssignment = scoreNum(raw.assignment);
+    const parts = [scoreQuiz, scoreMidsem, scoreAssignment];
+    const scoreClass = parts.every((x) => x == null) ? scoreNum(raw.classScore) : parts.reduce((a, x) => a + (x !== null && x !== void 0 ? x : 0), 0);
+    const scoreExam = scoreNum(raw.examScore);
+    const scoreTotal = scoreClass == null && scoreExam == null ? scoreNum(raw.totalScore) : (scoreClass !== null && scoreClass !== void 0 ? scoreClass : 0) + (scoreExam !== null && scoreExam !== void 0 ? scoreExam : 0);
+    return { scoreQuiz, scoreMidsem, scoreAssignment, scoreClass, scoreExam, scoreTotal };
+}
+// Form fields for row i of the backlog entry form.
+const backlogFormScores = (body, i) => backlogScores({
+    quiz: body[`${i}_scoreQuiz`], midsem: body[`${i}_scoreMidsem`], assignment: body[`${i}_scoreAssignment`],
+    classScore: body[`${i}_scoreClass`], examScore: body[`${i}_scoreExam`], totalScore: body[`${i}_scoreTotal`],
+});
 const password_1 = require("../util/password");
 const { customAlphabet } = require("nanoid");
 const pwdgen = customAlphabet("1234567890abcdefghijklmnopqrstuvwzyx", 6);
@@ -115,7 +157,6 @@ function unresolvedResitStudentsForSession(trailSessionId) {
 // later, misleading the student.
 function stageStudentAccess(studentId_1, userId_1) {
     return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true) {
-        var _a;
         const password = (0, password_1.generateStrongPassword)();
         const isUser = yield ais.user.findFirst({ where: { tag: studentId } });
         if (isUser)
@@ -129,7 +170,8 @@ function stageStudentAccess(studentId_1, userId_1) {
             const st = yield ais.student.findFirst({ where: { id: studentId } });
             if (st === null || st === void 0 ? void 0 : st.phone) {
                 try {
-                    yield sms(st.phone, `Hi! Your new credentials is username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : studentId}, password: ${password}`);
+                    // Quote the username just stored (login matches on it), not instituteEmail.
+                    yield sms(st.phone, `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
                 }
                 catch (smsError) {
                     console.log('stageStudentAccess SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
@@ -222,6 +264,128 @@ function generateStudentEmail(studentId_1, userId_1) {
         return resp;
     });
 }
+// A student editing their own record (student portal web form, Akatsico
+// mobile app) via PATCH /students/:id. Only these fields are accepted --
+// anything else in the body (status flags, programme, entryDate, email...)
+// is ignored, since those stay admin-only.
+const STUDENT_SELF_TEXT_FIELDS = ['phone', 'email', 'hometown', 'address', 'ghcardNo'];
+const STUDENT_SELF_RELATIONS = { titleId: 'title', religionId: 'religion', regionId: 'region', countryId: 'country' };
+class StudentSelfEditError extends Error {
+}
+function updateOwnStudentProfile(studentId, body) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a, _b, _c, _d;
+        const st = yield ais.student.findUnique({ where: { id: studentId } });
+        if (!st)
+            throw new StudentSelfEditError('Student record not found!');
+        const data = {};
+        const changed = [];
+        for (const k of STUDENT_SELF_TEXT_FIELDS) {
+            if (body[k] === undefined)
+                continue;
+            data[k] = ((_b = (_a = body[k]) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim()) || null;
+        }
+        for (const [k, rel] of Object.entries(STUDENT_SELF_RELATIONS)) {
+            if (body[k])
+                data[rel] = { connect: { id: body[k] } };
+        }
+        if (body.majorId)
+            data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
+        // Date of Birth -- self-editable once. Re-submitting the current value
+        // (the form always posts it) is not an edit and doesn't use it up.
+        if (body.dob) {
+            const ymd = body.dob.toString().slice(0, 10);
+            const dob = new Date(`${ymd}T00:00:00.000Z`);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || isNaN(dob.getTime()))
+                throw new StudentSelfEditError('Invalid Date of Birth!');
+            if (((_d = (_c = st.dob) === null || _c === void 0 ? void 0 : _c.toISOString()) === null || _d === void 0 ? void 0 : _d.slice(0, 10)) !== ymd) {
+                if (st.dobEditedAt)
+                    throw new StudentSelfEditError('Date of Birth has already been changed once. Contact the College Registry for further corrections.');
+                const age = (0, moment_1.default)().diff(moment_1.default.utc(ymd), 'years');
+                if (age < 10 || age > 100)
+                    throw new StudentSelfEditError('Date of Birth is out of range!');
+                data.dob = dob;
+                data.dobEditedAt = new Date();
+                changed.push('dob');
+            }
+        }
+        // Hall of Affiliation -- self-editable once, and only to a hall already
+        // in use (halls come in via the student upload's HALL column).
+        if (body.instituteAffliate) {
+            const hall = body.instituteAffliate.toString().trim();
+            if ((st.instituteAffliate || '').trim().toUpperCase() !== hall.toUpperCase()) {
+                if (st.affiliateEditedAt)
+                    throw new StudentSelfEditError('Hall of Affiliation has already been changed once. Contact the College Registry for further corrections.');
+                const known = yield ais.student.findFirst({ where: { instituteAffliate: hall }, select: { instituteAffliate: true } });
+                if (!known)
+                    throw new StudentSelfEditError('Unknown Hall of Affiliation!');
+                data.instituteAffliate = known.instituteAffliate;
+                data.affiliateEditedAt = new Date();
+                changed.push('instituteAffliate');
+            }
+        }
+        const resp = yield ais.student.update({ where: { id: studentId }, data });
+        yield ais.log.create({
+            data: {
+                action: `STUDENT_PROFILE_SELF_UPDATED`, user: studentId, student: studentId, meta: Object.assign(Object.assign({ fields: Object.keys(data) }, changed.includes('dob') && ({ dob: { from: st.dob, to: data.dob } })), changed.includes('instituteAffliate') && ({ instituteAffliate: { from: st.instituteAffliate, to: data.instituteAffliate } }))
+            }
+        });
+        return resp;
+    });
+}
+// Service letters: only the letter's own fields are saved. Letters are
+// fetched by category tag (e.g. 'def', 'vc'), so a tag may be used once.
+const LETTER_FIELDS = ['title', 'tag', 'signatory', 'signature', 'template', 'cc'];
+function letterFields(body) {
+    const data = {};
+    for (const k of LETTER_FIELDS)
+        if ((body === null || body === void 0 ? void 0 : body[k]) !== undefined)
+            data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
+    if ((body === null || body === void 0 ? void 0 : body.status) !== undefined)
+        data.status = body.status === true || body.status === 'true' || body.status == 1;
+    return data;
+}
+const letterTagClash = (tag, exceptId) => ais.letter.findFirst({ where: Object.assign({ tag }, (exceptId && { id: { not: exceptId } })), select: { title: true } });
+// Admission letters (ams_letter): one active template per programme,
+// printed for its newly admitted first years (Year 1, not completed or
+// graduated). Each printed letter carries the student, the default session
+// and the programme's first-year bill for that session (for ::fee_amount).
+const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'signatory', 'signature', 'template'];
+function admissionLetterFields(body) {
+    const data = {};
+    for (const k of ADMISSION_LETTER_FIELDS)
+        if ((body === null || body === void 0 ? void 0 : body[k]) !== undefined)
+            data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
+    if ((body === null || body === void 0 ? void 0 : body.status) !== undefined)
+        data.status = body.status === true || body.status === 'true' || body.status == 1;
+    if (data.programId === '')
+        data.programId = null;
+    return data;
+}
+const ADMISSION_STUDENT_SELECT = {
+    id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true,
+    entryDate: true, entryGroup: true, residentialStatus: true, address: true, hometown: true, phone: true, email: true,
+    deferStatus: true, programId: true,
+    title: { select: { label: true } },
+    program: { select: { id: true, longName: true, shortName: true, category: true, semesterTotal: true } },
+    major: { select: { longName: true, shortName: true } },
+};
+const FIRST_YEAR_WHERE = { semesterNum: { in: [1, 2] }, completeStatus: false, graduateStatus: false };
+function admissionPrintBundle(programId, students) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const [letter, session] = yield Promise.all([
+            ais.admissionLetter.findFirst({ where: { programId, status: true }, orderBy: { updatedAt: 'desc' } }),
+            ais.session.findFirst({ where: { default: true } }),
+        ]);
+        const bills = session ? yield ais.bill.findMany({
+            where: { sessionId: session.id, programId, status: true, OR: (0, helper_1.getBillCodePrisma)(1) },
+            include: { bankacc: true },
+            orderBy: { createdAt: 'desc' },
+        }) : [];
+        const billFor = (s) => bills.find((b) => b.type === (s.entryGroup || 'GH')) || bills[0] || null;
+        return { letter, session, students: students.map((s) => (Object.assign(Object.assign({}, s), { bill: billFor(s) }))) };
+    });
+}
 class AisController {
     fetchTest(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
@@ -245,6 +409,25 @@ class AisController {
         });
     }
     /* Reports */
+    // GTEC statutory return: one table per request, as its own Excel file
+    // laid out exactly like GTEC's sample (see util/statutoryReport.ts).
+    exportStatutoryReport(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const { table, gsession } = req.body;
+                const { file, workbook } = yield (0, statutoryReport_1.buildStatutoryReport)(String(table || ''), { gsession: gsession || undefined });
+                res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+                res.setHeader('Content-Disposition', `attachment; filename="${file}.xlsx"`);
+                res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+                yield workbook.xlsx.write(res);
+                res.end();
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(error instanceof statutoryReport_1.StatutoryReportError ? 400 : 500).json({ message: error.message || 'Report generation failed' });
+            }
+        });
+    }
     loadReport(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
@@ -1281,7 +1464,6 @@ class AisController {
     }
     resetStudent(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a;
             try {
                 const { studentId } = req.body;
                 const password = (0, password_1.generateStrongPassword)();
@@ -1294,11 +1476,12 @@ class AisController {
                 // undefined password. Reset now guarantees a working login either
                 // way: create the missing account instead of no-op'ing.
                 const existingUser = yield ais.user.findFirst({ where: { tag: studentId } });
+                let account;
                 if (existingUser) {
-                    yield ais.user.update({ where: { id: existingUser.id }, data: { password: (0, password_1.hashPassword)(password) } });
+                    account = yield ais.user.update({ where: { id: existingUser.id }, data: { password: (0, password_1.hashPassword)(password) } });
                 }
                 else {
-                    yield ais.user.create({
+                    account = yield ais.user.create({
                         data: { tag: studentId, username: (st === null || st === void 0 ? void 0 : st.instituteEmail) || studentId, password: (0, password_1.hashPassword)(password), unlockPin: pin(), group: { connect: { id: 1 } } },
                     });
                 }
@@ -1328,7 +1511,7 @@ class AisController {
                 if (st === null || st === void 0 ? void 0 : st.phone) {
                     const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
                     try {
-                        yield sms(phone, `Hi! Your new credentials is username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : studentId}, password: ${password}`);
+                        yield sms(phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
                     }
                     catch (smsError) {
                         console.log('resetStudent SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
@@ -1703,6 +1886,14 @@ class AisController {
     updateStudent(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
+                // Student callers get the restricted self-service update, and only
+                // on their own record.
+                if (req.groupId == 1) {
+                    if ((0, paramStr_1.paramStr)(req.params.id) !== req.userId)
+                        return res.status(403).json({ message: 'You can only update your own profile!' });
+                    const resp = yield updateOwnStudentProfile(req.userId, req.body);
+                    return res.status(200).json(resp);
+                }
                 const { titleId, programId, countryId, regionId, religionId, disabilityId, majorId, instituteEmail, indexno } = req.body;
                 delete req.body.titleId;
                 delete req.body.programId;
@@ -1740,6 +1931,20 @@ class AisController {
                 else {
                     res.status(202).json({ message: `No records found` });
                 }
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(error instanceof StudentSelfEditError ? 400 : 500).json({ message: error.message });
+            }
+        });
+    }
+    // Halls of Affiliation in use -- options for the student portal's
+    // one-time Hall of Affiliation edit (see updateOwnStudentProfile).
+    fetchHalls(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const rows = yield ais.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } }, orderBy: { instituteAffliate: 'asc' } });
+                res.status(200).json(rows.map((r) => { var _a; return (_a = r.instituteAffliate) === null || _a === void 0 ? void 0 : _a.trim(); }).filter(Boolean));
             }
             catch (error) {
                 console.log(error);
@@ -4501,43 +4706,27 @@ class AisController {
                             let data = [];
                             if (type == 'ASSESSMENT') { // BACKLOG ASSESSMENT
                                 data = yield Promise.all(meta.map((r) => __awaiter(this, void 0, void 0, function* () {
-                                    var _a, _b;
+                                    var _a, _b, _c, _d, _e;
                                     try {
                                         const as = yield tx.assessment.findFirst({ where: { sessionId, courseId: r.courseId, indexno: r.indexno.trim() } });
                                         const cs = yield tx.course.findUnique({ where: { id: r.courseId } });
                                         // Log Existing Data
                                         yield tx.log.create({ data: { action: `BACKLOG_${type}`, user: req.userId, student: r.indexno.trim(), meta: as } });
+                                        // Quiz / Midsem / Assignment (scoreA / scoreC / scoreB). Older
+                                        // backlogs without the breakdown leave existing values alone.
+                                        const parts = 'scoreQuiz' in r ? { scoreA: (_a = r.scoreQuiz) !== null && _a !== void 0 ? _a : null, scoreB: (_b = r.scoreAssignment) !== null && _b !== void 0 ? _b : null, scoreC: (_c = r.scoreMidsem) !== null && _c !== void 0 ? _c : null } : {};
                                         // Upsert New Data
                                         return yield tx.assessment.upsert({
                                             where: {
-                                                id: (_a = as === null || as === void 0 ? void 0 : as.id) !== null && _a !== void 0 ? _a : ''
+                                                id: (_d = as === null || as === void 0 ? void 0 : as.id) !== null && _d !== void 0 ? _d : ''
                                             },
-                                            create: {
-                                                indexno: r.indexno.trim(),
-                                                courseId: r.courseId,
-                                                semesterNum: Number(r.semesterNum),
-                                                classScore: r.scoreClass,
-                                                examScore: r.scoreExam,
-                                                totalScore: r.scoreTotal,
-                                                type: r.scoreType,
-                                                status: true,
-                                                credit: cs === null || cs === void 0 ? void 0 : cs.creditHour,
-                                                sessionId,
-                                                schemeId
-                                            },
-                                            update: {
-                                                semesterNum: Number(r.semesterNum),
-                                                classScore: r.scoreClass,
-                                                examScore: r.scoreExam,
-                                                totalScore: r.scoreTotal,
-                                                type: r.scoreType,
-                                                credit: cs === null || cs === void 0 ? void 0 : cs.creditHour,
-                                                schemeId
-                                            },
+                                            create: Object.assign(Object.assign({ indexno: r.indexno.trim(), courseId: r.courseId, semesterNum: Number(r.semesterNum) }, parts), { classScore: r.scoreClass, examScore: r.scoreExam, totalScore: r.scoreTotal, type: r.scoreType, status: true, credit: cs === null || cs === void 0 ? void 0 : cs.creditHour, sessionId,
+                                                schemeId }),
+                                            update: Object.assign(Object.assign({ semesterNum: Number(r.semesterNum) }, parts), { classScore: r.scoreClass, examScore: r.scoreExam, totalScore: r.scoreTotal, type: r.scoreType, credit: cs === null || cs === void 0 ? void 0 : cs.creditHour, schemeId }),
                                         });
                                     }
                                     catch (recordError) {
-                                        throw new BacklogRecordError((_b = r.indexno) === null || _b === void 0 ? void 0 : _b.trim(), (0, helper_1.friendlyDbError)(recordError));
+                                        throw new BacklogRecordError((_e = r.indexno) === null || _e === void 0 ? void 0 : _e.trim(), (0, helper_1.friendlyDbError)(recordError));
                                     }
                                 })));
                             }
@@ -4627,17 +4816,15 @@ class AisController {
                     let sessionId = data[0].sessionId, schemeId = data[0].schemeId;
                     let meta = [];
                     data === null || data === void 0 ? void 0 : data.map((row) => __awaiter(this, void 0, void 0, function* () {
-                        let { courseId, type, status, semesterNum, indexno, classScore, examScore, totalScore } = row;
-                        indexno = indexno.trim();
-                        courseId = courseId.trim();
-                        schemeId = schemeId.trim();
-                        type = type.trim();
+                        let { courseId, type, status, semesterNum, indexno, quiz, midsem, assignment, classScore, examScore, totalScore } = row;
+                        // Excel cells may come through as numbers.
+                        indexno = String(indexno !== null && indexno !== void 0 ? indexno : '').trim();
+                        courseId = String(courseId !== null && courseId !== void 0 ? courseId : '').trim();
+                        schemeId = String(schemeId !== null && schemeId !== void 0 ? schemeId : '').trim();
+                        type = String(type !== null && type !== void 0 ? type : '').trim();
                         semesterNum = +semesterNum;
-                        classScore = classScore != '' ? parseFloat(classScore) : null;
-                        examScore = examScore != '' ? parseFloat(examScore) : null;
-                        totalScore = totalScore != '' ? parseFloat(totalScore) : null;
                         status = !!status;
-                        meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreClass: classScore, scoreExam: examScore, scoreTotal: totalScore });
+                        meta.push(Object.assign({ indexno, courseId, semesterNum, scoreType: type }, backlogScores({ quiz, midsem, assignment, classScore, examScore, totalScore })));
                     }));
                     resp = yield ais.activityBacklog.create({
                         data: Object.assign(Object.assign(Object.assign({ title: `UPLOAD - ${(_a = (0, moment_1.default)().format('LLL')) === null || _a === void 0 ? void 0 : _a.toUpperCase()} - ${createdBy}`, type: `ASSESSMENT`, meta }, createdBy && ({ creator: { connect: { staffNo: createdBy } } })), sessionId && ({ session: { connect: { id: sessionId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } })),
@@ -4660,10 +4847,11 @@ class AisController {
         });
     }
     // Exam Score Manager upload -- a narrower clone of uploadBacklog. The
-    // sample/upload file only has exam score, sessionId, semesterNum,
-    // courseId, indexno, and type (scoreType N/R): no classScore/totalScore
-    // and no schemeId, since this never creates an assessment record, only
-    // updates the examScore (and recomputed totalScore) on an existing one.
+    // sample/upload file has exam score, sessionId, schemeId, semesterNum,
+    // courseId, indexno, and type (scoreType N/R): no classScore/totalScore.
+    // schemeId only sets the exam maximum the scores are validated against
+    // -- this never creates an assessment record, only updates the
+    // examScore (and recomputed totalScore) on an existing one.
     // Stages a pending activityExam batch the same way uploadBacklog does;
     // approveExamScore commits it. `tag` is a free-text label the uploader
     // gives the batch (picked in the upload popup alongside the file), not
@@ -4678,23 +4866,47 @@ class AisController {
                     const createdBy = req.userId;
                     let sessionId = rows[0].sessionId;
                     let meta = [];
+                    // Each row's exam score is checked against the exam maximum of the
+                    // grading scheme named in the file (schemeId column, from the
+                    // upload sample) -- EXAM_SCORE_MAX when the file has no scheme.
+                    const schemeIds = [...new Set(rows.map((r) => { var _a; return String((_a = r.schemeId) !== null && _a !== void 0 ? _a : '').trim(); }).filter(Boolean))];
+                    const schemes = schemeIds.length ? yield ais.scheme.findMany({ where: { id: { in: schemeIds } }, select: { id: true, scoreRange: true } }) : [];
+                    const unknownSchemes = schemeIds.filter((id) => !schemes.some((sc) => sc.id === id));
+                    if (unknownSchemes.length) {
+                        return res.status(400).json({ message: `Upload rejected: grading scheme not found (${unknownSchemes.join(', ')}). Please generate a new upload sample.` });
+                    }
+                    const examMaxOf = (schemeId) => {
+                        var _a;
+                        const range = (_a = schemes.find((sc) => sc.id === String(schemeId !== null && schemeId !== void 0 ? schemeId : '').trim())) === null || _a === void 0 ? void 0 : _a.scoreRange;
+                        const v = Number(range === null || range === void 0 ? void 0 : range.exam);
+                        return v > 0 ? v : EXAM_SCORE_MAX;
+                    };
+                    const errors = [];
                     rows === null || rows === void 0 ? void 0 : rows.map((row) => {
                         let { courseId, type, semesterNum, indexno, examScore } = row;
-                        indexno = indexno.trim();
-                        courseId = courseId.trim();
-                        type = type.trim();
+                        // Excel cells may come through as numbers.
+                        indexno = String(indexno !== null && indexno !== void 0 ? indexno : '').trim();
+                        courseId = String(courseId !== null && courseId !== void 0 ? courseId : '').trim();
+                        type = String(type !== null && type !== void 0 ? type : '').trim();
                         semesterNum = +semesterNum;
-                        examScore = examScore != '' ? parseFloat(examScore) : null;
+                        const raw = String(examScore !== null && examScore !== void 0 ? examScore : '').trim();
+                        const max = examMaxOf(row.schemeId);
+                        examScore = raw === '' ? null : Number(raw);
+                        if (examScore != null && Number.isNaN(examScore))
+                            errors.push({ indexno, reason: `exam score "${raw}" is not a number` });
+                        else if (examScore != null && examScore < 0)
+                            errors.push({ indexno, reason: `exam score ${examScore} is below 0` });
+                        else if (examScore != null && examScore > max)
+                            errors.push({ indexno, reason: `exam score ${examScore} exceeds the maximum of ${max}` });
                         meta.push({ indexno, courseId, semesterNum, scoreType: type, scoreExam: examScore });
                     });
-                    const overMax = meta.filter((r) => r.scoreExam != null && r.scoreExam > EXAM_SCORE_MAX);
-                    if (overMax.length) {
-                        const indexnos = [...new Set(overMax.map((r) => r.indexno))];
+                    if (errors.length) {
+                        const shown = errors.slice(0, 15).map((e) => `${e.indexno} (${e.reason})`).join('; ');
                         return res.status(400).json({
-                            message: `Upload rejected: exam score exceeds the maximum of ${EXAM_SCORE_MAX} for ${overMax.length} of ${meta.length} student record(s): ${indexnos.join(', ')}.`,
-                            failedCount: overMax.length,
+                            message: `Upload rejected: ${errors.length} of ${meta.length} student record(s) have an invalid exam score: ${shown}${errors.length > 15 ? `; and ${errors.length - 15} more` : ''}.`,
+                            failedCount: errors.length,
                             totalCount: meta.length,
-                            errors: indexnos.map((indexno) => ({ indexno, reason: `Exam score exceeds maximum of ${EXAM_SCORE_MAX}` })),
+                            errors,
                         });
                     }
                     resp = yield ais.activityExam.create({
@@ -4989,13 +5201,10 @@ class AisController {
                         const courseId = req.body[`${i}_courseId`];
                         const semesterNum = req.body[`${i}_semesterNum`];
                         const scoreType = req.body[`${i}_scoreType`];
-                        const scoreClass = parseFloat(req.body[`${i}_scoreClass`]);
-                        const scoreExam = parseFloat(req.body[`${i}_scoreExam`]);
-                        const scoreTotal = parseFloat(req.body[`${i}_scoreTotal`]);
                         if (type == 'REGISTRATION')
                             meta.push({ indexno, courseId, semesterNum, scoreType });
                         else if (type == 'ASSESSMENT')
-                            meta.push({ indexno, courseId, semesterNum, scoreType, scoreClass, scoreExam, scoreTotal });
+                            meta.push(Object.assign({ indexno, courseId, semesterNum, scoreType }, backlogFormScores(req.body, i)));
                         else
                             meta.push({ indexno, courseId, semesterNum });
                     }
@@ -5029,13 +5238,10 @@ class AisController {
                         const courseId = req.body[`${i}_courseId`];
                         const semesterNum = req.body[`${i}_semesterNum`];
                         const scoreType = req.body[`${i}_scoreType`];
-                        const scoreClass = parseFloat(req.body[`${i}_scoreClass`]);
-                        const scoreExam = parseFloat(req.body[`${i}_scoreExam`]);
-                        const scoreTotal = parseFloat(req.body[`${i}_scoreTotal`]);
                         if (type == 'REGISTRATION')
                             meta.push({ indexno, courseId, semesterNum, scoreType });
                         else if (type == 'ASSESSMENT')
-                            meta.push({ indexno, courseId, semesterNum, scoreType, scoreClass, scoreExam, scoreTotal });
+                            meta.push(Object.assign({ indexno, courseId, semesterNum, scoreType }, backlogFormScores(req.body, i)));
                         else
                             meta.push({ indexno, courseId, semesterNum });
                     }
@@ -6801,9 +7007,14 @@ class AisController {
     postLetter(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const resp = yield ais.letter.create({
-                    data: Object.assign({}, req.body),
-                });
+                const data = letterFields(req.body);
+                const missing = ['title', 'tag', 'signature'].filter((k) => !data[k]);
+                if (missing.length)
+                    return res.status(400).json({ message: `Please provide: ${missing.join(', ')}.` });
+                const clash = yield letterTagClash(data.tag);
+                if (clash)
+                    return res.status(400).json({ message: `A letter already uses this category ("${clash.title}"). Edit that letter instead.` });
+                const resp = yield ais.letter.create({ data: Object.assign({ signatory: '', template: '' }, data) });
                 if (resp) {
                     res.status(200).json(resp);
                 }
@@ -6820,12 +7031,16 @@ class AisController {
     updateLetter(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const resp = yield ais.letter.update({
-                    where: {
-                        id: (0, paramStr_1.paramStr)(req.params.id)
-                    },
-                    data: Object.assign({}, req.body)
-                });
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                const data = letterFields(req.body);
+                if ('title' in data && !data.title)
+                    return res.status(400).json({ message: 'Title is required.' });
+                if (data.tag) {
+                    const clash = yield letterTagClash(data.tag, id);
+                    if (clash)
+                        return res.status(400).json({ message: `Another letter already uses this category ("${clash.title}").` });
+                }
+                const resp = yield ais.letter.update({ where: { id }, data });
                 if (resp) {
                     res.status(200).json(resp);
                 }
@@ -7387,6 +7602,279 @@ class AisController {
             }
         });
     }
+    /* Access Control -- role assignment by person, on the App > Module > Role
+       catalogue. A person holds at most one role per module. */
+    // Everything the Access Control page shows: the active catalogue with
+    // each role's holders, and each person who holds a role.
+    fetchAccessOverview(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+            try {
+                const [apps, assignments] = yield Promise.all([
+                    ais.app.findMany({
+                        where: { status: true },
+                        orderBy: { createdAt: 'asc' },
+                        select: {
+                            tag: true, title: true,
+                            appModules: {
+                                where: { status: true },
+                                orderBy: { createdAt: 'asc' },
+                                select: {
+                                    id: true, tag: true, title: true, description: true,
+                                    appRoles: { where: { status: true }, orderBy: { createdAt: 'asc' }, select: { id: true, title: true, description: true } },
+                                },
+                            },
+                        },
+                    }),
+                    ais.userRole.findMany({
+                        orderBy: { createdAt: 'asc' },
+                        select: {
+                            id: true, roleMeta: true, createdAt: true, appRoleId: true,
+                            user: { select: { id: true, tag: true, groupId: true } },
+                            appRole: { select: { title: true, status: true, appModule: { select: { tag: true, title: true, app: { select: { tag: true } } } } } },
+                        },
+                    }),
+                ]);
+                const people = yield accessPeople(assignments.map((a) => a.user).filter(Boolean));
+                const holdersByRole = new Map();
+                const byUser = new Map();
+                for (const a of assignments) {
+                    if (!a.user)
+                        continue;
+                    const person = people.get(a.user.tag);
+                    const roleTag = `${(_b = (_a = a.appRole) === null || _a === void 0 ? void 0 : _a.appModule) === null || _b === void 0 ? void 0 : _b.tag}::${(_d = (_c = a.appRole) === null || _c === void 0 ? void 0 : _c.title) === null || _d === void 0 ? void 0 : _d.toLowerCase()}`;
+                    if (!holdersByRole.has(a.appRoleId))
+                        holdersByRole.set(a.appRoleId, []);
+                    holdersByRole.get(a.appRoleId).push({ userRoleId: a.id, tag: a.user.tag, name: person === null || person === void 0 ? void 0 : person.name, groupId: a.user.groupId, assignedAt: a.createdAt });
+                    if (!byUser.has(a.user.tag))
+                        byUser.set(a.user.tag, Object.assign(Object.assign({}, person), { tag: a.user.tag, groupId: a.user.groupId, roles: [] }));
+                    byUser.get(a.user.tag).roles.push({
+                        userRoleId: a.id, roleId: a.appRoleId, role: roleTag, title: (_e = a.appRole) === null || _e === void 0 ? void 0 : _e.title,
+                        module: (_g = (_f = a.appRole) === null || _f === void 0 ? void 0 : _f.appModule) === null || _g === void 0 ? void 0 : _g.tag, moduleTitle: (_j = (_h = a.appRole) === null || _h === void 0 ? void 0 : _h.appModule) === null || _j === void 0 ? void 0 : _j.title, app: (_m = (_l = (_k = a.appRole) === null || _k === void 0 ? void 0 : _k.appModule) === null || _l === void 0 ? void 0 : _l.app) === null || _m === void 0 ? void 0 : _m.tag,
+                        active: !!((_o = a.appRole) === null || _o === void 0 ? void 0 : _o.status), note: a.roleMeta, assignedAt: a.createdAt,
+                    });
+                }
+                res.status(200).json({
+                    apps: apps.map((app) => ({
+                        tag: app.tag, title: app.title,
+                        modules: app.appModules.map((m) => ({
+                            id: m.id, tag: m.tag, title: m.title, description: m.description,
+                            roles: m.appRoles.map((r) => {
+                                var _a, _b;
+                                return ({
+                                    id: r.id, title: r.title, description: r.description,
+                                    role: `${m.tag}::${(_a = r.title) === null || _a === void 0 ? void 0 : _a.toLowerCase()}`,
+                                    holders: (_b = holdersByRole.get(r.id)) !== null && _b !== void 0 ? _b : [],
+                                });
+                            }),
+                        })),
+                    })),
+                    users: [...byUser.values()].sort((a, b) => (a.name || a.tag).localeCompare(b.name || b.tag)),
+                });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    // One person's access: who they are and the role ids they hold.
+    fetchUserAccess(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            try {
+                const tag = (0, paramStr_1.paramStr)(req.params.tag).trim();
+                const user = yield ais.user.findFirst({ where: { tag }, select: { id: true, tag: true, groupId: true } });
+                const person = (yield accessPeople(user ? [user] : [{ tag, groupId: 2 }])).get(tag);
+                const roles = user ? yield ais.userRole.findMany({ where: { userId: user.id }, select: { id: true, appRoleId: true, roleMeta: true, createdAt: true } }) : [];
+                res.status(200).json(Object.assign(Object.assign({}, person), { tag, groupId: (_a = user === null || user === void 0 ? void 0 : user.groupId) !== null && _a !== void 0 ? _a : null, hasAccount: !!user, roles: roles.map((r) => ({ userRoleId: r.id, roleId: r.appRoleId, note: r.roleMeta, assignedAt: r.createdAt })) }));
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    // Replace a person's roles with exactly `roleIds`: validates the set,
+    // then grants/revokes only the difference in one transaction and logs it.
+    saveUserAccess(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b, _c, _d;
+            try {
+                const tag = (0, paramStr_1.paramStr)(req.params.tag).trim();
+                const roleIds = [...new Set((((_a = req.body) === null || _a === void 0 ? void 0 : _a.roleIds) || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+                const note = String((_c = (_b = req.body) === null || _b === void 0 ? void 0 : _b.note) !== null && _c !== void 0 ? _c : '').trim().slice(0, 255);
+                const user = yield ais.user.findFirst({ where: { tag }, select: { id: true, tag: true } });
+                if (!user)
+                    return res.status(400).json({ message: `${tag} has no portal account yet. Stage their account first, then assign roles.` });
+                const roles = roleIds.length ? yield ais.appRole.findMany({
+                    where: { id: { in: roleIds } },
+                    select: { id: true, title: true, status: true, appModule: { select: { tag: true, title: true } } },
+                }) : [];
+                const missing = roleIds.filter((id) => !roles.some((r) => r.id === id));
+                if (missing.length)
+                    return res.status(400).json({ message: `Unknown role(s): ${missing.join(', ')}. Reload the page and try again.` });
+                // One role per module.
+                const perModule = new Map();
+                for (const r of roles) {
+                    const k = (_d = r.appModule) === null || _d === void 0 ? void 0 : _d.tag;
+                    if (!perModule.has(k))
+                        perModule.set(k, []);
+                    perModule.get(k).push(r);
+                }
+                const clashes = [...perModule.values()].filter((rs) => rs.length > 1);
+                if (clashes.length) {
+                    return res.status(400).json({ message: `Only one role per module is allowed: ${clashes.map((rs) => { var _a, _b; return `${((_a = rs[0].appModule) === null || _a === void 0 ? void 0 : _a.title) || ((_b = rs[0].appModule) === null || _b === void 0 ? void 0 : _b.tag)} (${rs.map((r) => r.title).join(' / ')})`; }).join('; ')}.` });
+                }
+                const current = yield ais.userRole.findMany({
+                    where: { userId: user.id },
+                    select: { id: true, appRoleId: true, appRole: { select: { title: true, appModule: { select: { tag: true } } } } },
+                });
+                const tagOf = (r) => { var _a, _b; return `${(_a = r.appModule) === null || _a === void 0 ? void 0 : _a.tag}::${(_b = r.title) === null || _b === void 0 ? void 0 : _b.toLowerCase()}`; };
+                const toRevoke = current.filter((c) => !roleIds.includes(c.appRoleId));
+                const toGrant = roles.filter((r) => !current.some((c) => c.appRoleId === r.id));
+                const inactive = toGrant.filter((r) => !r.status);
+                if (inactive.length)
+                    return res.status(400).json({ message: `Disabled role(s) can't be granted: ${inactive.map(tagOf).join(', ')}.` });
+                // Don't let an administrator lock themselves out of this page.
+                if (tag === req.userId && toRevoke.some((c) => tagOf(c.appRole) === 'access::admin')) {
+                    return res.status(400).json({ message: `You can't remove your own Access Control admin role -- you'd lose access to role management. Ask another administrator to do it.` });
+                }
+                if (toRevoke.length || toGrant.length) {
+                    yield ais.$transaction([
+                        ...(toRevoke.length ? [ais.userRole.deleteMany({ where: { id: { in: toRevoke.map((c) => c.id) } } })] : []),
+                        ...toGrant.map((r) => ais.userRole.create({ data: { userId: user.id, appRoleId: r.id, roleMeta: note } })),
+                        ais.log.create({
+                            data: {
+                                action: 'USER_ROLES_UPDATED', user: req.userId,
+                                meta: { tag, granted: toGrant.map(tagOf), revoked: toRevoke.map((c) => tagOf(c.appRole)), note: note || null },
+                            },
+                        }),
+                    ]);
+                }
+                res.status(200).json({ granted: toGrant.map(tagOf), revoked: toRevoke.map((c) => tagOf(c.appRole)) });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    /* Admission Letters */
+    fetchAdmissionLetters(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resp = yield ais.admissionLetter.findMany({
+                    select: { id: true, title: true, category: true, status: true, programId: true, updatedAt: true, program: { select: { shortName: true, longName: true, category: true } } },
+                    orderBy: [{ status: 'desc' }, { updatedAt: 'desc' }],
+                });
+                res.status(200).json(resp);
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    fetchAdmissionLetter(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resp = yield ais.admissionLetter.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, include: { program: { select: { shortName: true, longName: true, category: true } } } });
+                if (resp)
+                    res.status(200).json(resp);
+                else
+                    res.status(404).json({ message: `Admission letter not found` });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    // Shared create/update validation: programme must exist; a programme
+    // has at most one active letter (the one printed).
+    saveAdmissionLetter(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const id = req.params.id ? (0, paramStr_1.paramStr)(req.params.id) : null;
+                const data = admissionLetterFields(req.body);
+                const existing = id ? yield ais.admissionLetter.findUnique({ where: { id } }) : null;
+                if (id && !existing)
+                    return res.status(404).json({ message: 'Admission letter not found' });
+                const merged = Object.assign(Object.assign({ status: true }, existing), data);
+                const missing = ['title', 'programId', 'signature'].filter((k) => !merged[k]);
+                if (missing.length)
+                    return res.status(400).json({ message: `Please provide: ${missing.map((k) => (k === 'programId' ? 'programme' : k)).join(', ')}.` });
+                const program = yield ais.program.findUnique({ where: { id: merged.programId }, select: { longName: true, category: true } });
+                if (!program)
+                    return res.status(400).json({ message: 'Selected programme not found.' });
+                if (!data.category && !existing)
+                    data.category = program.category || 'UG';
+                if (merged.status) {
+                    const clash = yield ais.admissionLetter.findFirst({ where: Object.assign({ programId: merged.programId, status: true }, (id && { id: { not: id } })), select: { title: true } });
+                    if (clash)
+                        return res.status(400).json({ message: `${program.longName} already has an active admission letter ("${clash.title}"). Deactivate or edit that one instead.` });
+                }
+                const resp = id
+                    ? yield ais.admissionLetter.update({ where: { id }, data })
+                    : yield ais.admissionLetter.create({ data: Object.assign({ signatory: '', template: '' }, data) });
+                res.status(200).json(resp);
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    deleteAdmissionLetter(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resp = yield ais.admissionLetter.delete({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
+                res.status(200).json(resp);
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    // Print data for one student (?studentId=) or all newly admitted first
+    // years of a programme (?programId=).
+    fetchAdmissionLetterPrint(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const studentId = String(req.query.studentId || '').trim();
+                const programId = String(req.query.programId || '').trim();
+                let students = [];
+                let pid = programId;
+                if (studentId) {
+                    const st = yield ais.student.findUnique({ where: { id: studentId }, select: ADMISSION_STUDENT_SELECT });
+                    if (!st)
+                        return res.status(404).json({ message: 'Student not found.' });
+                    if (!st.programId)
+                        return res.status(400).json({ message: 'This student has no programme, so no admission letter applies.' });
+                    students = [st];
+                    pid = st.programId;
+                }
+                else if (programId) {
+                    students = yield ais.student.findMany({ where: Object.assign({ programId }, FIRST_YEAR_WHERE), select: ADMISSION_STUDENT_SELECT, orderBy: [{ lname: 'asc' }, { fname: 'asc' }] });
+                }
+                else {
+                    return res.status(400).json({ message: 'Choose a student or a programme.' });
+                }
+                const bundle = yield admissionPrintBundle(pid, students);
+                if (!bundle.letter) {
+                    const program = yield ais.program.findUnique({ where: { id: pid }, select: { longName: true } });
+                    return res.status(400).json({ message: `No active admission letter for ${(program === null || program === void 0 ? void 0 : program.longName) || 'this programme'}. Create one under Admission Letters first.` });
+                }
+                res.status(200).json(bundle);
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
     checkUser(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
@@ -7483,25 +7971,43 @@ class AisController {
     }
     stageStaff(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a;
+            var _a, _b, _c, _d;
             try {
-                const { staffId } = req.body;
+                const staffId = (_c = (_b = (_a = req.body) === null || _a === void 0 ? void 0 : _a.staffId) === null || _b === void 0 ? void 0 : _b.toString()) === null || _c === void 0 ? void 0 : _c.trim();
+                if (!staffId)
+                    throw new Error("No staff number provided!");
                 const password = pwdgen();
-                const st = yield ais.staff.findFirst({ where: { staffNo: staffId.toString() } });
-                const isUser = yield ais.user.findFirst({ where: { tag: staffId.toString(), groupId: 2 } });
+                const st = yield ais.staff.findFirst({ where: { staffNo: staffId } });
+                // Login resolves staff details from the staff row (authController),
+                // so a portal account without one can sign in but has no profile.
+                if (!st)
+                    throw new Error("Staff record not found!");
+                const isUser = yield ais.user.findFirst({ where: { tag: staffId, groupId: 2 } });
                 if (isUser)
-                    throw ("Staff User Account Exists!");
-                const ssoData = { tag: staffId.toString(), username: (st === null || st === void 0 ? void 0 : st.instituteEmail) ? st === null || st === void 0 ? void 0 : st.instituteEmail.trim() : staffId.toString(), password: (0, password_1.hashPassword)(password) }; // Others
+                    throw new Error("Staff User Account Exists!");
+                // `||` (not `??`): some staff rows carry an empty-string instituteEmail.
+                const ssoData = { tag: staffId, username: ((_d = st === null || st === void 0 ? void 0 : st.instituteEmail) === null || _d === void 0 ? void 0 : _d.trim()) || staffId, password: (0, password_1.hashPassword)(password) }; // Others
                 // Populate SSO Account
                 const resp = yield ais.user.create({
                     data: Object.assign(Object.assign({}, ssoData), { group: { connect: { id: 2 } } }),
                 });
                 if (resp) {
-                    // Send Password By SMS
-                    if (st === null || st === void 0 ? void 0 : st.phone)
-                        yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials are Username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : staffId}, Password: ${password}`);
-                    // Send Password By Email
-                    res.status(200).json(Object.assign(Object.assign({}, resp), { password }));
+                    // Send Password By SMS -- quote the username actually stored on the
+                    // account (login matches on sso_user.username), not instituteEmail.
+                    if (st === null || st === void 0 ? void 0 : st.phone) {
+                        const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+                        try {
+                            yield sms(phone, `Hi! Your new credentials are Username: ${resp.username}, Password: ${password}`);
+                        }
+                        catch (smsError) {
+                            console.log('stageStaff SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
+                        }
+                    }
+                    // Audit: who staged which staff account (no credentials logged).
+                    yield ais.log.create({ data: { action: `STAFF_ACCOUNT_STAGED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId, username: resp.username, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
+                    // Never return the password hash to the client.
+                    const { password: _hash, unlockPin: _pin } = resp, account = __rest(resp, ["password", "unlockPin"]);
+                    res.status(200).json(Object.assign(Object.assign({}, account), { password }));
                 }
                 else {
                     res.status(202).json({ message: `no records found` });
@@ -7509,35 +8015,42 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
+                return res.status(500).json({ message: error.message || 'Internal server error' });
             }
         });
     }
     resetStaff(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a;
+            var _a, _b, _c;
             try {
-                const { staffId } = req.body;
+                const staffId = (_c = (_b = (_a = req.body) === null || _a === void 0 ? void 0 : _a.staffId) === null || _b === void 0 ? void 0 : _b.toString()) === null || _c === void 0 ? void 0 : _c.trim();
+                if (!staffId)
+                    throw new Error("No staff number provided!");
                 const password = pwdgen();
-                const st = yield ais.staff.findFirst({ where: { staffNo: staffId.toString() } });
-                const resp = yield ais.user.updateMany({
-                    where: { tag: staffId.toString(), groupId: 2 },
-                    data: { password: (0, password_1.hashPassword)(password) },
-                });
-                if (resp === null || resp === void 0 ? void 0 : resp.count) {
-                    // Audit: who reset which staff account (no credentials logged).
-                    yield ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId: staffId.toString(), via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
-                    if (st === null || st === void 0 ? void 0 : st.phone)
-                        yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your credentials are Username: ${(_a = st === null || st === void 0 ? void 0 : st.instituteEmail) !== null && _a !== void 0 ? _a : staffId}, Password: ${password}`);
-                    res.status(200).json({ password });
+                const st = yield ais.staff.findFirst({ where: { staffNo: staffId } });
+                const user = yield ais.user.findFirst({ where: { tag: staffId, groupId: 2 } });
+                if (!user)
+                    return res.status(202).json({ message: `No staff user account found. Stage the account first.` });
+                yield ais.user.update({ where: { id: user.id }, data: { password: (0, password_1.hashPassword)(password) } });
+                // Audit: who reset which staff account (no credentials logged).
+                yield ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
+                // Send Password By SMS -- quote the account's real login username
+                // (login matches on sso_user.username), which can differ from
+                // staff.instituteEmail or be set when that column is null/empty.
+                if (st === null || st === void 0 ? void 0 : st.phone) {
+                    const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+                    try {
+                        yield sms(phone, `Hi! Your credentials are Username: ${user.username}, Password: ${password}`);
+                    }
+                    catch (smsError) {
+                        console.log('resetStaff SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
+                    }
                 }
-                else {
-                    res.status(202).json({ message: `no records found` });
-                }
+                res.status(200).json({ username: user.username, password });
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
+                return res.status(500).json({ message: error.message || 'Internal server error' });
             }
         });
     }
