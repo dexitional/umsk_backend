@@ -3,9 +3,18 @@ import { Request, Response } from "express";
 import moment from "moment";
 import { getSemesterFromCode } from "../util/helper";
 import { paramStr } from "../util/paramStr";
+import { BILL_FIELDS, PAYMENT_FIELDS, diff, logRecords, pick } from "../util/auditLog";
 
 const sms = require('../config/sms');
 const fms = prisma;
+
+// Recompute accountNet (sum of the ledger) for each student.
+async function refreshAccountNet(studentIds: (string | null | undefined)[]) {
+   for (const studentId of [...new Set(studentIds.filter(Boolean))] as string[]) {
+      const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+      await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount || 0 } });
+   }
+}
 
 export default class FmsController {
 
@@ -155,6 +164,34 @@ export default class FmsController {
                   'PROGRAM': r.program?.shortName,
                   'MAJOR': r.major?.shortName,
                   'STUDENT ACCOUNT NET': r.accountNet,
+               }))
+               resp = { ...resp, data: regs }
+            }
+
+         } else if (type == 'balances') {
+            // Basic financial report: every student's account balance
+            // (accountNet -- positive = owing, negative = in credit).
+            // Program / year are optional filters; blank = every student.
+            let regs: any = await fms.student.findMany({
+               where: {
+                  ...program && ({ programId: program }),
+                  ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
+               },
+               select: { id: true, fname: true, mname: true, lname: true, semesterNum: true, accountNet: true, program: { select: { longName: true } } },
+               orderBy: [
+                  { programId: 'asc' },
+                  { semesterNum: 'asc' },
+                  { lname: 'asc' },
+                  { fname: 'asc' },
+               ]
+            })
+            if (regs.length) {
+               regs = regs.map((r: any) => ({
+                  'STUDENT ID': r.id,
+                  'NAME': [r.fname, r.mname, r.lname].filter(Boolean).join(' '),
+                  'PROGRAM': r.program?.longName || '',
+                  'YEAR': r.semesterNum ? Math.ceil(r.semesterNum / 2) : '',
+                  'BALANCE': Math.round((Number(r.accountNet) || 0) * 100) / 100,
                }))
                resp = { ...resp, data: regs }
             }
@@ -359,6 +396,7 @@ export default class FmsController {
          }
 
          if (resp) {
+            await logRecords(req, action == 'create' ? 'BILL_STUDENT_INCLUDED' : 'BILL_STUDENT_INCLUDE_REMOVED', 'fms_bill', [pick(bs, BILL_FIELDS)], { student: tag });
             res.status(200).json(resp)
          } else {
             res.status(202).json({ message: `no record found` })
@@ -387,6 +425,7 @@ export default class FmsController {
             })
 
          if (resp) {
+            await logRecords(req, action == 'create' ? 'BILL_STUDENT_EXCLUDED' : 'BILL_STUDENT_EXCLUDE_REMOVED', 'fms_bill', [pick(resp, BILL_FIELDS)], { student: tag });
             res.status(200).json(resp)
          } else {
             res.status(202).json({ message: `no record found` })
@@ -485,6 +524,7 @@ export default class FmsController {
             if (ds) {
                // Log Publish Activity & Receipients
                await fms.activityBill.create({ data: { billId: bs?.id, amount: bs?.amount, discount: bs?.discount, receivers: students } })
+               await logRecords(req, 'BILL_POSTED', 'fms_bill', [pick(ds, BILL_FIELDS)], { studentsBilled: students?.length || 0 });
                // Return Response
                res.status(200).json(bs)
             } else {
@@ -506,6 +546,7 @@ export default class FmsController {
          // Update Bill status
          const resp = await fms.bill.update({ where: { id: paramStr(req.params.id) }, data: { posted: false } })
          if (sts?.length && resp) {
+            await logRecords(req, 'BILL_REVOKED', 'fms_bill', [pick(resp, BILL_FIELDS)], { studentsAffected: new Set(sts.map((a: any) => a.studentId)).size, accountEntriesRemoved: sts.length });
             // Remove Bill from student accounts
             await fms.studentAccount.deleteMany({ where: { billId: paramStr(req.params.id) } })
             // Retire Student Accounts
@@ -541,6 +582,7 @@ export default class FmsController {
             }
          })
          if (resp) {
+            await logRecords(req, 'BILL_CREATED', 'fms_bill', [pick(resp, BILL_FIELDS)]);
             res.status(200).json(resp)
          } else {
             res.status(204).json({ message: `no records found` })
@@ -558,6 +600,7 @@ export default class FmsController {
          delete req.body.sessionId; delete req.body.bankaccId;
          delete req.body.programId;
 
+         const before = await fms.bill.findUnique({ where: { id: paramStr(req.params.id) } });
          const resp = await fms.bill.update({
             where: {
                id: paramStr(req.params.id)
@@ -571,6 +614,7 @@ export default class FmsController {
             }
          })
          if (resp) {
+            await logRecords(req, 'BILL_UPDATED', 'fms_bill', [{ id: resp.id, narrative: resp.narrative, changes: diff(before, resp, BILL_FIELDS) }]);
             res.status(200).json(resp)
          } else {
             res.status(204).json({ message: `No records found` })
@@ -583,6 +627,8 @@ export default class FmsController {
 
    async deleteBill(req: Request, res: Response) {
       try {
+         const before = await fms.bill.findUnique({ where: { id: paramStr(req.params.id) } });
+         const accounts = await fms.studentAccount.findMany({ where: { billId: paramStr(req.params.id) }, select: { studentId: true } });
          const bs = await fms.bill.update({
             where: { id: paramStr(req.params.id) },
             data: {
@@ -591,6 +637,9 @@ export default class FmsController {
          })
          if (bs) {
             const resp = await fms.bill.delete({ where: { id: paramStr(req.params.id) } })
+            // Removing a posted bill changes every billed student's balance.
+            await refreshAccountNet(accounts.map((a: any) => a.studentId));
+            await logRecords(req, 'BILL_DELETED', 'fms_bill', [pick(before, BILL_FIELDS)], { studentsAffected: new Set(accounts.map((a: any) => a.studentId)).size, accountEntriesRemoved: accounts.length });
             res.status(200).json(resp)
          } else {
             res.status(204).json({ message: `No records deleted` })
@@ -803,11 +852,12 @@ export default class FmsController {
    }
 
 
-   /* Refunds -- opposite of Charges: credits (reduces) a student's account
-      balance instead of debiting it. studentAccount.amount carries the sign
-      (there's no separate debit/credit column), so a refund writes a
-      negative amount, matching how postPayment already credits accounts,
-      rather than the positive amount a charge writes. */
+   /* Refunds -- posted like Charges: money paid back out to a student
+      raises their account balance (accountNet; positive = owing), so a
+      refund writes a POSITIVE studentAccount.amount, the same as charges
+      and bills. Only payments are negative. (Refunds used to be written
+      negative -- prisma/sql/2026-10-11_refund_positive_amounts.sql fixes
+      those rows.) */
    async fetchRefunds(req: Request, res: Response) {
       const { page = 1, pageSize = 9, keyword = '' }: any = req.query;
       const offset = (page - 1) * pageSize;
@@ -873,6 +923,9 @@ export default class FmsController {
       try {
          const { studentId } = req.body
          delete req.body.studentId;
+         const amount = Number(req?.body?.amount);
+         if (!(amount > 0)) return res.status(400).json({ message: 'Refund amount must be a number greater than zero.' });
+         req.body.amount = amount;
          const resp = await fms.refund.create({
             data: {
                ...req.body,
@@ -883,7 +936,7 @@ export default class FmsController {
                      data: [{
                         studentId,
                         narrative: req?.body?.title,
-                        amount: -1 * req?.body?.amount,
+                        amount: req.body.amount,
                         type: 'REFUND',
                         currency: 'GHC',
                      }]
@@ -910,6 +963,9 @@ export default class FmsController {
       try {
          const { studentId } = req.body
          delete req.body.studentId;
+         const amount = Number(req?.body?.amount);
+         if (!(amount > 0)) return res.status(400).json({ message: 'Refund amount must be a number greater than zero.' });
+         req.body.amount = amount;
 
          const resp = await fms.refund.update({
             where: { id: paramStr(req.params.id) },
@@ -923,7 +979,7 @@ export default class FmsController {
                      data: {
                         studentId,
                         narrative: req?.body?.title,
-                        amount: -1 * req?.body?.amount,
+                        amount: req.body.amount,
                         type: 'REFUND',
                         currency: 'GHC',
                      }
@@ -1087,6 +1143,7 @@ export default class FmsController {
          const { transactId, transtypeId } = req.body
          delete req.body.transactId; delete req.body.transactId;
          const narrative = `Payment of ${transtypeId == 8 ? 'Graduation' : transtypeId == 3 ? 'Resit' : transtypeId == 8 ? 'Late Registration' : 'Academic'} Fees`
+         const before = await fms.transaction.findUnique({ where: { id: transactId } });
          const resp = await fms.transaction.update({
             where: { id: transactId },
             data: {
@@ -1096,6 +1153,7 @@ export default class FmsController {
             }
          })
          if (resp) {
+            await logRecords(req, 'PAYMENT_UPDATED', 'fms_transaction', [{ id: resp.id, transtag: resp.transtag, changes: diff(before, resp, PAYMENT_FIELDS) }], { student: resp.studentId, operation: 'convert service type' });
             // Return Response
             res.status(200).json(resp)
          } else {
@@ -1129,6 +1187,7 @@ export default class FmsController {
             }
          })
          if (resp) {
+            await logRecords(req, 'PAYMENT_CREATED', 'fms_transaction', [pick(resp, PAYMENT_FIELDS)], { student: studentId, source: 'STAFF' });
             // Retire Student Account Balance after Fees,Late,Resit,Graduation transaction
             if ([2, 3, 4, 8].includes(Number(transtypeId))) {
                const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
@@ -1186,6 +1245,7 @@ export default class FmsController {
          delete req.body.studentId; delete req.body.transtypeId;
          delete req.body.bankaccId; delete req.body.collectorId;
          const narrative = `Payment of ${transtypeId == 8 ? 'Graduation' : transtypeId == 3 ? 'Resit' : transtypeId == 8 ? 'Late Registration' : 'Academic'} Fees`
+         const before = await fms.transaction.findUnique({ where: { id: paramStr(req.params.id) } });
          const resp = await fms.transaction.update({
             where: { id: paramStr(req.params.id) },
             data: {
@@ -1200,6 +1260,7 @@ export default class FmsController {
             }
          })
          if (resp) {
+            await logRecords(req, 'PAYMENT_UPDATED', 'fms_transaction', [{ id: resp.id, transtag: resp.transtag, changes: diff(before, resp, PAYMENT_FIELDS) }], { student: resp.studentId || studentId });
             // Retire Student Account Balance after Fees,Late,Resit,Graduation transaction
             if (['2', '3', '4', '8'].includes(transtypeId)) {
                const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
@@ -1217,6 +1278,7 @@ export default class FmsController {
 
    async deletePayment(req: Request, res: Response) {
       try {
+         const before = await fms.transaction.findUnique({ where: { id: paramStr(req.params.id) } });
          const bs = await fms.transaction.update({
             where: { id: paramStr(req.params.id) },
             data: {
@@ -1225,6 +1287,9 @@ export default class FmsController {
          })
          if (bs) {
             const resp = await fms.transaction.delete({ where: { id: paramStr(req.params.id) } })
+            // The payment's ledger entry is gone, so the balance must be recomputed.
+            await refreshAccountNet([before?.studentId]);
+            await logRecords(req, 'PAYMENT_DELETED', 'fms_transaction', [pick(before, PAYMENT_FIELDS)], { student: before?.studentId });
             res.status(200).json(resp)
          } else {
             res.status(204).json({ message: `No records deleted` })
@@ -1315,7 +1380,7 @@ export default class FmsController {
       }
    }
 
-   async payService(req: Request, res: Response) {
+   async payService(req: Request & any, res: Response) {
       try {
 
          // Previously fms.vendor.findFirst() — vendor was an admissions-only
@@ -1323,7 +1388,10 @@ export default class FmsController {
          // transaction.collectorId's actual relation points at collector
          // (apiToken/apiEnabled fields, built for exactly this automated
          // Bank API payment flow), so this was corrected to use it.
-         const cl: any = await fms.collector.findFirst();
+         // The collector whose API token authenticated this request (see
+         // middleware/requireBankCollector). Only during an unauthenticated
+         // rollout (BANK_API_ALLOW_UNAUTHENTICATED) is the old fallback used.
+         const cl: any = req.collector || (process.env.BANK_API_ALLOW_UNAUTHENTICATED === 'true' ? await fms.collector.findFirst() : null);
          let { serviceId, amountPaid, studentId, refNote, transRef, buyerName, buyerPhone } = req.body;
          serviceId = Number(serviceId)
          // Banks send amounts as numbers or formatted strings ("1,250.00",
@@ -1374,6 +1442,7 @@ export default class FmsController {
                })
 
                if (ins) {
+                  await logRecords(req, 'PAYMENT_CREATED', 'fms_transaction', [pick(ins, PAYMENT_FIELDS)], { student: studentId, user: 'BANK_API', source: 'BANK_API', collector: cl?.name });
                   if ([2, 3, 4, 8].includes(serviceId)) {
                      const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
                      await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount || 0 } })

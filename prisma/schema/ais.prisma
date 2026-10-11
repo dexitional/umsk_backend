@@ -208,6 +208,11 @@ model student {
   // portal -- each may be self-edited once; admins can still change both.
   dobEditedAt       DateTime?
   affiliateEditedAt DateTime?
+  // Fresher admission offer: PENDING once "Activate Admission" runs on the
+  // programme's admission letter, then ACCEPTED / REJECTED by the student
+  // from the portal. NULL = no offer to answer (continuing students).
+  admissionStatus      String?   @db.VarChar(20)
+  admissionRespondedAt DateTime?
 
   title       title?      @relation(fields: [titleId], references: [id])
   nationality country?    @relation("studentNationality", fields: [nationalityId], references: [id])
@@ -823,10 +828,16 @@ model admissionLetter {
   id        String          @id @default(uuid())
   programId String?
   category  programCategory @default(UG)
+  // Admission year: ::session_year becomes "<year>/<year+1>" and a bulk print
+  // picks the programme's students admitted (entryDate) in this year.
+  year      Int?
   title     String          @db.VarChar(350)
   signatory String          @db.Text
   signature String          @db.LongText
   template  String          @db.LongText
+  // SMS texted by "Activate Admission" (::tokens, see admissionSmsText);
+  // NULL/blank uses the default wording.
+  smsTemplate String?       @db.Text
   status    Boolean         @default(true)
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
