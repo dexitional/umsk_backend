@@ -350,7 +350,7 @@ const letterTagClash = (tag, exceptId) => ais.letter.findFirst({ where: Object.a
 // printed for its newly admitted first years (Year 1, not completed or
 // graduated). Each printed letter carries the student, the default session
 // and the programme's first-year bill for that session (for ::fee_amount).
-const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'signatory', 'signature', 'template'];
+const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'year', 'signatory', 'signature', 'template', 'smsTemplate'];
 function admissionLetterFields(body) {
     const data = {};
     for (const k of ADMISSION_LETTER_FIELDS)
@@ -360,6 +360,9 @@ function admissionLetterFields(body) {
         data.status = body.status === true || body.status === 'true' || body.status == 1;
     if (data.programId === '')
         data.programId = null;
+    // Admission year arrives as a string (or null when blank); the column is INT.
+    if (data.year !== undefined)
+        data.year = data.year === null || data.year === '' ? null : Number(data.year) || null;
     return data;
 }
 const ADMISSION_STUDENT_SELECT = {

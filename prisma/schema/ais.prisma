@@ -823,10 +823,12 @@ model admissionLetter {
   id        String          @id @default(uuid())
   programId String?
   category  programCategory @default(UG)
+  year      Int?
   title     String          @db.VarChar(350)
   signatory String          @db.Text
   signature String          @db.LongText
   template  String          @db.LongText
+  smsTemplate String?       @db.Text
   status    Boolean         @default(true)
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
