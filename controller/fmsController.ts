@@ -1,4 +1,5 @@
 import { prisma } from "../prisma/client";
+import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import moment from "moment";
 import { getSemesterFromCode } from "../util/helper";
@@ -17,7 +18,7 @@ export default class FmsController {
 
          if (type == 'payments') {
 
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where t.transtypeId = ${service} and (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where 1=1 ${service ? Prisma.sql`and t.transtypeId = ${service}` : Prisma.empty} ${start ? Prisma.sql`and date(t.createdAt) >= date(${start})` : Prisma.empty} ${end ? Prisma.sql`and date(t.createdAt) <= date(${end})` : Prisma.empty} order by t.createdAt ASC`;
             if (regs.length) {
                regs = regs.map((r: any) => ({
                   'SERVICE TYPE': r?.transtitle,
@@ -36,7 +37,7 @@ export default class FmsController {
             }
 
          } else if (type == 'bills') {
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.entryGroup,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where s.programId = ${program} and r.sessionId = ${session} order by t.createdAt asc`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.entryGroup,p.shortName,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where t.billId is not null ${program ? Prisma.sql`and s.programId = ${program}` : Prisma.empty} ${session ? Prisma.sql`and r.sessionId = ${session}` : Prisma.empty} order by t.createdAt asc`;
 
             // let regs:any = await fms.studentAccount.findMany({ 
             //    where: {
@@ -79,19 +80,38 @@ export default class FmsController {
                   'MIDDLE NAME(S)': r?.mname,
                   'INDEX NUMBER': r?.indexno,
                   'STUDENT ID': r?.id,
-                  'GENDER': r.student?.gender,
+                  'GENDER': r?.gender,
                   'YEAR': Math.ceil(r?.semesterNum / 2),
-                  'PROGRAM': r?.program?.shortName,
+                  'PROGRAM': r?.shortName,
                   'BILL NAME': r.billtitle,
                   'BILL AMOUNT': r?.amount,
                   'BILL CURRENCY': r?.currency,
-                  'STUDENT CATEGORY': r?.entryGroup
+                  'STUDENT CATEGORY': r?.entryGroup,
+                  'STATUS': 'Posted'
                }))
-               resp = { ...resp, data: regs }
             }
 
+            // Bills not yet applied to any student account: one row per bill, no student details.
+            const unposted: any = await fms.$queryRaw`select b.narrative as billtitle,b.amount,b.currency,b.type,p.shortName from fms_bill b left join ais_program p on b.programId = p.id where not exists (select 1 from fms_studaccount a where a.billId = b.id) ${program ? Prisma.sql`and b.programId = ${program}` : Prisma.empty} ${session ? Prisma.sql`and b.sessionId = ${session}` : Prisma.empty} order by b.createdAt asc`;
+            regs = [...regs, ...unposted.map((r: any) => ({
+               'LAST NAME': null,
+               'FIRST NAME': null,
+               'MIDDLE NAME(S)': null,
+               'INDEX NUMBER': null,
+               'STUDENT ID': null,
+               'GENDER': null,
+               'YEAR': null,
+               'PROGRAM': r?.shortName,
+               'BILL NAME': r.billtitle,
+               'BILL AMOUNT': r?.amount,
+               'BILL CURRENCY': r?.currency,
+               'STUDENT CATEGORY': r?.type,
+               'STATUS': 'Not posted'
+            }))]
+            if (regs.length) resp = { ...resp, data: regs }
+
          } else if (type == 'charges') {
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,p.shortName,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.programId where 1=1 ${start ? Prisma.sql`and date(t.createdAt) >= date(${start})` : Prisma.empty} ${end ? Prisma.sql`and date(t.createdAt) <= date(${end})` : Prisma.empty} order by t.createdAt ASC`;
 
             // let regs:any = await fms.charge.findMany({ 
             //    where: {
@@ -155,6 +175,31 @@ export default class FmsController {
                   'PROGRAM': r.program?.shortName,
                   'MAJOR': r.major?.shortName,
                   'STUDENT ACCOUNT NET': r.accountNet,
+               }))
+               resp = { ...resp, data: regs }
+            }
+
+         } else if (type == 'balances') {
+            // Every student's balance (accountNet; positive = owing). Program/year are optional filters.
+            let regs: any = await fms.student.findMany({
+               where: {
+                  ...program && ({ programId: program }),
+                  ...year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } }),
+               },
+               include: { program: true },
+               orderBy: [
+                  { programId: 'asc' },
+                  { semesterNum: 'asc' },
+                  { lname: 'asc' },
+               ]
+            })
+            if (regs.length) {
+               regs = regs.map((r: any) => ({
+                  'STUDENT ID': r.id,
+                  'NAME': [r.fname, r.mname, r.lname].filter(Boolean).join(' '),
+                  'PROGRAM': r.program?.shortName,
+                  'YEAR': Math.ceil(r.semesterNum / 2),
+                  'BALANCE': r.accountNet ?? 0,
                }))
                resp = { ...resp, data: regs }
             }

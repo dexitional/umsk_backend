@@ -13,6 +13,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const client_1 = require("../prisma/client");
+const client_2 = require("@prisma/client");
 const moment_1 = __importDefault(require("moment"));
 const helper_1 = require("../util/helper");
 const paramStr_1 = require("../util/paramStr");
@@ -26,7 +27,7 @@ class FmsController {
                 let { type, program, major, year, session, service, start, end } = req.body;
                 let resp = { type };
                 if (type == 'payments') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where t.transtypeId = ${service} and (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.transtag,t.createdAt,r.title as transtitle from fms_transaction t left join ais_student s on t.studentId = s.id left join fms_transtype r on t.transtypeId = r.id where 1=1 ${service ? client_2.Prisma.sql `and t.transtypeId = ${service}` : client_2.Prisma.empty} ${start ? client_2.Prisma.sql `and date(t.createdAt) >= date(${start})` : client_2.Prisma.empty} ${end ? client_2.Prisma.sql `and date(t.createdAt) <= date(${end})` : client_2.Prisma.empty} order by t.createdAt ASC`;
                     if (regs.length) {
                         regs = regs.map((r) => ({
                             'SERVICE TYPE': r === null || r === void 0 ? void 0 : r.transtitle,
@@ -45,7 +46,7 @@ class FmsController {
                     }
                 }
                 else if (type == 'bills') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.entryGroup,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where s.programId = ${program} and r.sessionId = ${session} order by t.createdAt asc`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,s.entryGroup,p.shortName,t.amount,t.currency,t.createdAt,r.narrative as billtitle from fms_studaccount t left join ais_student s on t.studentId = s.id left join ais_program p on s.programId = p.id left join fms_bill r on t.billId = r.id where t.billId is not null ${program ? client_2.Prisma.sql `and s.programId = ${program}` : client_2.Prisma.empty} ${session ? client_2.Prisma.sql `and r.sessionId = ${session}` : client_2.Prisma.empty} order by t.createdAt asc`;
                     // let regs:any = await fms.studentAccount.findMany({ 
                     //    where: {
                     //       billId: { not: null },
@@ -81,28 +82,44 @@ class FmsController {
                         //    'BILL CURRENCY': r.bill?.currency,
                         //    'STUDENT CATEGORY': r.student?.entryGroup
                         // }))
-                        regs = regs.map((r) => {
-                            var _a, _b;
-                            return ({
-                                'LAST NAME': r === null || r === void 0 ? void 0 : r.lname,
-                                'FIRST NAME': r === null || r === void 0 ? void 0 : r.fname,
-                                'MIDDLE NAME(S)': r === null || r === void 0 ? void 0 : r.mname,
-                                'INDEX NUMBER': r === null || r === void 0 ? void 0 : r.indexno,
-                                'STUDENT ID': r === null || r === void 0 ? void 0 : r.id,
-                                'GENDER': (_a = r.student) === null || _a === void 0 ? void 0 : _a.gender,
-                                'YEAR': Math.ceil((r === null || r === void 0 ? void 0 : r.semesterNum) / 2),
-                                'PROGRAM': (_b = r === null || r === void 0 ? void 0 : r.program) === null || _b === void 0 ? void 0 : _b.shortName,
-                                'BILL NAME': r.billtitle,
-                                'BILL AMOUNT': r === null || r === void 0 ? void 0 : r.amount,
-                                'BILL CURRENCY': r === null || r === void 0 ? void 0 : r.currency,
-                                'STUDENT CATEGORY': r === null || r === void 0 ? void 0 : r.entryGroup
-                            });
-                        });
-                        resp = Object.assign(Object.assign({}, resp), { data: regs });
+                        regs = regs.map((r) => ({
+                            'LAST NAME': r === null || r === void 0 ? void 0 : r.lname,
+                            'FIRST NAME': r === null || r === void 0 ? void 0 : r.fname,
+                            'MIDDLE NAME(S)': r === null || r === void 0 ? void 0 : r.mname,
+                            'INDEX NUMBER': r === null || r === void 0 ? void 0 : r.indexno,
+                            'STUDENT ID': r === null || r === void 0 ? void 0 : r.id,
+                            'GENDER': r === null || r === void 0 ? void 0 : r.gender,
+                            'YEAR': Math.ceil((r === null || r === void 0 ? void 0 : r.semesterNum) / 2),
+                            'PROGRAM': r === null || r === void 0 ? void 0 : r.shortName,
+                            'BILL NAME': r.billtitle,
+                            'BILL AMOUNT': r === null || r === void 0 ? void 0 : r.amount,
+                            'BILL CURRENCY': r === null || r === void 0 ? void 0 : r.currency,
+                            'STUDENT CATEGORY': r === null || r === void 0 ? void 0 : r.entryGroup,
+                            'STATUS': 'Posted'
+                        }));
                     }
+                    // Bills not yet applied to any student account: one row per bill, no student details.
+                    const unposted = yield fms.$queryRaw `select b.narrative as billtitle,b.amount,b.currency,b.type,p.shortName from fms_bill b left join ais_program p on b.programId = p.id where not exists (select 1 from fms_studaccount a where a.billId = b.id) ${program ? client_2.Prisma.sql `and b.programId = ${program}` : client_2.Prisma.empty} ${session ? client_2.Prisma.sql `and b.sessionId = ${session}` : client_2.Prisma.empty} order by b.createdAt asc`;
+                    regs = [...regs, ...unposted.map((r) => ({
+                            'LAST NAME': null,
+                            'FIRST NAME': null,
+                            'MIDDLE NAME(S)': null,
+                            'INDEX NUMBER': null,
+                            'STUDENT ID': null,
+                            'GENDER': null,
+                            'YEAR': null,
+                            'PROGRAM': r === null || r === void 0 ? void 0 : r.shortName,
+                            'BILL NAME': r.billtitle,
+                            'BILL AMOUNT': r === null || r === void 0 ? void 0 : r.amount,
+                            'BILL CURRENCY': r === null || r === void 0 ? void 0 : r.currency,
+                            'STUDENT CATEGORY': r === null || r === void 0 ? void 0 : r.type,
+                            'STATUS': 'Not posted'
+                        }))];
+                    if (regs.length)
+                        resp = Object.assign(Object.assign({}, resp), { data: regs });
                 }
                 else if (type == 'charges') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,p.shortName,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.programId where 1=1 ${start ? client_2.Prisma.sql `and date(t.createdAt) >= date(${start})` : client_2.Prisma.empty} ${end ? client_2.Prisma.sql `and date(t.createdAt) <= date(${end})` : client_2.Prisma.empty} order by t.createdAt ASC`;
                     // let regs:any = await fms.charge.findMany({ 
                     //    where: {
                     //       ... program && ({ student: { programId: program }}),
@@ -163,6 +180,31 @@ class FmsController {
                                 'PROGRAM': (_a = r.program) === null || _a === void 0 ? void 0 : _a.shortName,
                                 'MAJOR': (_b = r.major) === null || _b === void 0 ? void 0 : _b.shortName,
                                 'STUDENT ACCOUNT NET': r.accountNet,
+                            });
+                        });
+                        resp = Object.assign(Object.assign({}, resp), { data: regs });
+                    }
+                }
+                else if (type == 'balances') {
+                    // Every student's balance (accountNet; positive = owing). Program/year are optional filters.
+                    let regs = yield fms.student.findMany({
+                        where: Object.assign(Object.assign({}, program && ({ programId: program })), year && ({ semesterNum: { in: [(Number(year) * 2), (Number(year) * 2) - 1] } })),
+                        include: { program: true },
+                        orderBy: [
+                            { programId: 'asc' },
+                            { semesterNum: 'asc' },
+                            { lname: 'asc' },
+                        ]
+                    });
+                    if (regs.length) {
+                        regs = regs.map((r) => {
+                            var _a, _b;
+                            return ({
+                                'STUDENT ID': r.id,
+                                'NAME': [r.fname, r.mname, r.lname].filter(Boolean).join(' '),
+                                'PROGRAM': (_a = r.program) === null || _a === void 0 ? void 0 : _a.shortName,
+                                'YEAR': Math.ceil(r.semesterNum / 2),
+                                'BALANCE': (_b = r.accountNet) !== null && _b !== void 0 ? _b : 0,
                             });
                         });
                         resp = Object.assign(Object.assign({}, resp), { data: regs });
