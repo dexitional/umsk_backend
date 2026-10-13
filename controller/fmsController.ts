@@ -100,11 +100,29 @@ export default class FmsController {
                   'STUDENT CATEGORY': r?.entryGroup,
                   'STATUS': 'Posted'
                }))
-               resp = { ...resp, data: regs }
             }
 
+            // Bills not yet applied to any student account: one row per bill, no student details.
+            const unposted: any = await fms.$queryRaw`select b.narrative as billtitle,b.amount,b.currency,b.type,p.shortName from fms_bill b left join ais_program p on b.programId = p.id where not exists (select 1 from fms_studaccount a where a.billId = b.id) ${program ? Prisma.sql`and b.programId = ${program}` : Prisma.empty} ${session ? Prisma.sql`and b.sessionId = ${session}` : Prisma.empty} order by b.createdAt asc`;
+            regs = [...regs, ...unposted.map((r: any) => ({
+               'LAST NAME': null,
+               'FIRST NAME': null,
+               'MIDDLE NAME(S)': null,
+               'INDEX NUMBER': null,
+               'STUDENT ID': null,
+               'GENDER': null,
+               'YEAR': null,
+               'PROGRAM': r?.shortName,
+               'BILL NAME': r.billtitle,
+               'BILL AMOUNT': r?.amount,
+               'BILL CURRENCY': r?.currency,
+               'STUDENT CATEGORY': r?.type,
+               'STATUS': 'Not posted'
+            }))]
+            if (regs.length) resp = { ...resp, data: regs }
+
          } else if (type == 'charges') {
-            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+            let regs: any = await fms.$queryRaw`select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,p.shortName,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.programId where 1=1 ${start ? Prisma.sql`and date(t.createdAt) >= date(${start})` : Prisma.empty} ${end ? Prisma.sql`and date(t.createdAt) <= date(${end})` : Prisma.empty} order by t.createdAt ASC`;
 
             // let regs:any = await fms.charge.findMany({ 
             //    where: {

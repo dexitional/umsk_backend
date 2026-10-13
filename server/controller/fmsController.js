@@ -110,11 +110,29 @@ class FmsController {
                             'STUDENT CATEGORY': r === null || r === void 0 ? void 0 : r.entryGroup,
                             'STATUS': 'Posted'
                         }));
-                        resp = Object.assign(Object.assign({}, resp), { data: regs });
                     }
+                    // Bills not yet applied to any student account: one row per bill, no student details.
+                    const unposted = yield fms.$queryRaw `select b.narrative as billtitle,b.amount,b.currency,b.type,p.shortName from fms_bill b left join ais_program p on b.programId = p.id where not exists (select 1 from fms_studaccount a where a.billId = b.id) ${program ? client_2.Prisma.sql `and b.programId = ${program}` : client_2.Prisma.empty} ${session ? client_2.Prisma.sql `and b.sessionId = ${session}` : client_2.Prisma.empty} order by b.createdAt asc`;
+                    regs = [...regs, ...unposted.map((r) => ({
+                            'LAST NAME': null,
+                            'FIRST NAME': null,
+                            'MIDDLE NAME(S)': null,
+                            'INDEX NUMBER': null,
+                            'STUDENT ID': null,
+                            'GENDER': null,
+                            'YEAR': null,
+                            'PROGRAM': r === null || r === void 0 ? void 0 : r.shortName,
+                            'BILL NAME': r.billtitle,
+                            'BILL AMOUNT': r === null || r === void 0 ? void 0 : r.amount,
+                            'BILL CURRENCY': r === null || r === void 0 ? void 0 : r.currency,
+                            'STUDENT CATEGORY': r === null || r === void 0 ? void 0 : r.type,
+                            'STATUS': 'Not posted'
+                        }))];
+                    if (regs.length)
+                        resp = Object.assign(Object.assign({}, resp), { data: regs });
                 }
                 else if (type == 'charges') {
-                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.id where (date(t.createdAt) between date(${start}) and date(${end})) order by t.createdAt ASC`;
+                    let regs = yield fms.$queryRaw `select s.id,s.fname,s.lname,s.mname,s.indexno,s.gender,s.semesterNum,p.shortName,t.amount,t.currency,t.createdAt,t.title as chargetitle from fms_charge t left join ais_student s on t.studentId = s.id left join ais_program p on p.id = s.programId where 1=1 ${start ? client_2.Prisma.sql `and date(t.createdAt) >= date(${start})` : client_2.Prisma.empty} ${end ? client_2.Prisma.sql `and date(t.createdAt) <= date(${end})` : client_2.Prisma.empty} order by t.createdAt ASC`;
                     // let regs:any = await fms.charge.findMany({ 
                     //    where: {
                     //       ... program && ({ student: { programId: program }}),
@@ -265,37 +283,103 @@ class FmsController {
     /* Dashboard & Statistics */
     loadDashboard(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             try {
-                // Academics fees
-                const ac_today = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = 2 and date(createdAt) = date(now())`;
-                const ac_week = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = 2 and yearweek(createdAt) = yearweek(now())`;
-                const ac_month = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = 2 and (month(createdAt) = month(now()) and year(createdAt) = year(now()))`;
-                const ac_year = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = 2 and year(createdAt) = year(now())`;
-                // Academic Session Statistics
+                // Every figure below comes from a handful of grouped queries (the old
+                // version ran four per payment type). Sums are doubles, counts come
+                // back as BigInt -- num() makes both plain numbers for JSON.
+                const num = (v) => Number(v) || 0;
+                // Collections per payment type for each period, plus the same point in
+                // the previous period (yesterday so far, last week so far, ...) for the
+                // dashboard's comparisons. transtypeId 2 = academic fees.
+                const byType = yield fms.$queryRaw `
+            select transtypeId,
+               sum(case when date(createdAt) = curdate() then amount else 0 end) as today,
+               sum(case when createdAt >= curdate() - interval 1 day and createdAt < now() - interval 1 day then amount else 0 end) as todayPrev,
+               sum(case when yearweek(createdAt) = yearweek(now()) then amount else 0 end) as week,
+               sum(case when yearweek(createdAt) = yearweek(now() - interval 7 day) and createdAt < now() - interval 7 day then amount else 0 end) as weekPrev,
+               sum(case when createdAt >= date_format(now(), '%Y-%m-01') then amount else 0 end) as month,
+               sum(case when createdAt >= date_format(now() - interval 1 month, '%Y-%m-01') and createdAt < now() - interval 1 month then amount else 0 end) as monthPrev,
+               sum(case when year(createdAt) = year(now()) then amount else 0 end) as year,
+               sum(case when year(createdAt) = year(now()) - 1 and createdAt < now() - interval 1 year then amount else 0 end) as yearPrev,
+               sum(date(createdAt) = curdate()) as todayCount,
+               sum(yearweek(createdAt) = yearweek(now())) as weekCount,
+               sum(createdAt >= date_format(now(), '%Y-%m-01')) as monthCount,
+               sum(year(createdAt) = year(now())) as yearCount
+            from fms_transaction
+            where createdAt >= date_format(now() - interval 1 year, '%Y-01-01')
+            group by transtypeId`;
+                const row = (id) => byType.find((r) => num(r.transtypeId) === id) || {};
+                const periodOf = (r) => ({ today: num(r.today), week: num(r.week), month: num(r.month), year: num(r.year) });
                 const types = yield fms.transtype.findMany({ where: { id: { notIn: [2] } } }); // Transaction Types
-                const trans = yield Promise.all(types.map((s) => __awaiter(this, void 0, void 0, function* () {
+                const trans = types.map((s) => {
                     var _a, _b, _c;
-                    const label = ((_c = (_b = ((_a = s.title) === null || _a === void 0 ? void 0 : _a.replaceAll('FEES', '').replaceAll('FEE', ''))) === null || _b === void 0 ? void 0 : _b.trim()) === null || _c === void 0 ? void 0 : _c.toLowerCase()) + ' payments';
-                    const today = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = ${s === null || s === void 0 ? void 0 : s.id} and date(createdAt) = date(now())`;
-                    const week = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = ${s === null || s === void 0 ? void 0 : s.id} and yearweek(createdAt) = yearweek(now())`;
-                    const month = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = ${s === null || s === void 0 ? void 0 : s.id} and (month(createdAt) = month(now()) and year(createdAt) = year(now()))`;
-                    const year = yield fms.$queryRaw `select ifnull(sum(amount),0) as total from fms_transaction t where transtypeId = ${s === null || s === void 0 ? void 0 : s.id} and year(createdAt) = year(now())`;
-                    return ({
-                        label,
-                        today: today[0].total,
-                        week: week[0].total,
-                        month: month[0].total,
-                        year: year[0].total
-                    });
-                })));
-                let data = {
-                    feesPayment: {
-                        today: ac_today[0].total,
-                        week: ac_week[0].total,
-                        month: ac_month[0].total,
-                        year: ac_year[0].total
+                    return (Object.assign({ label: ((_c = (_b = ((_a = s.title) === null || _a === void 0 ? void 0 : _a.replaceAll('FEES', '').replaceAll('FEE', ''))) === null || _b === void 0 ? void 0 : _b.trim()) === null || _c === void 0 ? void 0 : _c.toLowerCase()) + ' payments' }, periodOf(row(s.id))));
+                });
+                // All payment types together.
+                const keys = ['today', 'todayPrev', 'week', 'weekPrev', 'month', 'monthPrev', 'year', 'yearPrev', 'todayCount', 'weekCount', 'monthCount', 'yearCount'];
+                const periods = Object.fromEntries(keys.map((k) => [k, byType.reduce((a, r) => a + num(r[k]), 0)]));
+                // Last 12 months, academic fees vs everything else (months with no
+                // payments are filled in as zero).
+                const months = yield fms.$queryRaw `
+            select date_format(createdAt, '%Y-%m') as ym,
+               sum(case when transtypeId = 2 then amount else 0 end) as fees,
+               sum(case when transtypeId = 2 then 0 else amount end) as other,
+               count(*) as n
+            from fms_transaction
+            where createdAt >= date_format(now(), '%Y-%m-01') - interval 11 month
+            group by ym`;
+                const trend = Array.from({ length: 12 }, (_, i) => {
+                    const ym = (0, moment_1.default)().startOf('month').subtract(11 - i, 'months').format('YYYY-MM');
+                    const m = months.find((r) => r.ym === ym);
+                    return { ym, fees: num(m === null || m === void 0 ? void 0 : m.fees), other: num(m === null || m === void 0 ? void 0 : m.other), count: num(m === null || m === void 0 ? void 0 : m.n) };
+                });
+                // Receivables: current students' balances (accountNet -- positive =
+                // owing, negative = in credit), overall and by year group.
+                const rec = yield fms.$queryRaw `
+            select count(*) as students,
+               sum(accountNet > 0) as debtors,
+               sum(case when accountNet > 0 then accountNet else 0 end) as owed,
+               sum(accountNet < 0) as inCredit,
+               sum(case when accountNet < 0 then -accountNet else 0 end) as credit
+            from ais_student where completeStatus = 0`;
+                const r0 = rec[0] || {};
+                const receivables = {
+                    students: num(r0.students), debtors: num(r0.debtors), owed: num(r0.owed), inCredit: num(r0.inCredit), credit: num(r0.credit),
+                    settled: num(r0.students) - num(r0.debtors) - num(r0.inCredit),
+                };
+                const recYear = yield fms.$queryRaw `
+            select ceil(semesterNum / 2) as yg, count(*) as students,
+               sum(accountNet > 0) as debtors,
+               sum(case when accountNet > 0 then accountNet else 0 end) as owed
+            from ais_student
+            where completeStatus = 0 and semesterNum > 0
+            group by yg order by yg`;
+                const receivablesByYear = recYear.map((r) => ({ year: num(r.yg), students: num(r.students), debtors: num(r.debtors), owed: num(r.owed) })).filter((r) => r.year >= 1);
+                // Billed to the current (default) session(s).
+                const sessions = yield fms.session.findMany({ where: { default: true }, select: { id: true, title: true } });
+                const billedAgg = sessions.length
+                    ? yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { sessionId: { in: sessions.map((s) => s.id) }, type: { in: ['BILL', 'CHARGE'] } } })
+                    : null;
+                // Latest payments.
+                const recentRows = yield fms.transaction.findMany({
+                    orderBy: { createdAt: 'desc' },
+                    take: 8,
+                    select: {
+                        id: true, amount: true, createdAt: true, payType: true, currency: true,
+                        transtype: { select: { title: true } },
+                        student: { select: { id: true, fname: true, lname: true } },
                     },
-                    otherPayment: trans
+                });
+                let data = {
+                    feesPayment: periodOf(row(2)),
+                    otherPayment: trans,
+                    periods,
+                    trend,
+                    receivables,
+                    receivablesByYear,
+                    session: { titles: sessions.map((s) => s.title), billed: num((_a = billedAgg === null || billedAgg === void 0 ? void 0 : billedAgg._sum) === null || _a === void 0 ? void 0 : _a.amount) },
+                    recent: recentRows,
                 };
                 if (data)
                     res.status(200).json(data);
