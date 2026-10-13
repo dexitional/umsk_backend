@@ -6,7 +6,7 @@ import { broadcastCircular, studentAudiences } from "../util/pushBroadcast";
 
 import fs from "fs";
 import path from "path";
-import { errorMessage, friendlyDbError, getBillCodePrisma, getClass, getGrade, getGradePoint, getOrSetCache, gradeFor, gradePointFor, isIncomplete, stripBlank } from "../util/helper";
+import { errorMessage, friendlyDbError, getBillCodePrisma, getClass, getGrade, getGradePoint, getOrSetCache, gradeFor, gradePointFor, isIncomplete, stripBlank, toDate } from "../util/helper";
 import { paramStr } from "../util/paramStr";
 import { buildStatutoryReport, StatutoryReportError } from "../util/statutoryReport";
 import { isSheetAdmin, isSheetInScope, sheetScopeWhere } from "../util/sheetScope";
@@ -1829,8 +1829,8 @@ export default class AisController {
          req.body.completeType = !req.body.completeType ? null : req.body.completeType;
 
          //req.body.entryDate  = !req.body.entryDate ? null : moment(req.body.entryDate).toDate();
-         if (req.body.entryDate) req.body.entryDate = new Date(req.body.entryDate);
-         if (req.body.dob) req.body.dob = new Date(req.body.dob);
+         req.body.entryDate = toDate(req.body.entryDate);
+         req.body.dob = toDate(req.body.dob);
 
          const resp = await ais.student.create({
             data: {
@@ -1916,7 +1916,7 @@ export default class AisController {
                fname: row.fname?.toString()?.trim() || null,
                mname: row.mname?.toString()?.trim() || null,
                lname: row.lname?.toString()?.trim() || null,
-               dob: row.dob ? new Date(row.dob) : null,
+               dob: toDate(row.dob) ?? null,
                semesterNum,
                gender: row.gender?.toString()?.trim() || null,
                email: row.email?.toString()?.trim() || null,
@@ -2094,8 +2094,8 @@ export default class AisController {
          // delete req.body.indexno;
          req.body.completeType = !req.body.completeType ? null : req.body.completeType;
          if (indexno != undefined) req.body.indexno = !req.body.indexno ? null : req.body.indexno;
-         if (req.body.entryDate) req.body.entryDate = new Date(req.body.entryDate);
-         if (req.body.dob) req.body.dob = new Date(req.body.dob);
+         req.body.entryDate = toDate(req.body.entryDate);
+         req.body.dob = toDate(req.body.dob);
          const resp = await ais.student.update({
             where: { id: paramStr(req.params.id) },
             data: {
@@ -8426,7 +8426,8 @@ export default class AisController {
          delete req.body.countryId; delete req.body.regionId;
          delete req.body.religionId; delete req.body.unitId;
          delete req.body.jobId;
-         req.body.exitDate = req.body.exitDate ? moment(req.body.exitDate).toDate() : null;
+         req.body.exitDate = toDate(req.body.exitDate);
+         req.body.dob = toDate(req.body.dob);
          req.body.phone = req.body.phone ? req.body.phone : null;
          req.body.email = req.body.email ? req.body.email : null;
          req.body.ssnitNo = req.body.ssnitNo ? req.body.ssnitNo : null;
@@ -8465,7 +8466,8 @@ export default class AisController {
          delete req.body.religionId; delete req.body.unitId;
          delete req.body.jobId; //   
          req.body.staffNo = req.body.staffNo > 0 ? req.body.staffNo?.toString() : (parseInt(st?.staffNo) + 1).toString();
-         req.body.exitDate = req.body.exitDate ? moment(req.body.exitDate).toDate() : null;
+         req.body.exitDate = toDate(req.body.exitDate);
+         req.body.dob = toDate(req.body.dob);
          req.body.phone = req.body.phone ? req.body.phone : null;
          req.body.email = req.body.email ? req.body.email : null;
          req.body.ssnitNo = req.body.ssnitNo ? req.body.ssnitNo : null;

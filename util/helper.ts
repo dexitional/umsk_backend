@@ -154,6 +154,39 @@ export const clearCache = async (key: string) =>  {
 // straight through as a scalar foreign key column, the DB rejects either as
 // pointing to a row that doesn't exist. Stripping them lets Prisma omit the
 // field (and MariaDB just store NULL) instead of erroring.
+// A request-body date for Prisma, which only accepts a Date or a full
+// ISO-8601 date-time string (a bare "1985-04-12", "12/04/1985" or "" is
+// rejected). Blank ('' / null) -> null. Plain calendar dates are pinned to
+// UTC midnight so they don't shift a day with the server's timezone:
+//  - YYYY-MM-DD (date inputs; single-digit month/day allowed)
+//  - DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY -- day first, as written in Ghana
+//    (JavaScript would read 12/04/1985 as 4 December)
+// A small number is an Excel serial day. Anything that doesn't parse (or an
+// impossible day like 31/02) -> undefined, which Prisma treats as "leave the
+// field as it is", so bad input never wipes a stored date.
+const utcDay = (y: number, m: number, d: number) => {
+   const dt = new Date(Date.UTC(y, m - 1, d));
+   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d ? dt : undefined;
+};
+export const toDate = (v: any): Date | null | undefined => {
+   if (v === undefined) return undefined;
+   if (v === null || String(v).trim() === '') return null;
+   if (v instanceof Date) return isNaN(v.getTime()) ? undefined : v;
+   if (typeof v === 'number') {
+      const d = v > 0 && v < 100000 ? new Date(Math.round((v - 25569) * 86400000)) : new Date(v);
+      return isNaN(d.getTime()) ? undefined : d;
+   }
+   const s = String(v).trim();
+   let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+   if (m) return utcDay(+m[1], +m[2], +m[3]);
+   m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+   if (m) return utcDay(+m[3], +m[2], +m[1]);
+   // Full date-times (ISO strings from the API, Date#toString output).
+   if (!/\d{4}/.test(s)) return undefined;
+   const d = new Date(s);
+   return isNaN(d.getTime()) ? undefined : d;
+};
+
 export const stripBlank = (body: any, blankValues: any[] = ['', 'NONE', null, undefined]) => {
   const clean: any = {};
   for (const [key, value] of Object.entries(body || {})) {
