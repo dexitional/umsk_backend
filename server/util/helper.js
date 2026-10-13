@@ -9,7 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.errorMessage = exports.friendlyDbError = exports.stripBlank = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.getGradePoint = exports.getGrade = void 0;
+exports.errorMessage = exports.friendlyDbError = exports.stripBlank = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.getGradePoint = exports.gradePointFor = exports.gradeFor = exports.isIncomplete = exports.getGrade = void 0;
 const redis_1 = require("../config/redis");
 const client_1 = require("../prisma/client");
 const auditLog_1 = require("./auditLog");
@@ -23,6 +23,16 @@ const getGrade = (num, grades) => {
     return (vs && vs.grade) || 'I';
 };
 exports.getGrade = getGrade;
+// IC (Incomplete): the course's exam score hasn't been entered. A result
+// entered as a total only (no class or exam score -- e.g. a backlog upload)
+// is complete, not IC. IC results show grade "IC" and carry no grade points
+// or GPA/CGPA credits until the exam score is in.
+const isIncomplete = (r) => (r === null || r === void 0 ? void 0 : r.examScore) == null && !((r === null || r === void 0 ? void 0 : r.classScore) == null && (r === null || r === void 0 ? void 0 : r.totalScore) != null);
+exports.isIncomplete = isIncomplete;
+const gradeFor = (r, grades) => ((0, exports.isIncomplete)(r) ? 'IC' : (0, exports.getGrade)(r === null || r === void 0 ? void 0 : r.totalScore, grades));
+exports.gradeFor = gradeFor;
+const gradePointFor = (r, grades) => ((0, exports.isIncomplete)(r) ? 0 : (0, exports.getGradePoint)(r === null || r === void 0 ? void 0 : r.totalScore, grades));
+exports.gradePointFor = gradePointFor;
 const getGradePoint = (num, grades) => {
     if (num == null)
         return 0;

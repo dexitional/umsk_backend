@@ -124,11 +124,13 @@ model major {
   @@map("ais_major")
 }
 
+// Programmes are not linked to departments: a course belongs to a department
+// through its curriculum assignment (structure.unitId). The ais_program.unitId
+// column is left in the database, unused.
 model program {
   id            String          @id @default(uuid())
   tag           String?         @db.Text
   schemeId      String?
-  unitId        String?
   modeId        String?
   code          String          @db.VarChar(50)
   prefix        String?         @db.VarChar(50)
@@ -145,7 +147,6 @@ model program {
   updatedAt     DateTime        @updatedAt
 
   scheme     scheme? @relation(fields: [schemeId], references: [id])
-  department unit?   @relation(fields: [unitId], references: [id])
   mode       mode?   @relation(fields: [modeId], references: [id])
 
   student    student[]

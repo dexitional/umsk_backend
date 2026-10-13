@@ -117,18 +117,6 @@ function unregisteredStudentsForSession(sessionId) {
         });
     });
 }
-// A program's department must be a genuine department-level unit (levelNum 2,
-// ACADEMIC — see fetchDepartments/fetchFaculties for the same convention),
-// not a faculty, a non-academic unit, or an arbitrary id. The frontend's
-// department dropdown already only offers valid options, but postProgram/
-// updateProgram had nothing stopping a direct request from connecting any
-// unit id -- this is the server-side backstop.
-function isValidDepartmentUnit(unitId) {
-    return __awaiter(this, void 0, void 0, function* () {
-        const unit = yield ais.unit.findFirst({ where: { id: unitId, levelNum: 2, type: 'ACADEMIC' }, select: { id: true } });
-        return !!unit;
-    });
-}
 // A student may have several outstanding resit courses tied to this
 // session — dedupe by indexno so each student is reminded once, not once
 // per course row.
@@ -945,16 +933,23 @@ class AisController {
                 const fcomplete = yield ais.student.count({ where: { completeStatus: true, deferStatus: false, gender: 'F' } });
                 const mgraduate = yield ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, gender: 'M' } });
                 const fgraduate = yield ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, gender: 'F' } });
-                // Department Statistics
+                // Students with no (or a non-M/F) gender recorded -- previously left
+                // out of every status count, so totals undercounted. `u` per status.
+                const noGender = { OR: [{ gender: null }, { gender: { notIn: ['M', 'F'] } }] };
+                const uactive = yield ais.student.count({ where: Object.assign({ completeStatus: false, deferStatus: false }, noGender) });
+                const udefer = yield ais.student.count({ where: Object.assign({ completeStatus: false, deferStatus: true }, noGender) });
+                const ucomplete = yield ais.student.count({ where: Object.assign({ completeStatus: true, deferStatus: false }, noGender) });
+                const ugraduate = yield ais.student.count({ where: Object.assign({ completeStatus: true, deferStatus: false, graduateStatus: true }, noGender) });
+                // Department Statistics -- programmes aren't linked to departments;
+                // a department's courses are those assigned to it in the curriculum
+                // (structure.unitId), counted once each.
                 const depts = yield ais.unit.findMany({ where: { type: 'ACADEMIC', levelNum: 2 } });
                 const department = yield Promise.all(depts.map((r) => __awaiter(this, void 0, void 0, function* () {
-                    const programs = yield ais.program.count({ where: { unitId: r.id } });
-                    const students = yield ais.student.count({ where: { program: { unitId: r.id }, completeStatus: false } });
+                    const courses = (yield ais.structure.findMany({ where: { unitId: r.id }, distinct: ['courseId'], select: { courseId: true } })).length;
                     const staff = yield ais.staff.count({ where: { unitId: r.id, status: true } });
                     return ({
                         label: r.title,
-                        programs,
-                        students,
+                        courses,
                         staff
                     });
                 })));
@@ -983,10 +978,10 @@ class AisController {
                         graduation
                     },
                     student: {
-                        active: { f: factive, m: mactive },
-                        defer: { f: fdefer, m: mdefer },
-                        complete: { f: fcomplete, m: mcomplete },
-                        graduate: { f: fgraduate, m: mgraduate }
+                        active: { f: factive, m: mactive, u: uactive },
+                        defer: { f: fdefer, m: mdefer, u: udefer },
+                        complete: { f: fcomplete, m: mcomplete, u: ucomplete },
+                        graduate: { f: fgraduate, m: mgraduate, u: ugraduate }
                     },
                     department,
                     program,
@@ -1283,7 +1278,6 @@ class AisController {
                             program: {
                                 select: {
                                     longName: true,
-                                    department: { select: { title: true } }
                                 }
                             },
                         }, orderBy: [
@@ -1325,7 +1319,6 @@ class AisController {
                                 longName: true,
                                 shortName: true,
                                 category: true,
-                                department: { select: { title: true } }
                             }
                         },
                         major: {
@@ -1390,7 +1383,7 @@ class AisController {
                         const index = (_b = (_a = sv === null || sv === void 0 ? void 0 : sv.session) === null || _a === void 0 ? void 0 : _a.title) !== null && _b !== void 0 ? _b : 'none';
                         const grades = (_c = sv.scheme) === null || _c === void 0 ? void 0 : _c.gradeMeta;
                         const classes = (_d = sv.scheme) === null || _d === void 0 ? void 0 : _d.classMeta;
-                        const zd = Object.assign(Object.assign({}, sv), { student: st, grade: yield (0, helper_1.getGrade)(sv.totalScore, grades), gradepoint: yield (0, helper_1.getGradePoint)(sv.totalScore, grades), classes });
+                        const zd = Object.assign(Object.assign({}, sv), { student: st, grade: (0, helper_1.gradeFor)(sv, grades), gradepoint: (0, helper_1.gradePointFor)(sv, grades), classes });
                         // Data By Courses
                         if (mdata.has(index)) {
                             mdata.set(index, [...mdata.get(index), Object.assign({}, zd)]);
@@ -1411,7 +1404,8 @@ class AisController {
                     let runningCredit = 0;
                     let runningGradepoint = 0;
                     const groups = Array.from(mdata).map(([title, rows]) => {
-                        const gradedRows = rows.filter((r) => r.status === true && r.totalScore != null);
+                        // IC results (no exam score yet) count toward neither credit nor grade points.
+                        const gradedRows = rows.filter((r) => r.status === true && r.totalScore != null && !(0, helper_1.isIncomplete)(r));
                         const semCredit = gradedRows.reduce((sum, cur) => sum + cur.credit, 0);
                         const semGradepoint = gradedRows.reduce((sum, cur) => sum + cur.credit * cur.gradepoint, 0);
                         runningCredit += semCredit;
@@ -1532,7 +1526,7 @@ class AisController {
                                 const cindex = (_a = sv.title) !== null && _a !== void 0 ? _a : 'none';
                                 const grades = sv.gradeMeta;
                                 const classes = sv.classMeta;
-                                const zd = Object.assign(Object.assign({}, sv), { grade: yield (0, helper_1.getGrade)(sv.totalScore, grades), gradepoint: yield (0, helper_1.getGradePoint)(sv.totalScore, grades), classes });
+                                const zd = Object.assign(Object.assign({}, sv), { grade: (0, helper_1.gradeFor)(sv, grades), gradepoint: (0, helper_1.gradePointFor)(sv, grades), classes });
                                 // Data By Courses
                                 if (sdata.has(cindex)) {
                                     sdata.set(cindex, [...sdata.get(cindex), Object.assign({}, zd)]);
@@ -2433,7 +2427,8 @@ class AisController {
                     ais.structure.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize), include: {
                             unit: { select: { title: true } },
                             program: { select: { longName: true } },
-                            course: { select: { title: true } },
+                            major: { select: { shortName: true, longName: true } },
+                            course: { select: { title: true, creditHour: true } },
                         } }))
                 ]);
                 //if(resp && resp[1]?.length){
@@ -2790,7 +2785,7 @@ class AisController {
                 let resp = [];
                 const st = yield ais.student.findUnique({
                     where: { id: (0, paramStr_1.paramStr)(req.params.indexno) },
-                    select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true, department: true } } },
+                    select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true } } },
                 });
                 if (st) {
                     // Get Active Session Info -- no more MAIN/January-SUB stream split,
@@ -3188,9 +3183,6 @@ class AisController {
             try {
                 const resp = yield ais.program.findMany({
                     where: { status: true },
-                    include: {
-                        department: { select: { title: true } },
-                    },
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3226,7 +3218,6 @@ class AisController {
                 const resp = yield ais.$transaction([
                     ais.program.count(Object.assign({}, (searchCondition))),
                     ais.program.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize), include: {
-                            department: { select: { title: true } },
                             student: { select: { _count: true } }
                         } }))
                 ]);
@@ -3254,7 +3245,6 @@ class AisController {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
                     include: {
-                        department: { select: { title: true } },
                         student: { select: { _count: true } }
                     }
                 });
@@ -3356,6 +3346,10 @@ class AisController {
                                 semesterNum: true,
                                 residentialStatus: true,
                                 deferStatus: true,
+                                // For the programme's bulk ID cards (Issued/Expires, hall, nationality).
+                                entryDate: true,
+                                instituteAffliate: true,
+                                country: { select: { nationality: true } },
                                 program: { select: { shortName: true, longName: true } }
                             },
                             orderBy: { semesterNum: 'asc' }
@@ -3394,9 +3388,6 @@ class AisController {
                     where: {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
-                    include: {
-                        department: { select: { title: true } },
-                    }
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3414,14 +3405,13 @@ class AisController {
     postProgram(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { unitId, schemeId } = req.body;
+                // Programmes aren't linked to departments (see schema), so any
+                // unitId sent is ignored.
+                const { schemeId } = req.body;
                 delete req.body.schemeId;
                 delete req.body.unitId;
-                if (unitId && !(yield isValidDepartmentUnit(unitId))) {
-                    return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
-                }
                 const resp = yield ais.program.create({
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), unitId && ({ department: { connect: { id: unitId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } }))
+                    data: Object.assign(Object.assign({}, req.body), schemeId && ({ scheme: { connect: { id: schemeId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3439,15 +3429,13 @@ class AisController {
     updateProgram(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { unitId, schemeId } = req.body;
+                // Programmes aren't linked to departments; any unitId sent is ignored.
+                const { schemeId } = req.body;
                 delete req.body.schemeId;
                 delete req.body.unitId;
-                if (unitId && !(yield isValidDepartmentUnit(unitId))) {
-                    return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
-                }
                 const resp = yield ais.program.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), unitId && ({ department: { connect: { id: unitId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } }))
+                    data: Object.assign(Object.assign({}, req.body), schemeId && ({ scheme: { connect: { id: schemeId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3515,13 +3503,26 @@ class AisController {
                         _count: {
                             select: {
                                 staff: true,
-                                program: true
                             }
                         },
                     },
+                    orderBy: { title: 'asc' },
                 });
                 if (resp) {
-                    res.status(200).json(resp);
+                    // Added for the Department module cards (existing fields unchanged,
+                    // so the department dropdowns that use this list still work):
+                    // `courses` = distinct courses assigned to the department in the
+                    // curriculum (structure.unitId); `head` = head of department's name.
+                    const ids = resp.map((d) => d.id);
+                    const assigned = ids.length ? yield ais.structure.findMany({ where: { unitId: { in: ids } }, select: { unitId: true, courseId: true }, distinct: ['unitId', 'courseId'] }) : [];
+                    const heads = resp.map((d) => d.headStaffNo).filter(Boolean);
+                    const staff = heads.length ? yield ais.staff.findMany({ where: { staffNo: { in: heads } }, select: { staffNo: true, fname: true, lname: true, title: { select: { label: true } } } }) : [];
+                    const headName = (no) => {
+                        var _a;
+                        const h = staff.find((x) => x.staffNo === no);
+                        return h ? [(_a = h.title) === null || _a === void 0 ? void 0 : _a.label, h.fname, h.lname].filter(Boolean).join(' ') : null;
+                    };
+                    res.status(200).json(resp.map((d) => (Object.assign(Object.assign({}, d), { courses: assigned.filter((a) => a.unitId === d.id).length, head: d.headStaffNo ? headName(d.headStaffNo) : null }))));
                 }
                 else {
                     res.status(202).json({ message: `no record found` });
@@ -3540,7 +3541,6 @@ class AisController {
                 const resp = yield ais.unit.findMany({
                     where: { status: true, levelNum: 1, type: 'ACADEMIC' },
                     include: {
-                        levelI: { select: { _count: { select: { program: true } } } },
                         _count: {
                             select: {
                                 staff: true,
@@ -6134,7 +6134,7 @@ class AisController {
                             let az = ax.reduce((acc, r) => {
                                 var _a;
                                 // Check for IC
-                                if (r.totalScore === undefined || r.totalScore == null) {
+                                if (r.totalScore === undefined || r.totalScore == null || (0, helper_1.isIncomplete)(r)) {
                                     incompleteCount += 1;
                                     return acc;
                                 }

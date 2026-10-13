@@ -425,7 +425,6 @@ model unit {
   levelI       unit[]         @relation("level1")
   levelII      unit[]         @relation("level2")
   levelIII     unit[]         @relation("level3")
-  program      program[]
   structure    structure[]
   bankacc      bankacc[]
   positionInfo positionInfo[]

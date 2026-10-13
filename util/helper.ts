@@ -12,6 +12,14 @@ export const getGrade = (num: any,grades: any) => {
     return (vs && vs.grade) || 'I';
 }
 
+// IC (Incomplete): the course's exam score hasn't been entered. A result
+// entered as a total only (no class or exam score -- e.g. a backlog upload)
+// is complete, not IC. IC results show grade "IC" and carry no grade points
+// or GPA/CGPA credits until the exam score is in.
+export const isIncomplete = (r: any) => r?.examScore == null && !(r?.classScore == null && r?.totalScore != null);
+export const gradeFor = (r: any, grades: any) => (isIncomplete(r) ? 'IC' : getGrade(r?.totalScore, grades));
+export const gradePointFor = (r: any, grades: any) => (isIncomplete(r) ? 0 : getGradePoint(r?.totalScore, grades));
+
 export const getGradePoint = (num: any,grades: any) => {
     if(num == null) return 0
     num = parseFloat(num)
