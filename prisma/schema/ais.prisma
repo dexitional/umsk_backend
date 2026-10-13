@@ -829,21 +829,15 @@ model admissionLetter {
   id        String          @id @default(uuid())
   programId String?
   category  programCategory @default(UG)
-<<<<<<< HEAD
-=======
   // Admission year: ::session_year becomes "<year>/<year+1>" and a bulk print
   // picks the programme's students admitted (entryDate) in this year.
->>>>>>> 1b46019d84764d3436034984c814899325f7822f
   year      Int?
   title     String          @db.VarChar(350)
   signatory String          @db.Text
   signature String          @db.LongText
   template  String          @db.LongText
-<<<<<<< HEAD
-=======
   // SMS texted by "Activate Admission" (::tokens, see admissionSmsText);
   // NULL/blank uses the default wording.
->>>>>>> 1b46019d84764d3436034984c814899325f7822f
   smsTemplate String?       @db.Text
   status    Boolean         @default(true)
   createdAt DateTime        @default(now())

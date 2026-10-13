@@ -1417,5 +1417,117 @@ class EvaController {
             }
         });
     }
+    // Every rating-scale option, enabled or not, with how many answers use
+    // it -- for the Evaluation Manager's rating-scale editor.
+    fetchEvaluationOptions(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const options = yield eva.evaluationOption.findMany({
+                    orderBy: [{ orderNum: 'asc' }, { value: 'asc' }],
+                    include: { _count: { select: { responses: true } } },
+                });
+                res.status(200).json(options);
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
+    // Saves the whole rating scale (shared by every form) in one go. The final
+    // scale is checked as a whole -- submissions match an answer to its option
+    // by label, so labels that are switched on must be unique -- and applied in
+    // one transaction. An option left out is deleted, or switched off when
+    // students have already answered with it, so those answers keep their
+    // meaning. Display order is the order the options arrive in.
+    saveEvaluationScale(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            try {
+                const rows = Array.isArray((_a = req.body) === null || _a === void 0 ? void 0 : _a.options) ? req.body.options : [];
+                const options = rows.map((r, i) => {
+                    var _a;
+                    return ({
+                        id: (r === null || r === void 0 ? void 0 : r.id) ? String(r.id) : undefined,
+                        option: String((_a = r === null || r === void 0 ? void 0 : r.option) !== null && _a !== void 0 ? _a : '').trim(),
+                        value: Number(r === null || r === void 0 ? void 0 : r.value),
+                        orderNum: i + 1,
+                        status: (r === null || r === void 0 ? void 0 : r.status) !== false,
+                    });
+                });
+                const problems = [];
+                if (options.some((o) => !o.option))
+                    problems.push('Every option needs a label.');
+                if (options.some((o) => o.option.length > 100))
+                    problems.push('Labels can be at most 100 characters.');
+                if (options.some((o) => !Number.isInteger(o.value)))
+                    problems.push('Every score must be a whole number.');
+                const enabled = options.filter((o) => o.status);
+                if (enabled.length < 2)
+                    problems.push('Keep at least two options switched on.');
+                const labels = enabled.map((o) => o.option.toLowerCase());
+                if (new Set(labels).size !== labels.length)
+                    problems.push('Two options that are switched on share a label.');
+                const values = enabled.map((o) => o.value);
+                if (new Set(values).size !== values.length)
+                    problems.push('Two options that are switched on share a score.');
+                if (problems.length)
+                    return res.status(400).json({ message: problems.join(' ') });
+                const existing = yield eva.evaluationOption.findMany({ include: { _count: { select: { responses: true } } } });
+                const byId = new Map(existing.map((o) => [o.id, o]));
+                if (options.some((o) => o.id && !byId.has(o.id))) {
+                    return res.status(409).json({ message: 'The rating scale changed since you opened it. Reload the page and try again.' });
+                }
+                const keep = new Set(options.filter((o) => o.id).map((o) => o.id));
+                const summary = { created: 0, updated: 0, deleted: 0, disabled: 0 };
+                yield eva.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    for (const o of existing) {
+                        if (keep.has(o.id))
+                            continue;
+                        if (o._count.responses > 0) {
+                            if (o.status) {
+                                yield tx.evaluationOption.update({ where: { id: o.id }, data: { status: false } });
+                                summary.disabled++;
+                            }
+                        }
+                        else {
+                            yield tx.evaluationOption.delete({ where: { id: o.id } });
+                            summary.deleted++;
+                        }
+                    }
+                    for (const o of options) {
+                        const data = { option: o.option, value: o.value, orderNum: o.orderNum, status: o.status };
+                        if (o.id) {
+                            const cur = byId.get(o.id);
+                            if (cur.option !== data.option || cur.value !== data.value || cur.orderNum !== data.orderNum || !!cur.status !== data.status) {
+                                yield tx.evaluationOption.update({ where: { id: o.id }, data });
+                                summary.updated++;
+                            }
+                        }
+                        else {
+                            yield tx.evaluationOption.create({ data });
+                            summary.created++;
+                        }
+                    }
+                }));
+                yield eva.log.create({
+                    data: {
+                        action: `EVALUATION_SCALE_UPDATED`,
+                        user: req === null || req === void 0 ? void 0 : req.userId,
+                        meta: Object.assign(Object.assign({}, summary), { scale: enabled.map((o) => `${o.value} ${o.option}`) }),
+                    },
+                });
+                const fresh = yield eva.evaluationOption.findMany({
+                    orderBy: [{ orderNum: 'asc' }, { value: 'asc' }],
+                    include: { _count: { select: { responses: true } } },
+                });
+                res.status(200).json({ summary, options: fresh });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: error.message });
+            }
+        });
+    }
 }
 exports.default = EvaController;

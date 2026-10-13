@@ -340,11 +340,7 @@ const letterTagClash = (tag, exceptId) => ais.letter.findFirst({ where: Object.a
 // printed for its newly admitted first years (Year 1, not completed or
 // graduated). Each printed letter carries the student, the default session
 // and the programme's first-year bill for that session (for ::fee_amount).
-<<<<<<< HEAD
-const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'year', 'signatory', 'signature', 'template', 'smsTemplate'];
-=======
 const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'signatory', 'signature', 'template', 'smsTemplate'];
->>>>>>> 1b46019d84764d3436034984c814899325f7822f
 function admissionLetterFields(body) {
     const data = {};
     for (const k of ADMISSION_LETTER_FIELDS)
@@ -354,18 +350,12 @@ function admissionLetterFields(body) {
         data.status = body.status === true || body.status === 'true' || body.status == 1;
     if (data.programId === '')
         data.programId = null;
-<<<<<<< HEAD
-    // Admission year arrives as a string (or null when blank); the column is INT.
-    if (data.year !== undefined)
-        data.year = data.year === null || data.year === '' ? null : Number(data.year) || null;
-=======
     if (data.smsTemplate === '')
         data.smsTemplate = null;
     if ((body === null || body === void 0 ? void 0 : body.year) !== undefined) {
         const y = parseInt(String(body.year), 10);
         data.year = Number.isNaN(y) ? null : y;
     }
->>>>>>> 1b46019d84764d3436034984c814899325f7822f
     return data;
 }
 const ADMISSION_STUDENT_SELECT = {

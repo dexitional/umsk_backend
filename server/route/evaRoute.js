@@ -60,6 +60,9 @@ class EvaRoute {
         this.router.post('/evaluation-guides', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.postEvaluationGuide);
         this.router.patch('/evaluation-guides/:id', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.updateEvaluationGuide);
         this.router.delete('/evaluation-guides/:id', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.deleteEvaluationGuide);
+        this.router.get('/evaluation-options', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.fetchEvaluationOptions);
+        // Whole rating scale in one transaction (Evaluation Manager > Rating scale)
+        this.router.put('/evaluation-options', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.saveEvaluationScale);
         this.router.post('/evaluation-options', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.postEvaluationOption);
         this.router.patch('/evaluation-options/:id', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.updateEvaluationOption);
         this.router.delete('/evaluation-options/:id', [requireRole(EVALUATION_ADMIN_ROLES)], this.controller.deleteEvaluationOption);
