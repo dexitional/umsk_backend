@@ -1,5 +1,7 @@
 import { NextFunction, Request, Response } from 'express'
 import { redisClient } from "../config/redis"; 
+import { prisma } from "../prisma/client";
+import { requestInfo, writeLog } from "./auditLog";
 const CACHE_TTL = 3600; // 1 hour
 
 export const getGrade = (num: any,grades: any) => {
@@ -9,6 +11,14 @@ export const getGrade = (num: any,grades: any) => {
     console.log(num,vs)
     return (vs && vs.grade) || 'I';
 }
+
+// IC (Incomplete): the course's exam score hasn't been entered. A result
+// entered as a total only (no class or exam score -- e.g. a backlog upload)
+// is complete, not IC. IC results show grade "IC" and carry no grade points
+// or GPA/CGPA credits until the exam score is in.
+export const isIncomplete = (r: any) => r?.examScore == null && !(r?.classScore == null && r?.totalScore != null);
+export const gradeFor = (r: any, grades: any) => (isIncomplete(r) ? 'IC' : getGrade(r?.totalScore, grades));
+export const gradePointFor = (r: any, grades: any) => (isIncomplete(r) ? 0 : getGradePoint(r?.totalScore, grades));
 
 export const getGradePoint = (num: any,grades: any) => {
     if(num == null) return 0
@@ -74,18 +84,52 @@ export const rotateImage = async (imageFile:any) => {
     }).write(imageFile);
 }
 
+// Bank API (route/apiRoute.ts): logs every request as BANK_API_<action>
+// once the response is sent, with what the bank sent and what it got back
+// (the API answers HTTP 200 with { success, msg }, so the outcome is read
+// from the body). The API key (?api_key= / ?api= / x-api-key) is masked to
+// its last 4 characters; the matching collector, if
+// any, is recorded as the log's user. Never blocks or fails the request.
 export const apiLogger = (action: any) => {
     return async (req: Request, res: Response, next: NextFunction) => {
-        const api = req.query.api
-        const refno = req.params.refno
-        const dm = req.body
-        let dt:any = {}
-        if(refno) dt.studentId = refno
-        if(api) dt.apiToken = api
-        if(dm && Object.keys(dm).length > 0) dt.data = dm
-        //const log = await SSO.apilogger(parseIp(req),action,dt)
+        const started = Date.now();
+        let responseBody: any;
+        const json = res.json.bind(res);
+        res.json = (body: any) => { responseBody = body; return json(body); };
+
+        res.on('finish', async () => {
+            try {
+                const token = String(req.query?.api_key || req.query?.api || req.headers['x-api-key'] || '').trim();
+                const collector = token ? await prisma.collector.findFirst({ where: { apiToken: token }, select: { id: true, name: true } }).catch(() => null) : null;
+                const query = Object.fromEntries(Object.entries(req.query || {}).map(([k, v]) => [k, ['api', 'api_key'].includes(k) ? `****${String(v).slice(-4)}` : v]));
+                const authenticated = !!(req as any).collector;
+                const body = req.body && Object.keys(req.body).length ? req.body : undefined;
+                const serialized = responseBody === undefined ? '' : JSON.stringify(responseBody);
+                await writeLog(`BANK_API_${action}`, {
+                    user: collector?.name || 'BANK_API',
+                    student: (req.params as any)?.refno || req.body?.studentId || null,
+                    meta: {
+                        request: requestInfo(req),
+                        query,
+                        body,
+                        collector: collector ? { id: collector.id, name: collector.name } : (token ? 'unknown API key' : 'no API key'),
+                        authenticated,
+                        response: {
+                            status: res.statusCode,
+                            success: responseBody?.success ?? (res.statusCode < 400),
+                            msg: responseBody?.msg ?? responseBody?.message ?? null,
+                            // Service lists can be large; keep a preview only.
+                            data: serialized.length > 4000 ? { truncated: true, preview: serialized.slice(0, 1000) } : responseBody?.data,
+                        },
+                        durationMs: Date.now() - started,
+                    },
+                });
+            } catch (error: any) {
+                console.log(`apiLogger failed (${action}):`, error?.message);
+            }
+        });
         return next();
-    }  
+    }
 }
 
 export const getOrSetCache = async (key: string, cb: () => Promise<any>) => {
@@ -134,7 +178,26 @@ export const friendlyDbError = (error: any): string => {
       return `The record you're trying to update or delete could not be found — it may have already been removed.`;
     case 'P2014':
       return `That change would leave a related record in an invalid state. Please review and try again.`;
+    // Schema drift: the code expects a column/table a pending SQL
+    // migration (prisma/sql) hasn't added to this database yet.
+    case 'P2022': {
+      const column = error?.meta?.column || String(error?.message || '').match(/column `([^`]+)`/)?.[1];
+      return `The database is missing ${column ? `the column ${column}` : 'a column'} needed for this. Ask the system administrator to run the latest database updates (backend/prisma/sql), then try again.`;
+    }
+    case 'P2021': {
+      const table = error?.meta?.table || String(error?.message || '').match(/table `([^`]+)`/)?.[1];
+      return `The database is missing ${table ? `the table ${table}` : 'a table'} needed for this. Ask the system administrator to run the latest database updates (backend/prisma/sql), then try again.`;
+    }
     default:
       return `Something went wrong while saving. Please try again, and contact support if the problem continues.`;
   }
+}
+
+// A message that's safe to show users for any caught error: Prisma errors
+// (whose messages are long internal query dumps) go through
+// friendlyDbError; errors the app throws itself keep their own message.
+export const errorMessage = (error: any, fallback: string = 'Something went wrong. Please try again, and contact support if the problem continues.'): string => {
+  const isPrisma = /^Prisma/.test(error?.name || '') || /^P\d{4}$/.test(error?.code || '');
+  if (isPrisma) return error?.code ? friendlyDbError(error) : fallback;
+  return error?.message || fallback;
 }

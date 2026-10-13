@@ -15,7 +15,10 @@ const ais = client_1.prisma;
 // `log` table written across all modules -- including the ais_assessment
 // audit trail (prisma/auditAssessment.ts).
 // Action-name prefixes/keywords -> category, for the module's filter tabs.
+// First match wins, so "bank" precedes "finance" (BANK_API_SEND_TRANSACTION
+// also contains TRANSACT).
 const CATEGORIES = {
+    bank: ["BANK_API"],
     assessment: ["ASSESSMENT", "SHEET", "BACKLOG", "RESIT", "SCORE"],
     auth: ["LOGIN", "PASSWORD", "SWITCH_USER", "LOGOUT", "TOKEN"],
     students: ["STUDENT", "INDEX_NUMBER", "GRADUAT", "DEFER"],
@@ -68,7 +71,7 @@ function resolveNames(tags) {
 // the password hash + unlock PIN) -- never send those to the browser.
 // Any key that names a credential, e.g. password, oldpassword, newpassword,
 // rnewpassword, unlockPin, pin, apiToken, secret, otp.
-const SECRET_KEYS = /(pass(word|wd)?|pwd|secret|token|otp)|^(unlock)?pin$/i;
+const SECRET_KEYS = /(pass(word|wd)?|pwd|secret|token|otp|api_?key)|^(unlock)?pin$/i;
 const redact = (v) => Array.isArray(v) ? v.map(redact)
     : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, SECRET_KEYS.test(k) ? "[redacted]" : redact(x)]))
         : v;

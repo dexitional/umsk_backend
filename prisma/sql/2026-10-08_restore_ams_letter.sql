@@ -1,12 +1,11 @@
 -- Restores ams_letter (admission letter templates) and ties each template to
 -- a programme: programId (FK ais_program) and category (programme category,
--- default UG). The original categoryId column (old AMS admission category)
--- is kept for compatibility but is no longer used.
+-- default UG). The old AMS admission-category column (categoryId) is not
+-- restored; 2026-10-08_ams_letter_year.sql drops it if an older table has it.
 -- Idempotent: creates the table if missing, otherwise adds the new columns.
 
 CREATE TABLE IF NOT EXISTS `ams_letter` (
   `id` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `categoryId` varchar(191) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `programId` varchar(191) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `category` enum('CP','DP','UG','PG') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'UG',
   `title` varchar(350) COLLATE utf8mb4_unicode_ci NOT NULL,

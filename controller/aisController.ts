@@ -6,7 +6,7 @@ import { broadcastCircular, studentAudiences } from "../util/pushBroadcast";
 
 import fs from "fs";
 import path from "path";
-import { friendlyDbError, getBillCodePrisma, getClass, getGrade, getGradePoint, getOrSetCache, stripBlank } from "../util/helper";
+import { errorMessage, friendlyDbError, getBillCodePrisma, getClass, getGrade, getGradePoint, getOrSetCache, gradeFor, gradePointFor, isIncomplete, stripBlank } from "../util/helper";
 import { paramStr } from "../util/paramStr";
 import { buildStatutoryReport, StatutoryReportError } from "../util/statutoryReport";
 import { isSheetAdmin, isSheetInScope, sheetScopeWhere } from "../util/sheetScope";
@@ -95,16 +95,6 @@ async function unregisteredStudentsForSession(sessionId: string) {
    });
 }
 
-// A program's department must be a genuine department-level unit (levelNum 2,
-// ACADEMIC — see fetchDepartments/fetchFaculties for the same convention),
-// not a faculty, a non-academic unit, or an arbitrary id. The frontend's
-// department dropdown already only offers valid options, but postProgram/
-// updateProgram had nothing stopping a direct request from connecting any
-// unit id -- this is the server-side backstop.
-async function isValidDepartmentUnit(unitId: string): Promise<boolean> {
-   const unit = await ais.unit.findFirst({ where: { id: unitId, levelNum: 2, type: 'ACADEMIC' }, select: { id: true } });
-   return !!unit;
-}
 
 // A student may have several outstanding resit courses tied to this
 // session — dedupe by indexno so each student is reminded once, not once
@@ -129,7 +119,7 @@ async function unresolvedResitStudentsForSession(trailSessionId: string) {
 // its own SMS with the real institute email -- sending this one first
 // would text a username (the bare studentId) that's overwritten a moment
 // later, misleading the student.
-async function stageStudentAccess(studentId: string, userId?: string, sendSms: boolean = true) {
+async function stageStudentAccess(studentId: string, userId?: string, sendSms: boolean = true, smsText?: (username: string, password: string) => string) {
    const password = generateStrongPassword();
    const isUser = await ais.user.findFirst({ where: { tag: studentId } })
    if (isUser) throw new Error("Student Portal Account Exists!")
@@ -146,7 +136,7 @@ async function stageStudentAccess(studentId: string, userId?: string, sendSms: b
       if (st?.phone) {
          try {
             // Quote the username just stored (login matches on it), not instituteEmail.
-            await sms(st.phone, `Hi! Your new credentials is username: ${resp.username}, password: ${password}`)
+            await sms(st.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`)
          } catch (smsError: any) {
             console.log('stageStudentAccess SMS send failed:', smsError?.message)
          }
@@ -159,8 +149,10 @@ async function stageStudentAccess(studentId: string, userId?: string, sendSms: b
 }
 
 // Core of the generateEmail route handler below -- see stageStudentAccess
-// above for why this is a module-level function.
-async function generateStudentEmail(studentId: string, userId?: string, sendSms: boolean = true) {
+// above for why this is a module-level function. `smsText` replaces the
+// default credentials SMS (Activate Admission folds the admission notice
+// into it, so a fresher gets one text instead of two).
+async function generateStudentEmail(studentId: string, userId?: string, sendSms: boolean = true, smsText?: (instituteEmail: string, password: string) => string) {
    let count = 1;
    let isNew = true;
    const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
@@ -225,7 +217,7 @@ async function generateStudentEmail(studentId: string, userId?: string, sendSms:
       // an already-successful email generation into a 500.
       if (sendSms && st?.phone) {
          try {
-            await sms(st.phone, `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`)
+            await sms(st.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`)
          } catch (smsError: any) {
             console.log('generateStudentEmail SMS send failed:', smsError?.message)
          }
@@ -317,14 +309,26 @@ const letterTagClash = (tag: string, exceptId?: string) =>
 // printed for its newly admitted first years (Year 1, not completed or
 // graduated). Each printed letter carries the student, the default session
 // and the programme's first-year bill for that session (for ::fee_amount).
+<<<<<<< HEAD
 const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'year', 'signatory', 'signature', 'template', 'smsTemplate'];
+=======
+const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'signatory', 'signature', 'template', 'smsTemplate'];
+>>>>>>> 1b46019d84764d3436034984c814899325f7822f
 function admissionLetterFields(body: any) {
    const data: any = {};
    for (const k of ADMISSION_LETTER_FIELDS) if (body?.[k] !== undefined) data[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
    if (body?.status !== undefined) data.status = body.status === true || body.status === 'true' || body.status == 1;
    if (data.programId === '') data.programId = null;
+<<<<<<< HEAD
    // Admission year arrives as a string (or null when blank); the column is INT.
    if (data.year !== undefined) data.year = data.year === null || data.year === '' ? null : Number(data.year) || null;
+=======
+   if (data.smsTemplate === '') data.smsTemplate = null;
+   if (body?.year !== undefined) {
+      const y = parseInt(String(body.year), 10);
+      data.year = Number.isNaN(y) ? null : y;
+   }
+>>>>>>> 1b46019d84764d3436034984c814899325f7822f
    return data;
 }
 const ADMISSION_STUDENT_SELECT = {
@@ -337,9 +341,58 @@ const ADMISSION_STUDENT_SELECT = {
 };
 const FIRST_YEAR_WHERE = { semesterNum: { in: [1, 2] }, completeStatus: false, graduateStatus: false };
 
-async function admissionPrintBundle(programId: string, students: any[]) {
+// A fresher with an admission offer only gets the admission/profile/fees
+// part of the portal until they've ACCEPTED and cleared their fees
+// (accountNet <= 0 -- positive means owing, as on the debtors list -- or a
+// fee pardon). Continuing students (no offer) are never locked. The
+// portal's AISPLayout applies the same rule (frontend utils/admission.ts).
+const admissionLocked = (st: any) =>
+   st?.semesterNum == 1 && !!st?.admissionStatus
+   && (st.admissionStatus !== 'ACCEPTED' || !((Number(st.accountNet) || 0) <= 0 || st.flagPardon));
+
+// Admission notice SMS from the letter's smsTemplate (the admission letter
+// form lists the same ::tokens). ::login is the new account's username +
+// password, or a pointer to the existing login -- appended when the
+// template leaves it out, so credentials are never dropped.
+// Title case like the letter's ::program_name (frontend util capitalise):
+// programme names are stored in capitals.
+const SMS_SMALL_WORDS = new Set(['of', 'in', 'and', 'the', 'for', 'to', 'a', 'an', 'on', 'at', 'with']);
+const capitalise = (s?: string | null) =>
+   (s || '').toLowerCase().split(/(\s+)/)
+      .map((w, i) => (i > 0 && SMS_SMALL_WORDS.has(w) ? w : w.replace(/(^|[-'’])([a-z])/g, (_m, p, c) => p + c.toUpperCase())))
+      .join('');
+const DEFAULT_ADMISSION_SMS = 'Congratulations ::first_name! You have been admitted into ::program. Log in to the student portal (::portal_url) to view your admission letter and accept or reject the offer. ::login';
+function admissionSmsText(template: string | null | undefined, st: any, letter: any, login: string) {
+   const tpl = template?.trim() || DEFAULT_ADMISSION_SMS;
+   const first = (st?.fname || '').trim().split(/\s+/)[0] || '';
+   const tokens: Record<string, string> = {
+      // Names/programme are title-cased; ::login (username + password) is
+      // passed through untouched -- the password is case-sensitive.
+      '::first_name': capitalise(first),
+      '::full_name': capitalise([st?.fname, st?.mname, st?.lname].filter(Boolean).join(' ')),
+      '::student_id': st?.id || '',
+      '::program': capitalise(letter?.program?.longName) || 'your programme',
+      '::session_year': letter?.year ? `${letter.year}/${letter.year + 1}` : '',
+      '::portal_url': process.env.UMS_DOMAIN || 'the student portal',
+      '::login': login,
+   };
+   const text = tpl.includes('::login') ? tpl : `${tpl} ::login`;
+   return text.replace(/::[a-z_]+/g, (t) => tokens[t] ?? t).replace(/\s+/g, ' ').replace(/\s+([!.,])/g, '$1').trim();
+}
+
+const activeAdmissionLetter = (programId: string) =>
+   ais.admissionLetter.findFirst({ where: { programId, status: true }, orderBy: { updatedAt: 'desc' } });
+
+// Students a letter is for: admitted (entryDate) in the letter's year, or --
+// for a letter without a year -- the current Year 1.
+const admissionCohortWhere = (letter: any) =>
+   letter?.year
+      ? { entryDate: { gte: new Date(Date.UTC(letter.year, 0, 1)), lt: new Date(Date.UTC(letter.year + 1, 0, 1)) }, completeStatus: false, graduateStatus: false }
+      : FIRST_YEAR_WHERE;
+
+async function admissionPrintBundle(programId: string, students: any[], knownLetter?: any) {
    const [letter, session] = await Promise.all([
-      ais.admissionLetter.findFirst({ where: { programId, status: true }, orderBy: { updatedAt: 'desc' } }),
+      knownLetter !== undefined ? knownLetter : activeAdmissionLetter(programId),
       ais.session.findFirst({ where: { default: true } }),
    ]);
    const bills = session ? await ais.bill.findMany({
@@ -349,6 +402,134 @@ async function admissionPrintBundle(programId: string, students: any[]) {
    }) : [];
    const billFor = (s: any) => bills.find((b: any) => b.type === (s.entryGroup || 'GH')) || bills[0] || null;
    return { letter, session, students: students.map((s: any) => ({ ...s, bill: billFor(s) })) };
+}
+
+// Shared tail of the bulk student uploads (uploadStudent, uploadFresher):
+// rejects ids/index numbers that already exist, creates the whole batch
+// all-or-nothing, then (if `provision`) sets up portal access + institute
+// email per student. Returns the HTTP status/body for the caller to send.
+// Every failure body carries `stage` (where it came from: 'existing' =
+// clashes with records already in the system, 'database' = the save
+// itself) and `errors` [{ id, row?, column?, value?, reason }] for the
+// upload dialog's problem table.
+// `skipExisting`: save the students who don't exist yet and report the
+// ones already in the system as `skipped`, instead of rejecting the batch.
+async function createStudentBatch(allStudents: any[], createdBy: string, action: string, opts: { provision?: boolean; idLabel?: string; rowOf?: Map<string, number>; skipExisting?: boolean } = {}) {
+   const { provision = true, idLabel = 'ApplicantID', rowOf, skipExisting = false } = opts;
+   let students = allStudents;
+   let skipped: { id: string; row?: number; column: string; value: string; reason: string }[] = [];
+   const existing = await ais.student.findMany({ where: { id: { in: students.map((s) => s.id) } }, select: { id: true } });
+   if (existing.length && skipExisting) {
+      const ids = new Set<string>(existing.map((s: any) => s.id));
+      skipped = [...ids].map((id) => ({ id, row: rowOf?.get(id), column: idLabel, value: id, reason: `${idLabel} already exists in the system, skipped` }));
+      students = students.filter((s) => !ids.has(s.id));
+      if (!students.length) {
+         return {
+            status: 400, body: {
+               stage: 'existing',
+               message: `Nothing was saved: all ${allStudents.length} ${idLabel}(s) in the sheet already exist in the system (already uploaded?).`,
+               failedCount: skipped.length,
+               totalCount: allStudents.length,
+               errors: skipped,
+            }
+         };
+      }
+   } else if (existing.length) {
+      const ids = existing.map((s: any) => s.id);
+      return {
+         status: 400, body: {
+            stage: 'existing',
+            message: `Upload rejected, nothing was saved: ${ids.length} of ${students.length} ${idLabel}(s) already exist in the system (already uploaded?): ${ids.join(', ')}.`,
+            failedCount: ids.length,
+            totalCount: students.length,
+            errors: ids.map((id: any) => ({ id, row: rowOf?.get(id), column: idLabel, value: id, reason: `${idLabel} already exists in the system` })),
+         }
+      };
+   }
+
+   // Index numbers already held by another student would fail the
+   // unique constraint mid-transaction -- reject up front instead.
+   const indexnos = students.map((s) => s.indexno).filter(Boolean);
+   const takenIndex = indexnos.length ? await ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { id: true, indexno: true } }) : [];
+   if (takenIndex.length) {
+      return {
+         status: 400, body: {
+            stage: 'existing',
+            message: `Upload rejected, nothing was saved: ${takenIndex.length} index number(s) already belong to existing students: ${takenIndex.map((s: any) => s.indexno).join(', ')}.`,
+            failedCount: takenIndex.length,
+            totalCount: students.length,
+            errors: takenIndex.map((s: any) => ({ id: s.indexno, reason: `Index number already used by student ${s.id}` })),
+         }
+      };
+   }
+
+   // All-or-nothing so a bad row (e.g. an invalid programId/majorId)
+   // doesn't leave the batch half-created. A failed insert is tagged with
+   // its student so the error says which row broke the batch.
+   let resp: any[];
+   try {
+      resp = await ais.$transaction(async (tx: any) => {
+         const created = [];
+         for (const s of students) {
+            const { programId, majorId, ...rest } = s;
+            try {
+               const row = await tx.student.create({
+                  data: {
+                     ...rest,
+                     ...programId && ({ program: { connect: { id: programId } } }),
+                     ...majorId && ({ major: { connect: { id: majorId } } }),
+                  },
+               });
+               created.push(row);
+            } catch (rowError: any) {
+               rowError.studentId = s.id;
+               throw rowError;
+            }
+         }
+         await tx.log.create({ data: { action, user: createdBy, meta: { count: created.length, ids: created.map((c: any) => c.id), skipped: skipped.map((k) => k.id) } } });
+         return created;
+         // Prisma's default 5s interactive-transaction timeout is too short
+         // for a full cohort (1,000+ inserts); give large uploads room.
+      }, { maxWait: 10000, timeout: 300000 });
+   } catch (txError: any) {
+      console.log(`${action} failed${txError?.studentId ? ` at ${txError.studentId}` : ''}:`, txError);
+      const id = txError?.studentId;
+      const reason = errorMessage(txError, 'The database could not save the students.');
+      return {
+         // Known Prisma request errors (bad reference, duplicate, missing
+         // column...) are the data's/setup's fault; anything else is ours.
+         status: txError?.code ? 400 : 500, body: {
+            stage: 'database',
+            message: `Upload rolled back, nothing was saved. ${id ? `Saving ${idLabel} ${id}${rowOf?.get(id) ? ` (row ${rowOf.get(id)})` : ''} failed: ` : ''}${reason}`,
+            totalCount: students.length,
+            errors: id ? [{ id, row: rowOf?.get(id), reason }] : [{ reason }],
+         }
+      };
+   }
+
+   // Auto-provision portal access + institute email (and, through it,
+   // the Google Workspace account) for every newly created student --
+   // mirrors the "Stage Account" then "Generate Email" buttons on
+   // AISAccountCard, so an uploaded student is immediately usable
+   // instead of needing 2 manual clicks each. Run outside the DB
+   // transaction above (these calls touch SMS/Google APIs, not just
+   // the database) and per-student, so one student's failure here
+   // can't undo another's already-committed account -- staff can
+   // finish provisioning any listed failures manually via that
+   // student's Account tab.
+   const provisioned: string[] = [];
+   const provisionErrors: { id: string; reason: string }[] = [];
+   for (const s of (provision ? resp : [])) {
+      try {
+         await stageStudentAccess(s.id, createdBy, false);
+         await generateStudentEmail(s.id, createdBy);
+         provisioned.push(s.id);
+      } catch (provisionError: any) {
+         provisionErrors.push({ id: s.id, reason: provisionError?.message || 'Failed to stage account / generate email' });
+      }
+   }
+
+   return { status: 200, body: { success: true, count: resp.length, totalCount: allStudents.length, data: resp, provisioned: provisioned.length, provisionErrors, skipped } };
 }
 
 export default class AisController {
@@ -733,19 +914,26 @@ export default class AisController {
          const fcomplete: any = await ais.student.count({ where: { completeStatus: true, deferStatus: false, gender: 'F' } });
          const mgraduate: any = await ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, gender: 'M' } });
          const fgraduate: any = await ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, gender: 'F' } });
+         // Students with no (or a non-M/F) gender recorded -- previously left
+         // out of every status count, so totals undercounted. `u` per status.
+         const noGender = { OR: [{ gender: null }, { gender: { notIn: ['M', 'F'] } }] };
+         const uactive: any = await ais.student.count({ where: { completeStatus: false, deferStatus: false, ...noGender } });
+         const udefer: any = await ais.student.count({ where: { completeStatus: false, deferStatus: true, ...noGender } });
+         const ucomplete: any = await ais.student.count({ where: { completeStatus: true, deferStatus: false, ...noGender } });
+         const ugraduate: any = await ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, ...noGender } });
 
 
 
-         // Department Statistics
+         // Department Statistics -- programmes aren't linked to departments;
+         // a department's courses are those assigned to it in the curriculum
+         // (structure.unitId), counted once each.
          const depts = await ais.unit.findMany({ where: { type: 'ACADEMIC', levelNum: 2 } });
          const department = await Promise.all(depts.map(async (r: any) => {
-            const programs = await ais.program.count({ where: { unitId: r.id } });
-            const students = await ais.student.count({ where: { program: { unitId: r.id }, completeStatus: false } });
+            const courses = (await ais.structure.findMany({ where: { unitId: r.id }, distinct: ['courseId'], select: { courseId: true } })).length;
             const staff = await ais.staff.count({ where: { unitId: r.id, status: true } });
             return ({
                label: r.title,
-               programs,
-               students,
+               courses,
                staff
             })
          }));
@@ -779,10 +967,10 @@ export default class AisController {
                graduation
             },
             student: {
-               active: { f: factive, m: mactive },
-               defer: { f: fdefer, m: mdefer },
-               complete: { f: fcomplete, m: mcomplete },
-               graduate: { f: fgraduate, m: mgraduate }
+               active: { f: factive, m: mactive, u: uactive },
+               defer: { f: fdefer, m: mdefer, u: udefer },
+               complete: { f: fcomplete, m: mcomplete, u: ucomplete },
+               graduate: { f: fgraduate, m: mgraduate, u: ugraduate }
             },
             department,
             program,
@@ -1062,7 +1250,6 @@ export default class AisController {
                   program: {
                      select: {
                         longName: true,
-                        department: { select: { title: true } }
                      }
                   },
                },
@@ -1105,7 +1292,6 @@ export default class AisController {
                      longName: true,
                      shortName: true,
                      category: true,
-                     department: { select: { title: true } }
                   }
                },
                major: {
@@ -1168,7 +1354,7 @@ export default class AisController {
                const index: string = sv?.session?.title ?? 'none';
                const grades: any = sv.scheme?.gradeMeta;
                const classes: any = sv.scheme?.classMeta;
-               const zd = { ...sv, student: st, grade: await getGrade(sv.totalScore, grades), gradepoint: await getGradePoint(sv.totalScore, grades), classes }
+               const zd = { ...sv, student: st, grade: gradeFor(sv, grades), gradepoint: gradePointFor(sv, grades), classes }
                // Data By Courses
                if (mdata.has(index)) {
                   mdata.set(index, [...mdata.get(index), { ...zd }])
@@ -1189,7 +1375,8 @@ export default class AisController {
             let runningCredit = 0;
             let runningGradepoint = 0;
             const groups = Array.from(mdata).map(([title, rows]: any) => {
-               const gradedRows = rows.filter((r: any) => r.status === true && r.totalScore != null);
+               // IC results (no exam score yet) count toward neither credit nor grade points.
+               const gradedRows = rows.filter((r: any) => r.status === true && r.totalScore != null && !isIncomplete(r));
                const semCredit = gradedRows.reduce((sum: number, cur: any) => sum + cur.credit, 0);
                const semGradepoint = gradedRows.reduce((sum: number, cur: any) => sum + cur.credit * cur.gradepoint, 0);
 
@@ -1309,7 +1496,7 @@ export default class AisController {
                      const cindex: string = sv.title ?? 'none';
                      const grades: any = sv.gradeMeta;
                      const classes: any = sv.classMeta;
-                     const zd = { ...sv, grade: await getGrade(sv.totalScore, grades), gradepoint: await getGradePoint(sv.totalScore, grades), classes }
+                     const zd = { ...sv, grade: gradeFor(sv, grades), gradepoint: gradePointFor(sv, grades), classes }
                      // Data By Courses
                      if (sdata.has(cindex)) {
                         sdata.set(cindex, [...sdata.get(cindex), { ...zd }])
@@ -1754,6 +1941,7 @@ export default class AisController {
 
          if (missingId.length || duplicateInSheet.length || duplicateIndexInSheet.length) {
             return res.status(400).json({
+               stage: 'sheet',
                message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}. ` : ''}${duplicateIndexInSheet.length ? `Duplicate index number within the uploaded sheet: ${duplicateIndexInSheet.join(', ')}.` : ''}`,
                errors: [
                   ...missingId.map((r) => ({ id: r, reason: 'ApplicantID is required' })),
@@ -1763,78 +1951,137 @@ export default class AisController {
             });
          }
 
-         const existing = await ais.student.findMany({ where: { id: { in: students.map((s) => s.id) } }, select: { id: true } });
-         if (existing.length) {
-            const ids = existing.map((s: any) => s.id);
-            return res.status(400).json({
-               message: `Upload rejected: ${ids.length} of ${students.length} Applicant ID(s) already exist: ${ids.join(', ')}.`,
-               failedCount: ids.length,
-               totalCount: students.length,
-               errors: ids.map((id: any) => ({ id, reason: 'ApplicantID already exists' })),
-            });
-         }
-
-         // Index numbers already held by another student would fail the
-         // unique constraint mid-transaction -- reject up front instead.
-         const indexnos = students.map((s) => s.indexno).filter(Boolean);
-         const takenIndex = indexnos.length ? await ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { id: true, indexno: true } }) : [];
-         if (takenIndex.length) {
-            return res.status(400).json({
-               message: `Upload rejected: ${takenIndex.length} index number(s) already belong to existing students: ${takenIndex.map((s: any) => s.indexno).join(', ')}.`,
-               failedCount: takenIndex.length,
-               totalCount: students.length,
-               errors: takenIndex.map((s: any) => ({ id: s.indexno, reason: `Index number already used by student ${s.id}` })),
-            });
-         }
-
-         const createdBy = req.userId;
-         // All-or-nothing so a bad row (e.g. an invalid programId/majorId)
-         // doesn't leave the batch half-created.
-         const resp = await ais.$transaction(async (tx: any) => {
-            const created = [];
-            for (const s of students) {
-               const { programId, majorId, ...rest } = s;
-               const row = await tx.student.create({
-                  data: {
-                     ...rest,
-                     ...programId && ({ program: { connect: { id: programId } } }),
-                     ...majorId && ({ major: { connect: { id: majorId } } }),
-                  },
-               });
-               created.push(row);
-            }
-            await tx.log.create({ data: { action: `STUDENT_BULK_UPLOAD`, user: createdBy, meta: { count: created.length, ids: created.map((c: any) => c.id) } } });
-            return created;
-            // Prisma's default 5s interactive-transaction timeout is too short
-            // for a full cohort (1,000+ inserts); give large uploads room.
-         }, { maxWait: 10000, timeout: 300000 });
-
-         // Auto-provision portal access + institute email (and, through it,
-         // the Google Workspace account) for every newly created student --
-         // mirrors the "Stage Account" then "Generate Email" buttons on
-         // AISAccountCard, so an uploaded student is immediately usable
-         // instead of needing 2 manual clicks each. Run outside the DB
-         // transaction above (these calls touch SMS/Google APIs, not just
-         // the database) and per-student, so one student's failure here
-         // can't undo another's already-committed account -- staff can
-         // finish provisioning any listed failures manually via that
-         // student's Account tab.
-         const provisioned: string[] = [];
-         const provisionErrors: { id: string; reason: string }[] = [];
-         for (const s of resp) {
-            try {
-               await stageStudentAccess(s.id, createdBy, false);
-               await generateStudentEmail(s.id, createdBy);
-               provisioned.push(s.id);
-            } catch (provisionError: any) {
-               provisionErrors.push({ id: s.id, reason: provisionError?.message || 'Failed to stage account / generate email' });
-            }
-         }
-
-         res.status(200).json({ success: true, count: resp.length, data: resp, provisioned: provisioned.length, provisionErrors });
+         const { status, body } = await createStudentBatch(students, req.userId, 'STUDENT_BULK_UPLOAD');
+         res.status(status).json(body);
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ stage: 'server', message: `Upload failed on the server, nothing was saved: ${errorMessage(error)}`, errors: [] })
+      }
+   }
+
+   // Bulk-create freshers (new Year 1 admits) from the freshers sheet:
+   // Application Number, Last name, First name, Middle name, Gender,
+   // Phone Number, Program. Application Number maps onto student.id (as
+   // ApplicantID does in uploadStudent), Program is matched against a
+   // programme's code, short name or full name, and every fresher starts
+   // at Year 1 Sem 1 with entryDate = the 1st of the current month.
+   // Accounts/emails aren't created here -- "Activate Admission" on the
+   // programme's admission letter does that and texts the admission notice.
+   async uploadFresher(req: any, res: Response) {
+      try {
+         const rows = req.body;
+         if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ stage: 'sheet', message: 'The sheet has no rows. Fill in the freshers under the header row of the sample and upload again.', errors: [] });
+
+         // Header spelling/casing varies between sheets ("Last name" vs
+         // "LAST NAME" vs "Lastname") -- compare on letters/digits only.
+         const normKey = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, '');
+         const normName = (v: string) => v.toUpperCase().replace(/\s+/g, ' ').trim();
+         const cell = (row: any, key: string) => {
+            const k = Object.keys(row).find((h) => normKey(h) === key);
+            return k ? row[k]?.toString()?.trim() || null : null;
+         };
+
+         // Whole-sheet check first: a missing/misspelt column would
+         // otherwise come back as one error per row. (The spreadsheet
+         // reader drops empty cells, so a column blank on every row also
+         // shows up here.)
+         const COLUMNS: [string, string][] = [['applicationnumber', 'Application Number'], ['lastname', 'Last name'], ['firstname', 'First name'], ['gender', 'Gender'], ['phonenumber', 'Phone Number'], ['program', 'Program']];
+         const headers = new Set<string>(rows.flatMap((r: any) => Object.keys(r || {}).map(normKey)));
+         const missingCols = COLUMNS.filter(([k]) => !headers.has(k)).map(([, label]) => label);
+         if (missingCols.length) {
+            return res.status(400).json({
+               stage: 'sheet',
+               message: `Upload rejected, nothing was saved: the sheet is missing the column(s) ${missingCols.join(', ')} (or they are empty on every row). Use the headers from the freshers sample.`,
+               errors: missingCols.map((column) => ({ column, reason: 'Column missing or empty' })),
+            });
+         }
+
+         // Active programmes win over retired ones that share a code/name.
+         const programs = await ais.program.findMany({ select: { id: true, code: true, shortName: true, longName: true, status: true }, orderBy: { status: 'asc' } });
+         const programIds = new Map<string, string>();
+         programs.forEach((p: any) => [p.code, p.shortName, p.longName].forEach((v) => v && programIds.set(normName(v), p.id)));
+
+         const now = new Date();
+         const entryDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+
+         const errors: { row: number; id?: string; column?: string; value?: string; reason: string }[] = [];
+         const rowOf = new Map<string, number>();
+         const students: any[] = [];
+
+         rows.forEach((r: any, i: number) => {
+            const row = i + 2; // sheet row: +1 header, +1 1-based
+            const id = cell(r, 'applicationnumber') || undefined;
+            const problem = (column: string, value: any, reason: string) => errors.push({ row, id, column, value: value ?? '', reason });
+
+            if (!id) { problem('Application Number', '', 'Application Number is required'); return; }
+            if (rowOf.has(id)) { problem('Application Number', id, `Duplicate of row ${rowOf.get(id)} in this sheet`); return; }
+            rowOf.set(id, row);
+
+            const fname = cell(r, 'firstname');
+            const lname = cell(r, 'lastname');
+            if (!fname) problem('First name', '', 'First name is required');
+            if (!lname) problem('Last name', '', 'Last name is required');
+
+            const genderRaw = cell(r, 'gender');
+            const g = genderRaw?.toUpperCase();
+            const gender = g === 'M' || g === 'MALE' ? 'M' : g === 'F' || g === 'FEMALE' ? 'F' : null;
+            if (!gender) problem('Gender', genderRaw, genderRaw ? 'Must be M, MALE, F or FEMALE' : 'Gender is required');
+
+            const programName = cell(r, 'program');
+            const programId = programName ? programIds.get(normName(programName)) : undefined;
+            if (!programId) problem('Program', programName, programName ? 'No programme has this code, short name or full name' : 'Program is required');
+
+            // Excel stores 0244000000 as the number 244000000 -- restore
+            // the dropped leading zero on 9-digit local numbers. The phone
+            // is where the admission notice SMS goes, so it's required.
+            let phone = cell(r, 'phonenumber');
+            if (phone && /^\d{9}$/.test(phone)) phone = `0${phone}`;
+            if (!phone) problem('Phone Number', '', 'Phone Number is required (the admission SMS is sent to it)');
+            else if (!/^\+?\d{10,15}$/.test(phone.replace(/[\s-]/g, ''))) problem('Phone Number', phone, 'Not a valid phone number');
+            else phone = phone.replace(/[\s-]/g, '');
+
+            students.push({
+               id,
+               fname,
+               mname: cell(r, 'middlename'),
+               lname,
+               gender,
+               phone,
+               programId,
+               // Fresher flags the rest of the flow reads: semesterNum /
+               // entrySemesterNum (activation, FRESHER notices, fee posting),
+               // entryDate (letter cohort, fee posting), entryGroup (bill
+               // matching). Status flags are set explicitly rather than left
+               // to column defaults; admissionStatus stays NULL until
+               // "Activate Admission" sets it to PENDING.
+               semesterNum: 1,
+               entrySemesterNum: 1,
+               entryDate,
+               entryGroup: 'GH',
+               deferStatus: false,
+               completeStatus: false,
+               graduateStatus: false,
+               admissionStatus: null,
+            });
+         });
+
+         if (errors.length) {
+            const badRows = new Set(errors.map((e) => e.row)).size;
+            return res.status(400).json({
+               stage: 'sheet',
+               message: `Upload rejected, nothing was saved: ${errors.length} problem(s) on ${badRows} of ${rows.length} row(s). Fix them in the sheet and upload again.`,
+               failedCount: badRows,
+               totalCount: rows.length,
+               errors,
+            });
+         }
+
+         // Accounts/emails are created later by "Activate Admission".
+         const { status, body } = await createStudentBatch(students, req.userId, 'STUDENT_FRESHER_UPLOAD', { provision: false, idLabel: 'Application Number', rowOf, skipExisting: true });
+         res.status(status).json(body);
+      } catch (error: any) {
+         console.log('uploadFresher failed:', error)
+         return res.status(500).json({ stage: 'server', message: `Upload failed on the server, nothing was saved: ${errorMessage(error)}`, errors: [] })
       }
    }
 
@@ -2140,7 +2387,8 @@ export default class AisController {
                include: {
                   unit: { select: { title: true } },
                   program: { select: { longName: true } },
-                  course: { select: { title: true } },
+                  major: { select: { shortName: true, longName: true } },
+                  course: { select: { title: true, creditHour: true } },
                }
             })
          ]);
@@ -2490,7 +2738,7 @@ export default class AisController {
          let resp = [];
          const st = await ais.student.findUnique({
             where: { id: paramStr(req.params.indexno) },
-            select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true, department: true } } },
+            select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true } } },
          })
          if (st) {
             // Get Active Session Info -- no more MAIN/January-SUB stream split,
@@ -2705,6 +2953,7 @@ export default class AisController {
          // Get Active Session Info -- no more MAIN/January-SUB stream split,
          // just the one default session.
          const st: any = await ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } })
+         if (admissionLocked(st)) return res.status(403).json({ message: st.admissionStatus === 'ACCEPTED' ? "Please pay your fees before registering courses." : "Please accept your admission offer on the student portal before registering courses." });
          const session: any = await ais.session.findFirst({ where: { default: true } })
          if (!session) return res.status(400).json({ message: "No active registration session found. Please contact the registry." });
          // Check If Registration Data exists
@@ -2901,9 +3150,6 @@ export default class AisController {
       try {
          const resp = await ais.program.findMany({
             where: { status: true },
-            include: {
-               department: { select: { title: true } },
-            },
          })
          if (resp) {
             res.status(200).json(resp)
@@ -2940,7 +3186,6 @@ export default class AisController {
                skip: offset,
                take: Number(pageSize),
                include: {
-                  department: { select: { title: true } },
                   student: { select: { _count: true } }
                }
             })
@@ -2968,7 +3213,6 @@ export default class AisController {
                id: paramStr(req.params.id)
             },
             include: {
-               department: { select: { title: true } },
                student: { select: { _count: true } }
             }
          })
@@ -3062,6 +3306,10 @@ export default class AisController {
                      semesterNum: true,
                      residentialStatus: true,
                      deferStatus: true,
+                     // For the programme's bulk ID cards (Issued/Expires, hall, nationality).
+                     entryDate: true,
+                     instituteAffliate: true,
+                     country: { select: { nationality: true } },
                      program: { select: { shortName: true, longName: true } }
                   },
                   orderBy: { semesterNum: 'asc' }
@@ -3096,9 +3344,6 @@ export default class AisController {
             where: {
                id: paramStr(req.params.id)
             },
-            include: {
-               department: { select: { title: true } },
-            }
          })
          if (resp) {
             res.status(200).json(resp)
@@ -3113,17 +3358,14 @@ export default class AisController {
 
    async postProgram(req: Request, res: Response) {
       try {
-         const { unitId, schemeId } = req.body
+         // Programmes aren't linked to departments (see schema), so any
+         // unitId sent is ignored.
+         const { schemeId } = req.body
          delete req.body.schemeId; delete req.body.unitId;
-
-         if (unitId && !(await isValidDepartmentUnit(unitId))) {
-            return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
-         }
 
          const resp = await ais.program.create({
             data: {
                ...req.body,
-               ...unitId && ({ department: { connect: { id: unitId } } }),
                ...schemeId && ({ scheme: { connect: { id: schemeId } } }),
             }
          })
@@ -3141,18 +3383,14 @@ export default class AisController {
 
    async updateProgram(req: Request, res: Response) {
       try {
-         const { unitId, schemeId } = req.body
+         // Programmes aren't linked to departments; any unitId sent is ignored.
+         const { schemeId } = req.body
          delete req.body.schemeId; delete req.body.unitId;
-
-         if (unitId && !(await isValidDepartmentUnit(unitId))) {
-            return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
-         }
 
          const resp = await ais.program.update({
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
-               ...unitId && ({ department: { connect: { id: unitId } } }),
                ...schemeId && ({ scheme: { connect: { id: schemeId } } }),
             }
          })
@@ -3217,13 +3455,29 @@ export default class AisController {
                _count: {
                   select: {
                      staff: true,
-                     program: true
                   }
                },
             },
+            orderBy: { title: 'asc' },
          })
          if (resp) {
-            res.status(200).json(resp)
+            // Added for the Department module cards (existing fields unchanged,
+            // so the department dropdowns that use this list still work):
+            // `courses` = distinct courses assigned to the department in the
+            // curriculum (structure.unitId); `head` = head of department's name.
+            const ids = resp.map((d: any) => d.id);
+            const assigned = ids.length ? await ais.structure.findMany({ where: { unitId: { in: ids } }, select: { unitId: true, courseId: true }, distinct: ['unitId', 'courseId'] }) : [];
+            const heads = resp.map((d: any) => d.headStaffNo).filter(Boolean);
+            const staff = heads.length ? await ais.staff.findMany({ where: { staffNo: { in: heads } }, select: { staffNo: true, fname: true, lname: true, title: { select: { label: true } } } }) : [];
+            const headName = (no: string) => {
+               const h: any = staff.find((x: any) => x.staffNo === no);
+               return h ? [h.title?.label, h.fname, h.lname].filter(Boolean).join(' ') : null;
+            };
+            res.status(200).json(resp.map((d: any) => ({
+               ...d,
+               courses: assigned.filter((a: any) => a.unitId === d.id).length,
+               head: d.headStaffNo ? headName(d.headStaffNo) : null,
+            })))
          } else {
             res.status(202).json({ message: `no record found` })
          }
@@ -3239,7 +3493,6 @@ export default class AisController {
          const resp = await ais.unit.findMany({
             where: { status: true, levelNum: 1, type: 'ACADEMIC' },
             include: {
-               levelI: { select: { _count: { select: { program: true } } } },
                _count: {
                   select: {
                      staff: true,
@@ -5905,7 +6158,7 @@ export default class AisController {
                   let gradedCredit = 0;
                   let az = ax.reduce((acc: any, r: any) => {
                      // Check for IC
-                     if (r.totalScore === undefined || r.totalScore == null) { incompleteCount += 1; return acc; }
+                     if (r.totalScore === undefined || r.totalScore == null || isIncomplete(r)) { incompleteCount += 1; return acc; }
                      // Compute Gradepoint
                      const grades: any = r.scheme?.gradeMeta;
                      const gv = getGradePoint(r.totalScore, grades);
@@ -7792,13 +8045,13 @@ export default class AisController {
    async fetchAdmissionLetters(req: Request, res: Response) {
       try {
          const resp = await ais.admissionLetter.findMany({
-            select: { id: true, title: true, category: true, status: true, programId: true, updatedAt: true, program: { select: { shortName: true, longName: true, category: true } } },
+            select: { id: true, title: true, category: true, year: true, status: true, programId: true, updatedAt: true, program: { select: { shortName: true, longName: true, category: true } } },
             orderBy: [{ status: 'desc' }, { updatedAt: 'desc' }],
          })
          res.status(200).json(resp)
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ message: errorMessage(error) })
       }
    }
 
@@ -7809,7 +8062,7 @@ export default class AisController {
          else res.status(404).json({ message: `Admission letter not found` })
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ message: errorMessage(error) })
       }
    }
 
@@ -7823,6 +8076,7 @@ export default class AisController {
          if (id && !existing) return res.status(404).json({ message: 'Admission letter not found' });
          const merged = { status: true, ...existing, ...data };
          const missing = ['title', 'programId', 'signature'].filter((k) => !merged[k]);
+         if (merged.year != null && (merged.year < 2000 || merged.year > 2100)) return res.status(400).json({ message: 'Admission year must be between 2000 and 2100.' });
          if (missing.length) return res.status(400).json({ message: `Please provide: ${missing.map((k) => (k === 'programId' ? 'programme' : k)).join(', ')}.` });
          const program = await ais.program.findUnique({ where: { id: merged.programId }, select: { longName: true, category: true } });
          if (!program) return res.status(400).json({ message: 'Selected programme not found.' });
@@ -7837,7 +8091,7 @@ export default class AisController {
          res.status(200).json(resp)
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ message: errorMessage(error) })
       }
    }
 
@@ -7847,7 +8101,7 @@ export default class AisController {
          res.status(200).json(resp)
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ message: errorMessage(error) })
       }
    }
 
@@ -7866,7 +8120,11 @@ export default class AisController {
             students = [st];
             pid = st.programId;
          } else if (programId) {
-            students = await ais.student.findMany({ where: { programId, ...FIRST_YEAR_WHERE }, select: ADMISSION_STUDENT_SELECT, orderBy: [{ lname: 'asc' }, { fname: 'asc' }] });
+            // The letter decides the cohort (its admission year), so load it first.
+            const letter = await activeAdmissionLetter(programId);
+            if (letter) students = await ais.student.findMany({ where: { programId, ...admissionCohortWhere(letter) }, select: ADMISSION_STUDENT_SELECT, orderBy: [{ lname: 'asc' }, { fname: 'asc' }] });
+            const bundle = await admissionPrintBundle(programId, students, letter);
+            if (bundle.letter) return res.status(200).json(bundle);
          } else {
             return res.status(400).json({ message: 'Choose a student or a programme.' });
          }
@@ -7878,7 +8136,103 @@ export default class AisController {
          res.status(200).json(bundle)
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(500).json({ message: errorMessage(error) })
+      }
+   }
+
+   // "Activate Admission" on an admission letter: for the letter's freshers
+   // (its cohort -- see admissionCohortWhere -- still in Year 1 Sem 1) not
+   // yet activated, create any missing portal account + institute email,
+   // mark the offer PENDING and text each one that they've been admitted and
+   // should log in to view the letter and accept or reject the offer.
+   // Re-running only picks up freshers added since, so nobody is texted twice.
+   async activateAdmission(req: any, res: Response) {
+      try {
+         const letter = await ais.admissionLetter.findUnique({ where: { id: paramStr(req.params.id) }, include: { program: { select: { longName: true } } } });
+         if (!letter) return res.status(404).json({ message: 'Admission letter not found.' });
+         if (!letter.status || !letter.programId) return res.status(400).json({ message: 'Only an active admission letter tied to a programme can be activated.' });
+
+         const freshers = await ais.student.findMany({
+            where: { programId: letter.programId, ...admissionCohortWhere(letter), semesterNum: 1, deferStatus: false, admissionStatus: null },
+            select: { id: true, fname: true, mname: true, lname: true, phone: true, instituteEmail: true },
+         });
+         if (!freshers.length) return res.status(200).json({ total: 0, activated: 0, errors: [], message: 'No freshers awaiting activation for this programme and admission year.' });
+
+         const accounts = await ais.user.findMany({ where: { tag: { in: freshers.map((s: any) => s.id) } }, select: { tag: true } });
+         const hasAccount = new Set(accounts.map((a: any) => a.tag));
+         const notice = (s: any, login: string) => admissionSmsText(letter.smsTemplate, s, letter, login);
+         const credentials = (s: any) => (username: string, password: string) => notice(s, `Username: ${username}, Password: ${password}`);
+
+         const userId = req.userId;
+         const activated: string[] = [];
+         const errors: { id: string; reason: string }[] = [];
+         for (const s of freshers) {
+            try {
+               // Exactly one SMS per fresher: whichever step issues the
+               // password texts it inside the admission notice.
+               if (!hasAccount.has(s.id)) await stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s));
+               if (!s.instituteEmail) {
+                  await generateStudentEmail(s.id, userId, true, credentials(s));
+               } else if (hasAccount.has(s.id) && s.phone) {
+                  try {
+                     await sms(s.phone, notice(s, 'Use your existing portal login.'));
+                  } catch (smsError: any) {
+                     console.log('activateAdmission SMS send failed:', smsError?.message);
+                  }
+               }
+               // Set last: a fresher whose provisioning failed stays NULL and
+               // is retried by the next activation.
+               await ais.student.update({ where: { id: s.id }, data: { admissionStatus: 'PENDING' } });
+               activated.push(s.id);
+            } catch (activateError: any) {
+               console.log('activateAdmission failed for', s.id, activateError);
+               errors.push({ id: s.id, reason: errorMessage(activateError, 'Failed to activate admission') });
+            }
+         }
+         await ais.log.create({ data: { action: 'ADMISSION_ACTIVATED', user: userId, meta: { letterId: letter.id, programId: letter.programId, count: activated.length, ids: activated, errors } as any } });
+         res.status(200).json({ total: freshers.length, activated: activated.length, errors });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: errorMessage(error) })
+      }
+   }
+
+   // Student portal: the signed-in fresher's own admission letter (the same
+   // bundle the staff print uses, incl. the fee bill + bank account) and
+   // where their offer stands.
+   async fetchMyAdmission(req: any, res: Response) {
+      try {
+         const id = paramStr(req.params.id);
+         if (req.userId != id) return res.status(403).json({ message: 'You can only view your own admission.' });
+         const st: any = await ais.student.findUnique({ where: { id }, select: { ...ADMISSION_STUDENT_SELECT, admissionStatus: true, admissionRespondedAt: true, accountNet: true, flagPardon: true } });
+         if (!st) return res.status(404).json({ message: 'Student not found.' });
+         // Freshers (semesters 1-2) only -- continuing students have no
+         // Admission page, matching the portal's hasAdmissionOffer.
+         if (!st.admissionStatus || !st.programId || ![1, 2].includes(Number(st.semesterNum))) return res.status(404).json({ message: 'There is no admission offer on your record.' });
+         const bundle = await admissionPrintBundle(st.programId, [st]);
+         res.status(200).json({ ...bundle, admissionStatus: st.admissionStatus, admissionRespondedAt: st.admissionRespondedAt });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: errorMessage(error) })
+      }
+   }
+
+   // Student portal: accept or reject a PENDING admission offer. Final --
+   // the status is part of the where, so a second click (or a request after
+   // answering) changes nothing.
+   async respondAdmission(req: any, res: Response) {
+      try {
+         const id = paramStr(req.params.id);
+         if (req.userId != id) return res.status(403).json({ message: 'You can only answer your own admission offer.' });
+         const decision = String(req.body?.decision || '').toUpperCase();
+         if (decision !== 'ACCEPTED' && decision !== 'REJECTED') return res.status(400).json({ message: 'Choose to accept or reject the offer.' });
+         const resp = await ais.student.updateMany({ where: { id, admissionStatus: 'PENDING' }, data: { admissionStatus: decision, admissionRespondedAt: new Date() } });
+         if (!resp.count) return res.status(400).json({ message: 'This admission offer has already been answered. Contact the Registry for any change.' });
+         await ais.log.create({ data: { action: `ADMISSION_${decision}`, user: id, student: id, meta: { decision } } });
+         res.status(200).json({ admissionStatus: decision });
+      } catch (error: any) {
+         console.log(error)
+         return res.status(500).json({ message: errorMessage(error) })
       }
    }
 

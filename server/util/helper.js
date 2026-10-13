@@ -9,8 +9,10 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.friendlyDbError = exports.stripBlank = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.getGradePoint = exports.getGrade = void 0;
+exports.errorMessage = exports.friendlyDbError = exports.stripBlank = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.getGradePoint = exports.gradePointFor = exports.gradeFor = exports.isIncomplete = exports.getGrade = void 0;
 const redis_1 = require("../config/redis");
+const client_1 = require("../prisma/client");
+const auditLog_1 = require("./auditLog");
 const CACHE_TTL = 3600; // 1 hour
 const getGrade = (num, grades) => {
     if (num == null)
@@ -21,6 +23,16 @@ const getGrade = (num, grades) => {
     return (vs && vs.grade) || 'I';
 };
 exports.getGrade = getGrade;
+// IC (Incomplete): the course's exam score hasn't been entered. A result
+// entered as a total only (no class or exam score -- e.g. a backlog upload)
+// is complete, not IC. IC results show grade "IC" and carry no grade points
+// or GPA/CGPA credits until the exam score is in.
+const isIncomplete = (r) => (r === null || r === void 0 ? void 0 : r.examScore) == null && !((r === null || r === void 0 ? void 0 : r.classScore) == null && (r === null || r === void 0 ? void 0 : r.totalScore) != null);
+exports.isIncomplete = isIncomplete;
+const gradeFor = (r, grades) => ((0, exports.isIncomplete)(r) ? 'IC' : (0, exports.getGrade)(r === null || r === void 0 ? void 0 : r.totalScore, grades));
+exports.gradeFor = gradeFor;
+const gradePointFor = (r, grades) => ((0, exports.isIncomplete)(r) ? 0 : (0, exports.getGradePoint)(r === null || r === void 0 ? void 0 : r.totalScore, grades));
+exports.gradePointFor = gradePointFor;
 const getGradePoint = (num, grades) => {
     if (num == null)
         return 0;
@@ -97,19 +109,51 @@ const rotateImage = (imageFile) => __awaiter(void 0, void 0, void 0, function* (
     }).write(imageFile);
 });
 exports.rotateImage = rotateImage;
+// Bank API (route/apiRoute.ts): logs every request as BANK_API_<action>
+// once the response is sent, with what the bank sent and what it got back
+// (the API answers HTTP 200 with { success, msg }, so the outcome is read
+// from the body). The API key (?api_key= / ?api= / x-api-key) is masked to
+// its last 4 characters; the matching collector, if
+// any, is recorded as the log's user. Never blocks or fails the request.
 const apiLogger = (action) => {
     return (req, res, next) => __awaiter(void 0, void 0, void 0, function* () {
-        const api = req.query.api;
-        const refno = req.params.refno;
-        const dm = req.body;
-        let dt = {};
-        if (refno)
-            dt.studentId = refno;
-        if (api)
-            dt.apiToken = api;
-        if (dm && Object.keys(dm).length > 0)
-            dt.data = dm;
-        //const log = await SSO.apilogger(parseIp(req),action,dt)
+        const started = Date.now();
+        let responseBody;
+        const json = res.json.bind(res);
+        res.json = (body) => { responseBody = body; return json(body); };
+        res.on('finish', () => __awaiter(void 0, void 0, void 0, function* () {
+            var _a, _b, _c, _d, _e, _f, _g;
+            try {
+                const token = String(((_a = req.query) === null || _a === void 0 ? void 0 : _a.api_key) || ((_b = req.query) === null || _b === void 0 ? void 0 : _b.api) || req.headers['x-api-key'] || '').trim();
+                const collector = token ? yield client_1.prisma.collector.findFirst({ where: { apiToken: token }, select: { id: true, name: true } }).catch(() => null) : null;
+                const query = Object.fromEntries(Object.entries(req.query || {}).map(([k, v]) => [k, ['api', 'api_key'].includes(k) ? `****${String(v).slice(-4)}` : v]));
+                const authenticated = !!req.collector;
+                const body = req.body && Object.keys(req.body).length ? req.body : undefined;
+                const serialized = responseBody === undefined ? '' : JSON.stringify(responseBody);
+                yield (0, auditLog_1.writeLog)(`BANK_API_${action}`, {
+                    user: (collector === null || collector === void 0 ? void 0 : collector.name) || 'BANK_API',
+                    student: ((_c = req.params) === null || _c === void 0 ? void 0 : _c.refno) || ((_d = req.body) === null || _d === void 0 ? void 0 : _d.studentId) || null,
+                    meta: {
+                        request: (0, auditLog_1.requestInfo)(req),
+                        query,
+                        body,
+                        collector: collector ? { id: collector.id, name: collector.name } : (token ? 'unknown API key' : 'no API key'),
+                        authenticated,
+                        response: {
+                            status: res.statusCode,
+                            success: (_e = responseBody === null || responseBody === void 0 ? void 0 : responseBody.success) !== null && _e !== void 0 ? _e : (res.statusCode < 400),
+                            msg: (_g = (_f = responseBody === null || responseBody === void 0 ? void 0 : responseBody.msg) !== null && _f !== void 0 ? _f : responseBody === null || responseBody === void 0 ? void 0 : responseBody.message) !== null && _g !== void 0 ? _g : null,
+                            // Service lists can be large; keep a preview only.
+                            data: serialized.length > 4000 ? { truncated: true, preview: serialized.slice(0, 1000) } : responseBody === null || responseBody === void 0 ? void 0 : responseBody.data,
+                        },
+                        durationMs: Date.now() - started,
+                    },
+                });
+            }
+            catch (error) {
+                console.log(`apiLogger failed (${action}):`, error === null || error === void 0 ? void 0 : error.message);
+            }
+        }));
         return next();
     });
 };
@@ -151,7 +195,7 @@ exports.stripBlank = stripBlank;
 // user, instead of the raw exception (SQL/driver internals, table/column
 // names, stack frames) that error.message otherwise carries.
 const friendlyDbError = (error) => {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f;
     switch (error === null || error === void 0 ? void 0 : error.code) {
         case 'P2003':
             return `One of the values you selected doesn't exist or is no longer valid. Please re-check your selections and try again.`;
@@ -163,8 +207,28 @@ const friendlyDbError = (error) => {
             return `The record you're trying to update or delete could not be found — it may have already been removed.`;
         case 'P2014':
             return `That change would leave a related record in an invalid state. Please review and try again.`;
+        // Schema drift: the code expects a column/table a pending SQL
+        // migration (prisma/sql) hasn't added to this database yet.
+        case 'P2022': {
+            const column = ((_c = error === null || error === void 0 ? void 0 : error.meta) === null || _c === void 0 ? void 0 : _c.column) || ((_d = String((error === null || error === void 0 ? void 0 : error.message) || '').match(/column `([^`]+)`/)) === null || _d === void 0 ? void 0 : _d[1]);
+            return `The database is missing ${column ? `the column ${column}` : 'a column'} needed for this. Ask the system administrator to run the latest database updates (backend/prisma/sql), then try again.`;
+        }
+        case 'P2021': {
+            const table = ((_e = error === null || error === void 0 ? void 0 : error.meta) === null || _e === void 0 ? void 0 : _e.table) || ((_f = String((error === null || error === void 0 ? void 0 : error.message) || '').match(/table `([^`]+)`/)) === null || _f === void 0 ? void 0 : _f[1]);
+            return `The database is missing ${table ? `the table ${table}` : 'a table'} needed for this. Ask the system administrator to run the latest database updates (backend/prisma/sql), then try again.`;
+        }
         default:
             return `Something went wrong while saving. Please try again, and contact support if the problem continues.`;
     }
 };
 exports.friendlyDbError = friendlyDbError;
+// A message that's safe to show users for any caught error: Prisma errors
+// (whose messages are long internal query dumps) go through
+// friendlyDbError; errors the app throws itself keep their own message.
+const errorMessage = (error, fallback = 'Something went wrong. Please try again, and contact support if the problem continues.') => {
+    const isPrisma = /^Prisma/.test((error === null || error === void 0 ? void 0 : error.name) || '') || /^P\d{4}$/.test((error === null || error === void 0 ? void 0 : error.code) || '');
+    if (isPrisma)
+        return (error === null || error === void 0 ? void 0 : error.code) ? (0, exports.friendlyDbError)(error) : fallback;
+    return (error === null || error === void 0 ? void 0 : error.message) || fallback;
+};
+exports.errorMessage = errorMessage;

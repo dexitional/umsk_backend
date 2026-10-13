@@ -117,18 +117,6 @@ function unregisteredStudentsForSession(sessionId) {
         });
     });
 }
-// A program's department must be a genuine department-level unit (levelNum 2,
-// ACADEMIC — see fetchDepartments/fetchFaculties for the same convention),
-// not a faculty, a non-academic unit, or an arbitrary id. The frontend's
-// department dropdown already only offers valid options, but postProgram/
-// updateProgram had nothing stopping a direct request from connecting any
-// unit id -- this is the server-side backstop.
-function isValidDepartmentUnit(unitId) {
-    return __awaiter(this, void 0, void 0, function* () {
-        const unit = yield ais.unit.findFirst({ where: { id: unitId, levelNum: 2, type: 'ACADEMIC' }, select: { id: true } });
-        return !!unit;
-    });
-}
 // A student may have several outstanding resit courses tied to this
 // session — dedupe by indexno so each student is reminded once, not once
 // per course row.
@@ -156,7 +144,7 @@ function unresolvedResitStudentsForSession(trailSessionId) {
 // would text a username (the bare studentId) that's overwritten a moment
 // later, misleading the student.
 function stageStudentAccess(studentId_1, userId_1) {
-    return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true) {
+    return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true, smsText) {
         const password = (0, password_1.generateStrongPassword)();
         const isUser = yield ais.user.findFirst({ where: { tag: studentId } });
         if (isUser)
@@ -171,7 +159,7 @@ function stageStudentAccess(studentId_1, userId_1) {
             if (st === null || st === void 0 ? void 0 : st.phone) {
                 try {
                     // Quote the username just stored (login matches on it), not instituteEmail.
-                    yield sms(st.phone, `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
+                    yield sms(st.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
                 }
                 catch (smsError) {
                     console.log('stageStudentAccess SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
@@ -185,9 +173,11 @@ function stageStudentAccess(studentId_1, userId_1) {
     });
 }
 // Core of the generateEmail route handler below -- see stageStudentAccess
-// above for why this is a module-level function.
+// above for why this is a module-level function. `smsText` replaces the
+// default credentials SMS (Activate Admission folds the admission notice
+// into it, so a fresher gets one text instead of two).
 function generateStudentEmail(studentId_1, userId_1) {
-    return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true) {
+    return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true, smsText) {
         var _a, _b;
         let count = 1;
         let isNew = true;
@@ -254,7 +244,7 @@ function generateStudentEmail(studentId_1, userId_1) {
             // an already-successful email generation into a 500.
             if (sendSms && (st === null || st === void 0 ? void 0 : st.phone)) {
                 try {
-                    yield sms(st.phone, `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`);
+                    yield sms(st.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`);
                 }
                 catch (smsError) {
                     console.log('generateStudentEmail SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
@@ -350,7 +340,11 @@ const letterTagClash = (tag, exceptId) => ais.letter.findFirst({ where: Object.a
 // printed for its newly admitted first years (Year 1, not completed or
 // graduated). Each printed letter carries the student, the default session
 // and the programme's first-year bill for that session (for ::fee_amount).
+<<<<<<< HEAD
 const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'year', 'signatory', 'signature', 'template', 'smsTemplate'];
+=======
+const ADMISSION_LETTER_FIELDS = ['title', 'programId', 'category', 'signatory', 'signature', 'template', 'smsTemplate'];
+>>>>>>> 1b46019d84764d3436034984c814899325f7822f
 function admissionLetterFields(body) {
     const data = {};
     for (const k of ADMISSION_LETTER_FIELDS)
@@ -360,9 +354,18 @@ function admissionLetterFields(body) {
         data.status = body.status === true || body.status === 'true' || body.status == 1;
     if (data.programId === '')
         data.programId = null;
+<<<<<<< HEAD
     // Admission year arrives as a string (or null when blank); the column is INT.
     if (data.year !== undefined)
         data.year = data.year === null || data.year === '' ? null : Number(data.year) || null;
+=======
+    if (data.smsTemplate === '')
+        data.smsTemplate = null;
+    if ((body === null || body === void 0 ? void 0 : body.year) !== undefined) {
+        const y = parseInt(String(body.year), 10);
+        data.year = Number.isNaN(y) ? null : y;
+    }
+>>>>>>> 1b46019d84764d3436034984c814899325f7822f
     return data;
 }
 const ADMISSION_STUDENT_SELECT = {
@@ -374,10 +377,52 @@ const ADMISSION_STUDENT_SELECT = {
     major: { select: { longName: true, shortName: true } },
 };
 const FIRST_YEAR_WHERE = { semesterNum: { in: [1, 2] }, completeStatus: false, graduateStatus: false };
-function admissionPrintBundle(programId, students) {
+// A fresher with an admission offer only gets the admission/profile/fees
+// part of the portal until they've ACCEPTED and cleared their fees
+// (accountNet <= 0 -- positive means owing, as on the debtors list -- or a
+// fee pardon). Continuing students (no offer) are never locked. The
+// portal's AISPLayout applies the same rule (frontend utils/admission.ts).
+const admissionLocked = (st) => (st === null || st === void 0 ? void 0 : st.semesterNum) == 1 && !!(st === null || st === void 0 ? void 0 : st.admissionStatus)
+    && (st.admissionStatus !== 'ACCEPTED' || !((Number(st.accountNet) || 0) <= 0 || st.flagPardon));
+// Admission notice SMS from the letter's smsTemplate (the admission letter
+// form lists the same ::tokens). ::login is the new account's username +
+// password, or a pointer to the existing login -- appended when the
+// template leaves it out, so credentials are never dropped.
+// Title case like the letter's ::program_name (frontend util capitalise):
+// programme names are stored in capitals.
+const SMS_SMALL_WORDS = new Set(['of', 'in', 'and', 'the', 'for', 'to', 'a', 'an', 'on', 'at', 'with']);
+const capitalise = (s) => (s || '').toLowerCase().split(/(\s+)/)
+    .map((w, i) => (i > 0 && SMS_SMALL_WORDS.has(w) ? w : w.replace(/(^|[-'’])([a-z])/g, (_m, p, c) => p + c.toUpperCase())))
+    .join('');
+const DEFAULT_ADMISSION_SMS = 'Congratulations ::first_name! You have been admitted into ::program. Log in to the student portal (::portal_url) to view your admission letter and accept or reject the offer. ::login';
+function admissionSmsText(template, st, letter, login) {
+    var _a;
+    const tpl = (template === null || template === void 0 ? void 0 : template.trim()) || DEFAULT_ADMISSION_SMS;
+    const first = ((st === null || st === void 0 ? void 0 : st.fname) || '').trim().split(/\s+/)[0] || '';
+    const tokens = {
+        // Names/programme are title-cased; ::login (username + password) is
+        // passed through untouched -- the password is case-sensitive.
+        '::first_name': capitalise(first),
+        '::full_name': capitalise([st === null || st === void 0 ? void 0 : st.fname, st === null || st === void 0 ? void 0 : st.mname, st === null || st === void 0 ? void 0 : st.lname].filter(Boolean).join(' ')),
+        '::student_id': (st === null || st === void 0 ? void 0 : st.id) || '',
+        '::program': capitalise((_a = letter === null || letter === void 0 ? void 0 : letter.program) === null || _a === void 0 ? void 0 : _a.longName) || 'your programme',
+        '::session_year': (letter === null || letter === void 0 ? void 0 : letter.year) ? `${letter.year}/${letter.year + 1}` : '',
+        '::portal_url': process.env.UMS_DOMAIN || 'the student portal',
+        '::login': login,
+    };
+    const text = tpl.includes('::login') ? tpl : `${tpl} ::login`;
+    return text.replace(/::[a-z_]+/g, (t) => { var _a; return (_a = tokens[t]) !== null && _a !== void 0 ? _a : t; }).replace(/\s+/g, ' ').replace(/\s+([!.,])/g, '$1').trim();
+}
+const activeAdmissionLetter = (programId) => ais.admissionLetter.findFirst({ where: { programId, status: true }, orderBy: { updatedAt: 'desc' } });
+// Students a letter is for: admitted (entryDate) in the letter's year, or --
+// for a letter without a year -- the current Year 1.
+const admissionCohortWhere = (letter) => (letter === null || letter === void 0 ? void 0 : letter.year)
+    ? { entryDate: { gte: new Date(Date.UTC(letter.year, 0, 1)), lt: new Date(Date.UTC(letter.year + 1, 0, 1)) }, completeStatus: false, graduateStatus: false }
+    : FIRST_YEAR_WHERE;
+function admissionPrintBundle(programId, students, knownLetter) {
     return __awaiter(this, void 0, void 0, function* () {
         const [letter, session] = yield Promise.all([
-            ais.admissionLetter.findFirst({ where: { programId, status: true }, orderBy: { updatedAt: 'desc' } }),
+            knownLetter !== undefined ? knownLetter : activeAdmissionLetter(programId),
             ais.session.findFirst({ where: { default: true } }),
         ]);
         const bills = session ? yield ais.bill.findMany({
@@ -387,6 +432,131 @@ function admissionPrintBundle(programId, students) {
         }) : [];
         const billFor = (s) => bills.find((b) => b.type === (s.entryGroup || 'GH')) || bills[0] || null;
         return { letter, session, students: students.map((s) => (Object.assign(Object.assign({}, s), { bill: billFor(s) }))) };
+    });
+}
+// Shared tail of the bulk student uploads (uploadStudent, uploadFresher):
+// rejects ids/index numbers that already exist, creates the whole batch
+// all-or-nothing, then (if `provision`) sets up portal access + institute
+// email per student. Returns the HTTP status/body for the caller to send.
+// Every failure body carries `stage` (where it came from: 'existing' =
+// clashes with records already in the system, 'database' = the save
+// itself) and `errors` [{ id, row?, column?, value?, reason }] for the
+// upload dialog's problem table.
+// `skipExisting`: save the students who don't exist yet and report the
+// ones already in the system as `skipped`, instead of rejecting the batch.
+function createStudentBatch(allStudents_1, createdBy_1, action_1) {
+    return __awaiter(this, arguments, void 0, function* (allStudents, createdBy, action, opts = {}) {
+        const { provision = true, idLabel = 'ApplicantID', rowOf, skipExisting = false } = opts;
+        let students = allStudents;
+        let skipped = [];
+        const existing = yield ais.student.findMany({ where: { id: { in: students.map((s) => s.id) } }, select: { id: true } });
+        if (existing.length && skipExisting) {
+            const ids = new Set(existing.map((s) => s.id));
+            skipped = [...ids].map((id) => ({ id, row: rowOf === null || rowOf === void 0 ? void 0 : rowOf.get(id), column: idLabel, value: id, reason: `${idLabel} already exists in the system, skipped` }));
+            students = students.filter((s) => !ids.has(s.id));
+            if (!students.length) {
+                return {
+                    status: 400, body: {
+                        stage: 'existing',
+                        message: `Nothing was saved: all ${allStudents.length} ${idLabel}(s) in the sheet already exist in the system (already uploaded?).`,
+                        failedCount: skipped.length,
+                        totalCount: allStudents.length,
+                        errors: skipped,
+                    }
+                };
+            }
+        }
+        else if (existing.length) {
+            const ids = existing.map((s) => s.id);
+            return {
+                status: 400, body: {
+                    stage: 'existing',
+                    message: `Upload rejected, nothing was saved: ${ids.length} of ${students.length} ${idLabel}(s) already exist in the system (already uploaded?): ${ids.join(', ')}.`,
+                    failedCount: ids.length,
+                    totalCount: students.length,
+                    errors: ids.map((id) => ({ id, row: rowOf === null || rowOf === void 0 ? void 0 : rowOf.get(id), column: idLabel, value: id, reason: `${idLabel} already exists in the system` })),
+                }
+            };
+        }
+        // Index numbers already held by another student would fail the
+        // unique constraint mid-transaction -- reject up front instead.
+        const indexnos = students.map((s) => s.indexno).filter(Boolean);
+        const takenIndex = indexnos.length ? yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { id: true, indexno: true } }) : [];
+        if (takenIndex.length) {
+            return {
+                status: 400, body: {
+                    stage: 'existing',
+                    message: `Upload rejected, nothing was saved: ${takenIndex.length} index number(s) already belong to existing students: ${takenIndex.map((s) => s.indexno).join(', ')}.`,
+                    failedCount: takenIndex.length,
+                    totalCount: students.length,
+                    errors: takenIndex.map((s) => ({ id: s.indexno, reason: `Index number already used by student ${s.id}` })),
+                }
+            };
+        }
+        // All-or-nothing so a bad row (e.g. an invalid programId/majorId)
+        // doesn't leave the batch half-created. A failed insert is tagged with
+        // its student so the error says which row broke the batch.
+        let resp;
+        try {
+            resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                const created = [];
+                for (const s of students) {
+                    const { programId, majorId } = s, rest = __rest(s, ["programId", "majorId"]);
+                    try {
+                        const row = yield tx.student.create({
+                            data: Object.assign(Object.assign(Object.assign({}, rest), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })),
+                        });
+                        created.push(row);
+                    }
+                    catch (rowError) {
+                        rowError.studentId = s.id;
+                        throw rowError;
+                    }
+                }
+                yield tx.log.create({ data: { action, user: createdBy, meta: { count: created.length, ids: created.map((c) => c.id), skipped: skipped.map((k) => k.id) } } });
+                return created;
+                // Prisma's default 5s interactive-transaction timeout is too short
+                // for a full cohort (1,000+ inserts); give large uploads room.
+            }), { maxWait: 10000, timeout: 300000 });
+        }
+        catch (txError) {
+            console.log(`${action} failed${(txError === null || txError === void 0 ? void 0 : txError.studentId) ? ` at ${txError.studentId}` : ''}:`, txError);
+            const id = txError === null || txError === void 0 ? void 0 : txError.studentId;
+            const reason = (0, helper_1.errorMessage)(txError, 'The database could not save the students.');
+            return {
+                // Known Prisma request errors (bad reference, duplicate, missing
+                // column...) are the data's/setup's fault; anything else is ours.
+                status: (txError === null || txError === void 0 ? void 0 : txError.code) ? 400 : 500, body: {
+                    stage: 'database',
+                    message: `Upload rolled back, nothing was saved. ${id ? `Saving ${idLabel} ${id}${(rowOf === null || rowOf === void 0 ? void 0 : rowOf.get(id)) ? ` (row ${rowOf.get(id)})` : ''} failed: ` : ''}${reason}`,
+                    totalCount: students.length,
+                    errors: id ? [{ id, row: rowOf === null || rowOf === void 0 ? void 0 : rowOf.get(id), reason }] : [{ reason }],
+                }
+            };
+        }
+        // Auto-provision portal access + institute email (and, through it,
+        // the Google Workspace account) for every newly created student --
+        // mirrors the "Stage Account" then "Generate Email" buttons on
+        // AISAccountCard, so an uploaded student is immediately usable
+        // instead of needing 2 manual clicks each. Run outside the DB
+        // transaction above (these calls touch SMS/Google APIs, not just
+        // the database) and per-student, so one student's failure here
+        // can't undo another's already-committed account -- staff can
+        // finish provisioning any listed failures manually via that
+        // student's Account tab.
+        const provisioned = [];
+        const provisionErrors = [];
+        for (const s of (provision ? resp : [])) {
+            try {
+                yield stageStudentAccess(s.id, createdBy, false);
+                yield generateStudentEmail(s.id, createdBy);
+                provisioned.push(s.id);
+            }
+            catch (provisionError) {
+                provisionErrors.push({ id: s.id, reason: (provisionError === null || provisionError === void 0 ? void 0 : provisionError.message) || 'Failed to stage account / generate email' });
+            }
+        }
+        return { status: 200, body: { success: true, count: resp.length, totalCount: allStudents.length, data: resp, provisioned: provisioned.length, provisionErrors, skipped } };
     });
 }
 class AisController {
@@ -450,7 +620,7 @@ class AisController {
                     });
                     if (regs.length) {
                         regs = regs.map((r) => {
-                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
+                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p, _q;
                             return ({
                                 'LAST NAME': (_b = (_a = r.student) === null || _a === void 0 ? void 0 : _a.lname) === null || _b === void 0 ? void 0 : _b.toUpperCase(),
                                 'FIRST NAME': (_d = (_c = r.student) === null || _c === void 0 ? void 0 : _c.fname) === null || _d === void 0 ? void 0 : _d.toUpperCase(),
@@ -460,8 +630,8 @@ class AisController {
                                 'GENDER': (_j = r.student) === null || _j === void 0 ? void 0 : _j.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'ACADEMIC SESSION': (_k = r.session) === null || _k === void 0 ? void 0 : _k.title,
-                                'PROGRAM': (_m = (_l = r.student) === null || _l === void 0 ? void 0 : _l.program) === null || _m === void 0 ? void 0 : _m.shortName,
-                                'MAJOR': (_p = (_o = r.student) === null || _o === void 0 ? void 0 : _o.major) === null || _p === void 0 ? void 0 : _p.shortName,
+                                'PROGRAM': (_o = (_l = r.student) === null || _l === void 0 ? void 0 : _l.program) === null || _o === void 0 ? void 0 : _o.shortName,
+                                'MAJOR': (_q = (_p = r.student) === null || _p === void 0 ? void 0 : _p.major) === null || _q === void 0 ? void 0 : _q.shortName,
                                 'COURSES': r.courses,
                                 'REGISTRATION DATE': r.createdAt
                             });
@@ -482,7 +652,7 @@ class AisController {
                     });
                     if (regs.length) {
                         regs = regs.map((r) => {
-                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+                            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p;
                             return ({
                                 'LAST NAME': (_b = (_a = r.student) === null || _a === void 0 ? void 0 : _a.lname) === null || _b === void 0 ? void 0 : _b.toUpperCase(),
                                 'FIRST NAME': (_d = (_c = r.student) === null || _c === void 0 ? void 0 : _c.fname) === null || _d === void 0 ? void 0 : _d.toUpperCase(),
@@ -492,7 +662,7 @@ class AisController {
                                 'GENDER': (_j = r.student) === null || _j === void 0 ? void 0 : _j.gender,
                                 'YEAR': Math.ceil(r.semesterNum / 2),
                                 'PROGRAM': (_l = (_k = r.student) === null || _k === void 0 ? void 0 : _k.program) === null || _l === void 0 ? void 0 : _l.shortName,
-                                'MAJOR': (_o = (_m = r.student) === null || _m === void 0 ? void 0 : _m.major) === null || _o === void 0 ? void 0 : _o.shortName,
+                                'MAJOR': (_p = (_o = r.student) === null || _o === void 0 ? void 0 : _o.major) === null || _p === void 0 ? void 0 : _p.shortName,
                                 'DURATION': r.durationInYears,
                                 'RESUMPTION DATE': r.end
                             });
@@ -773,16 +943,23 @@ class AisController {
                 const fcomplete = yield ais.student.count({ where: { completeStatus: true, deferStatus: false, gender: 'F' } });
                 const mgraduate = yield ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, gender: 'M' } });
                 const fgraduate = yield ais.student.count({ where: { completeStatus: true, deferStatus: false, graduateStatus: true, gender: 'F' } });
-                // Department Statistics
+                // Students with no (or a non-M/F) gender recorded -- previously left
+                // out of every status count, so totals undercounted. `u` per status.
+                const noGender = { OR: [{ gender: null }, { gender: { notIn: ['M', 'F'] } }] };
+                const uactive = yield ais.student.count({ where: Object.assign({ completeStatus: false, deferStatus: false }, noGender) });
+                const udefer = yield ais.student.count({ where: Object.assign({ completeStatus: false, deferStatus: true }, noGender) });
+                const ucomplete = yield ais.student.count({ where: Object.assign({ completeStatus: true, deferStatus: false }, noGender) });
+                const ugraduate = yield ais.student.count({ where: Object.assign({ completeStatus: true, deferStatus: false, graduateStatus: true }, noGender) });
+                // Department Statistics -- programmes aren't linked to departments;
+                // a department's courses are those assigned to it in the curriculum
+                // (structure.unitId), counted once each.
                 const depts = yield ais.unit.findMany({ where: { type: 'ACADEMIC', levelNum: 2 } });
                 const department = yield Promise.all(depts.map((r) => __awaiter(this, void 0, void 0, function* () {
-                    const programs = yield ais.program.count({ where: { unitId: r.id } });
-                    const students = yield ais.student.count({ where: { program: { unitId: r.id }, completeStatus: false } });
+                    const courses = (yield ais.structure.findMany({ where: { unitId: r.id }, distinct: ['courseId'], select: { courseId: true } })).length;
                     const staff = yield ais.staff.count({ where: { unitId: r.id, status: true } });
                     return ({
                         label: r.title,
-                        programs,
-                        students,
+                        courses,
                         staff
                     });
                 })));
@@ -811,10 +988,10 @@ class AisController {
                         graduation
                     },
                     student: {
-                        active: { f: factive, m: mactive },
-                        defer: { f: fdefer, m: mdefer },
-                        complete: { f: fcomplete, m: mcomplete },
-                        graduate: { f: fgraduate, m: mgraduate }
+                        active: { f: factive, m: mactive, u: uactive },
+                        defer: { f: fdefer, m: mdefer, u: udefer },
+                        complete: { f: fcomplete, m: mcomplete, u: ucomplete },
+                        graduate: { f: fgraduate, m: mgraduate, u: ugraduate }
                     },
                     department,
                     program,
@@ -1111,7 +1288,6 @@ class AisController {
                             program: {
                                 select: {
                                     longName: true,
-                                    department: { select: { title: true } }
                                 }
                             },
                         }, orderBy: [
@@ -1153,7 +1329,6 @@ class AisController {
                                 longName: true,
                                 shortName: true,
                                 category: true,
-                                department: { select: { title: true } }
                             }
                         },
                         major: {
@@ -1218,7 +1393,7 @@ class AisController {
                         const index = (_b = (_a = sv === null || sv === void 0 ? void 0 : sv.session) === null || _a === void 0 ? void 0 : _a.title) !== null && _b !== void 0 ? _b : 'none';
                         const grades = (_c = sv.scheme) === null || _c === void 0 ? void 0 : _c.gradeMeta;
                         const classes = (_d = sv.scheme) === null || _d === void 0 ? void 0 : _d.classMeta;
-                        const zd = Object.assign(Object.assign({}, sv), { student: st, grade: yield (0, helper_1.getGrade)(sv.totalScore, grades), gradepoint: yield (0, helper_1.getGradePoint)(sv.totalScore, grades), classes });
+                        const zd = Object.assign(Object.assign({}, sv), { student: st, grade: (0, helper_1.gradeFor)(sv, grades), gradepoint: (0, helper_1.gradePointFor)(sv, grades), classes });
                         // Data By Courses
                         if (mdata.has(index)) {
                             mdata.set(index, [...mdata.get(index), Object.assign({}, zd)]);
@@ -1239,7 +1414,8 @@ class AisController {
                     let runningCredit = 0;
                     let runningGradepoint = 0;
                     const groups = Array.from(mdata).map(([title, rows]) => {
-                        const gradedRows = rows.filter((r) => r.status === true && r.totalScore != null);
+                        // IC results (no exam score yet) count toward neither credit nor grade points.
+                        const gradedRows = rows.filter((r) => r.status === true && r.totalScore != null && !(0, helper_1.isIncomplete)(r));
                         const semCredit = gradedRows.reduce((sum, cur) => sum + cur.credit, 0);
                         const semGradepoint = gradedRows.reduce((sum, cur) => sum + cur.credit * cur.gradepoint, 0);
                         runningCredit += semCredit;
@@ -1360,7 +1536,7 @@ class AisController {
                                 const cindex = (_a = sv.title) !== null && _a !== void 0 ? _a : 'none';
                                 const grades = sv.gradeMeta;
                                 const classes = sv.classMeta;
-                                const zd = Object.assign(Object.assign({}, sv), { grade: yield (0, helper_1.getGrade)(sv.totalScore, grades), gradepoint: yield (0, helper_1.getGradePoint)(sv.totalScore, grades), classes });
+                                const zd = Object.assign(Object.assign({}, sv), { grade: (0, helper_1.gradeFor)(sv, grades), gradepoint: (0, helper_1.gradePointFor)(sv, grades), classes });
                                 // Data By Courses
                                 if (sdata.has(cindex)) {
                                     sdata.set(cindex, [...sdata.get(cindex), Object.assign({}, zd)]);
@@ -1768,7 +1944,7 @@ class AisController {
                 const seenIndexnos = new Set();
                 const students = [];
                 rows.forEach((row, i) => {
-                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3;
+                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4;
                     const id = (_b = (_a = row.ApplicantID) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim();
                     if (!id) {
                         missingId.push(`row ${i + 1}`);
@@ -1796,19 +1972,20 @@ class AisController {
                         lname: ((_k = (_j = row.lname) === null || _j === void 0 ? void 0 : _j.toString()) === null || _k === void 0 ? void 0 : _k.trim()) || null,
                         dob: row.dob ? new Date(row.dob) : null,
                         semesterNum,
-                        gender: ((_m = (_l = row.gender) === null || _l === void 0 ? void 0 : _l.toString()) === null || _m === void 0 ? void 0 : _m.trim()) || null,
-                        email: ((_p = (_o = row.email) === null || _o === void 0 ? void 0 : _o.toString()) === null || _p === void 0 ? void 0 : _p.trim()) || null,
-                        phone: ((_r = (_q = row.phone) === null || _q === void 0 ? void 0 : _q.toString()) === null || _r === void 0 ? void 0 : _r.trim()) || null,
-                        address: ((_t = (_s = row.address) === null || _s === void 0 ? void 0 : _s.toString()) === null || _t === void 0 ? void 0 : _t.trim()) || null,
-                        hometown: ((_v = (_u = row.hometown) === null || _u === void 0 ? void 0 : _u.toString()) === null || _v === void 0 ? void 0 : _v.trim()) || null,
-                        programId: ((_x = (_w = row.programId) === null || _w === void 0 ? void 0 : _w.toString()) === null || _x === void 0 ? void 0 : _x.trim()) || null,
-                        majorId: ((_z = (_y = row.majorId) === null || _y === void 0 ? void 0 : _y.toString()) === null || _z === void 0 ? void 0 : _z.trim()) || null,
+                        gender: ((_o = (_l = row.gender) === null || _l === void 0 ? void 0 : _l.toString()) === null || _o === void 0 ? void 0 : _o.trim()) || null,
+                        email: ((_q = (_p = row.email) === null || _p === void 0 ? void 0 : _p.toString()) === null || _q === void 0 ? void 0 : _q.trim()) || null,
+                        phone: ((_s = (_r = row.phone) === null || _r === void 0 ? void 0 : _r.toString()) === null || _s === void 0 ? void 0 : _s.trim()) || null,
+                        address: ((_u = (_t = row.address) === null || _t === void 0 ? void 0 : _t.toString()) === null || _u === void 0 ? void 0 : _u.trim()) || null,
+                        hometown: ((_w = (_v = row.hometown) === null || _v === void 0 ? void 0 : _v.toString()) === null || _w === void 0 ? void 0 : _w.trim()) || null,
+                        programId: ((_y = (_x = row.programId) === null || _x === void 0 ? void 0 : _x.toString()) === null || _y === void 0 ? void 0 : _y.trim()) || null,
+                        majorId: ((_0 = (_z = row.majorId) === null || _z === void 0 ? void 0 : _z.toString()) === null || _0 === void 0 ? void 0 : _0.trim()) || null,
                         // Either header spelling maps to the student's hall.
-                        instituteAffliate: ((_3 = (_2 = ((_1 = (_0 = row.HALL) !== null && _0 !== void 0 ? _0 : row['HALL OF AFFILIATION']) !== null && _1 !== void 0 ? _1 : row.instituteAffliate)) === null || _2 === void 0 ? void 0 : _2.toString()) === null || _3 === void 0 ? void 0 : _3.trim()) || null,
+                        instituteAffliate: ((_4 = (_3 = ((_2 = (_1 = row.HALL) !== null && _1 !== void 0 ? _1 : row['HALL OF AFFILIATION']) !== null && _2 !== void 0 ? _2 : row.instituteAffliate)) === null || _3 === void 0 ? void 0 : _3.toString()) === null || _4 === void 0 ? void 0 : _4.trim()) || null,
                     });
                 });
                 if (missingId.length || duplicateInSheet.length || duplicateIndexInSheet.length) {
                     return res.status(400).json({
+                        stage: 'sheet',
                         message: `Upload rejected: ${missingId.length ? `ApplicantID is missing for ${missingId.join(', ')}. ` : ''}${duplicateInSheet.length ? `Duplicate ApplicantID within the uploaded sheet: ${duplicateInSheet.join(', ')}. ` : ''}${duplicateIndexInSheet.length ? `Duplicate index number within the uploaded sheet: ${duplicateIndexInSheet.join(', ')}.` : ''}`,
                         errors: [
                             ...missingId.map((r) => ({ id: r, reason: 'ApplicantID is required' })),
@@ -1817,72 +1994,142 @@ class AisController {
                         ],
                     });
                 }
-                const existing = yield ais.student.findMany({ where: { id: { in: students.map((s) => s.id) } }, select: { id: true } });
-                if (existing.length) {
-                    const ids = existing.map((s) => s.id);
-                    return res.status(400).json({
-                        message: `Upload rejected: ${ids.length} of ${students.length} Applicant ID(s) already exist: ${ids.join(', ')}.`,
-                        failedCount: ids.length,
-                        totalCount: students.length,
-                        errors: ids.map((id) => ({ id, reason: 'ApplicantID already exists' })),
-                    });
-                }
-                // Index numbers already held by another student would fail the
-                // unique constraint mid-transaction -- reject up front instead.
-                const indexnos = students.map((s) => s.indexno).filter(Boolean);
-                const takenIndex = indexnos.length ? yield ais.student.findMany({ where: { indexno: { in: indexnos } }, select: { id: true, indexno: true } }) : [];
-                if (takenIndex.length) {
-                    return res.status(400).json({
-                        message: `Upload rejected: ${takenIndex.length} index number(s) already belong to existing students: ${takenIndex.map((s) => s.indexno).join(', ')}.`,
-                        failedCount: takenIndex.length,
-                        totalCount: students.length,
-                        errors: takenIndex.map((s) => ({ id: s.indexno, reason: `Index number already used by student ${s.id}` })),
-                    });
-                }
-                const createdBy = req.userId;
-                // All-or-nothing so a bad row (e.g. an invalid programId/majorId)
-                // doesn't leave the batch half-created.
-                const resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
-                    const created = [];
-                    for (const s of students) {
-                        const { programId, majorId } = s, rest = __rest(s, ["programId", "majorId"]);
-                        const row = yield tx.student.create({
-                            data: Object.assign(Object.assign(Object.assign({}, rest), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })),
-                        });
-                        created.push(row);
-                    }
-                    yield tx.log.create({ data: { action: `STUDENT_BULK_UPLOAD`, user: createdBy, meta: { count: created.length, ids: created.map((c) => c.id) } } });
-                    return created;
-                    // Prisma's default 5s interactive-transaction timeout is too short
-                    // for a full cohort (1,000+ inserts); give large uploads room.
-                }), { maxWait: 10000, timeout: 300000 });
-                // Auto-provision portal access + institute email (and, through it,
-                // the Google Workspace account) for every newly created student --
-                // mirrors the "Stage Account" then "Generate Email" buttons on
-                // AISAccountCard, so an uploaded student is immediately usable
-                // instead of needing 2 manual clicks each. Run outside the DB
-                // transaction above (these calls touch SMS/Google APIs, not just
-                // the database) and per-student, so one student's failure here
-                // can't undo another's already-committed account -- staff can
-                // finish provisioning any listed failures manually via that
-                // student's Account tab.
-                const provisioned = [];
-                const provisionErrors = [];
-                for (const s of resp) {
-                    try {
-                        yield stageStudentAccess(s.id, createdBy, false);
-                        yield generateStudentEmail(s.id, createdBy);
-                        provisioned.push(s.id);
-                    }
-                    catch (provisionError) {
-                        provisionErrors.push({ id: s.id, reason: (provisionError === null || provisionError === void 0 ? void 0 : provisionError.message) || 'Failed to stage account / generate email' });
-                    }
-                }
-                res.status(200).json({ success: true, count: resp.length, data: resp, provisioned: provisioned.length, provisionErrors });
+                const { status, body } = yield createStudentBatch(students, req.userId, 'STUDENT_BULK_UPLOAD');
+                res.status(status).json(body);
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(500).json({ stage: 'server', message: `Upload failed on the server, nothing was saved: ${(0, helper_1.errorMessage)(error)}`, errors: [] });
+            }
+        });
+    }
+    // Bulk-create freshers (new Year 1 admits) from the freshers sheet:
+    // Application Number, Last name, First name, Middle name, Gender,
+    // Phone Number, Program. Application Number maps onto student.id (as
+    // ApplicantID does in uploadStudent), Program is matched against a
+    // programme's code, short name or full name, and every fresher starts
+    // at Year 1 Sem 1 with entryDate = the 1st of the current month.
+    // Accounts/emails aren't created here -- "Activate Admission" on the
+    // programme's admission letter does that and texts the admission notice.
+    uploadFresher(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const rows = req.body;
+                if (!Array.isArray(rows) || !rows.length)
+                    return res.status(400).json({ stage: 'sheet', message: 'The sheet has no rows. Fill in the freshers under the header row of the sample and upload again.', errors: [] });
+                // Header spelling/casing varies between sheets ("Last name" vs
+                // "LAST NAME" vs "Lastname") -- compare on letters/digits only.
+                const normKey = (k) => k.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const normName = (v) => v.toUpperCase().replace(/\s+/g, ' ').trim();
+                const cell = (row, key) => {
+                    var _a, _b;
+                    const k = Object.keys(row).find((h) => normKey(h) === key);
+                    return k ? ((_b = (_a = row[k]) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim()) || null : null;
+                };
+                // Whole-sheet check first: a missing/misspelt column would
+                // otherwise come back as one error per row. (The spreadsheet
+                // reader drops empty cells, so a column blank on every row also
+                // shows up here.)
+                const COLUMNS = [['applicationnumber', 'Application Number'], ['lastname', 'Last name'], ['firstname', 'First name'], ['gender', 'Gender'], ['phonenumber', 'Phone Number'], ['program', 'Program']];
+                const headers = new Set(rows.flatMap((r) => Object.keys(r || {}).map(normKey)));
+                const missingCols = COLUMNS.filter(([k]) => !headers.has(k)).map(([, label]) => label);
+                if (missingCols.length) {
+                    return res.status(400).json({
+                        stage: 'sheet',
+                        message: `Upload rejected, nothing was saved: the sheet is missing the column(s) ${missingCols.join(', ')} (or they are empty on every row). Use the headers from the freshers sample.`,
+                        errors: missingCols.map((column) => ({ column, reason: 'Column missing or empty' })),
+                    });
+                }
+                // Active programmes win over retired ones that share a code/name.
+                const programs = yield ais.program.findMany({ select: { id: true, code: true, shortName: true, longName: true, status: true }, orderBy: { status: 'asc' } });
+                const programIds = new Map();
+                programs.forEach((p) => [p.code, p.shortName, p.longName].forEach((v) => v && programIds.set(normName(v), p.id)));
+                const now = new Date();
+                const entryDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+                const errors = [];
+                const rowOf = new Map();
+                const students = [];
+                rows.forEach((r, i) => {
+                    const row = i + 2; // sheet row: +1 header, +1 1-based
+                    const id = cell(r, 'applicationnumber') || undefined;
+                    const problem = (column, value, reason) => errors.push({ row, id, column, value: value !== null && value !== void 0 ? value : '', reason });
+                    if (!id) {
+                        problem('Application Number', '', 'Application Number is required');
+                        return;
+                    }
+                    if (rowOf.has(id)) {
+                        problem('Application Number', id, `Duplicate of row ${rowOf.get(id)} in this sheet`);
+                        return;
+                    }
+                    rowOf.set(id, row);
+                    const fname = cell(r, 'firstname');
+                    const lname = cell(r, 'lastname');
+                    if (!fname)
+                        problem('First name', '', 'First name is required');
+                    if (!lname)
+                        problem('Last name', '', 'Last name is required');
+                    const genderRaw = cell(r, 'gender');
+                    const g = genderRaw === null || genderRaw === void 0 ? void 0 : genderRaw.toUpperCase();
+                    const gender = g === 'M' || g === 'MALE' ? 'M' : g === 'F' || g === 'FEMALE' ? 'F' : null;
+                    if (!gender)
+                        problem('Gender', genderRaw, genderRaw ? 'Must be M, MALE, F or FEMALE' : 'Gender is required');
+                    const programName = cell(r, 'program');
+                    const programId = programName ? programIds.get(normName(programName)) : undefined;
+                    if (!programId)
+                        problem('Program', programName, programName ? 'No programme has this code, short name or full name' : 'Program is required');
+                    // Excel stores 0244000000 as the number 244000000 -- restore
+                    // the dropped leading zero on 9-digit local numbers. The phone
+                    // is where the admission notice SMS goes, so it's required.
+                    let phone = cell(r, 'phonenumber');
+                    if (phone && /^\d{9}$/.test(phone))
+                        phone = `0${phone}`;
+                    if (!phone)
+                        problem('Phone Number', '', 'Phone Number is required (the admission SMS is sent to it)');
+                    else if (!/^\+?\d{10,15}$/.test(phone.replace(/[\s-]/g, '')))
+                        problem('Phone Number', phone, 'Not a valid phone number');
+                    else
+                        phone = phone.replace(/[\s-]/g, '');
+                    students.push({
+                        id,
+                        fname,
+                        mname: cell(r, 'middlename'),
+                        lname,
+                        gender,
+                        phone,
+                        programId,
+                        // Fresher flags the rest of the flow reads: semesterNum /
+                        // entrySemesterNum (activation, FRESHER notices, fee posting),
+                        // entryDate (letter cohort, fee posting), entryGroup (bill
+                        // matching). Status flags are set explicitly rather than left
+                        // to column defaults; admissionStatus stays NULL until
+                        // "Activate Admission" sets it to PENDING.
+                        semesterNum: 1,
+                        entrySemesterNum: 1,
+                        entryDate,
+                        entryGroup: 'GH',
+                        deferStatus: false,
+                        completeStatus: false,
+                        graduateStatus: false,
+                        admissionStatus: null,
+                    });
+                });
+                if (errors.length) {
+                    const badRows = new Set(errors.map((e) => e.row)).size;
+                    return res.status(400).json({
+                        stage: 'sheet',
+                        message: `Upload rejected, nothing was saved: ${errors.length} problem(s) on ${badRows} of ${rows.length} row(s). Fix them in the sheet and upload again.`,
+                        failedCount: badRows,
+                        totalCount: rows.length,
+                        errors,
+                    });
+                }
+                // Accounts/emails are created later by "Activate Admission".
+                const { status, body } = yield createStudentBatch(students, req.userId, 'STUDENT_FRESHER_UPLOAD', { provision: false, idLabel: 'Application Number', rowOf, skipExisting: true });
+                res.status(status).json(body);
+            }
+            catch (error) {
+                console.log('uploadFresher failed:', error);
+                return res.status(500).json({ stage: 'server', message: `Upload failed on the server, nothing was saved: ${(0, helper_1.errorMessage)(error)}`, errors: [] });
             }
         });
     }
@@ -2190,7 +2437,8 @@ class AisController {
                     ais.structure.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize), include: {
                             unit: { select: { title: true } },
                             program: { select: { longName: true } },
-                            course: { select: { title: true } },
+                            major: { select: { shortName: true, longName: true } },
+                            course: { select: { title: true, creditHour: true } },
                         } }))
                 ]);
                 //if(resp && resp[1]?.length){
@@ -2547,7 +2795,7 @@ class AisController {
                 let resp = [];
                 const st = yield ais.student.findUnique({
                     where: { id: (0, paramStr_1.paramStr)(req.params.indexno) },
-                    select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true, department: true } } },
+                    select: { id: true, indexno: true, fname: true, mname: true, lname: true, gender: true, semesterNum: true, program: { select: { longName: true } } },
                 });
                 if (st) {
                     // Get Active Session Info -- no more MAIN/January-SUB stream split,
@@ -2741,6 +2989,8 @@ class AisController {
                 // Get Active Session Info -- no more MAIN/January-SUB stream split,
                 // just the one default session.
                 const st = yield ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } });
+                if (admissionLocked(st))
+                    return res.status(403).json({ message: st.admissionStatus === 'ACCEPTED' ? "Please pay your fees before registering courses." : "Please accept your admission offer on the student portal before registering courses." });
                 const session = yield ais.session.findFirst({ where: { default: true } });
                 if (!session)
                     return res.status(400).json({ message: "No active registration session found. Please contact the registry." });
@@ -2943,9 +3193,6 @@ class AisController {
             try {
                 const resp = yield ais.program.findMany({
                     where: { status: true },
-                    include: {
-                        department: { select: { title: true } },
-                    },
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -2981,7 +3228,6 @@ class AisController {
                 const resp = yield ais.$transaction([
                     ais.program.count(Object.assign({}, (searchCondition))),
                     ais.program.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize), include: {
-                            department: { select: { title: true } },
                             student: { select: { _count: true } }
                         } }))
                 ]);
@@ -3009,7 +3255,6 @@ class AisController {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
                     include: {
-                        department: { select: { title: true } },
                         student: { select: { _count: true } }
                     }
                 });
@@ -3111,6 +3356,10 @@ class AisController {
                                 semesterNum: true,
                                 residentialStatus: true,
                                 deferStatus: true,
+                                // For the programme's bulk ID cards (Issued/Expires, hall, nationality).
+                                entryDate: true,
+                                instituteAffliate: true,
+                                country: { select: { nationality: true } },
                                 program: { select: { shortName: true, longName: true } }
                             },
                             orderBy: { semesterNum: 'asc' }
@@ -3149,9 +3398,6 @@ class AisController {
                     where: {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
-                    include: {
-                        department: { select: { title: true } },
-                    }
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3169,14 +3415,13 @@ class AisController {
     postProgram(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { unitId, schemeId } = req.body;
+                // Programmes aren't linked to departments (see schema), so any
+                // unitId sent is ignored.
+                const { schemeId } = req.body;
                 delete req.body.schemeId;
                 delete req.body.unitId;
-                if (unitId && !(yield isValidDepartmentUnit(unitId))) {
-                    return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
-                }
                 const resp = yield ais.program.create({
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), unitId && ({ department: { connect: { id: unitId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } }))
+                    data: Object.assign(Object.assign({}, req.body), schemeId && ({ scheme: { connect: { id: schemeId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3194,15 +3439,13 @@ class AisController {
     updateProgram(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { unitId, schemeId } = req.body;
+                // Programmes aren't linked to departments; any unitId sent is ignored.
+                const { schemeId } = req.body;
                 delete req.body.schemeId;
                 delete req.body.unitId;
-                if (unitId && !(yield isValidDepartmentUnit(unitId))) {
-                    return res.status(400).json({ message: `Department must be a valid academic department (unit).` });
-                }
                 const resp = yield ais.program.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign({}, req.body), unitId && ({ department: { connect: { id: unitId } } })), schemeId && ({ scheme: { connect: { id: schemeId } } }))
+                    data: Object.assign(Object.assign({}, req.body), schemeId && ({ scheme: { connect: { id: schemeId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3270,13 +3513,26 @@ class AisController {
                         _count: {
                             select: {
                                 staff: true,
-                                program: true
                             }
                         },
                     },
+                    orderBy: { title: 'asc' },
                 });
                 if (resp) {
-                    res.status(200).json(resp);
+                    // Added for the Department module cards (existing fields unchanged,
+                    // so the department dropdowns that use this list still work):
+                    // `courses` = distinct courses assigned to the department in the
+                    // curriculum (structure.unitId); `head` = head of department's name.
+                    const ids = resp.map((d) => d.id);
+                    const assigned = ids.length ? yield ais.structure.findMany({ where: { unitId: { in: ids } }, select: { unitId: true, courseId: true }, distinct: ['unitId', 'courseId'] }) : [];
+                    const heads = resp.map((d) => d.headStaffNo).filter(Boolean);
+                    const staff = heads.length ? yield ais.staff.findMany({ where: { staffNo: { in: heads } }, select: { staffNo: true, fname: true, lname: true, title: { select: { label: true } } } }) : [];
+                    const headName = (no) => {
+                        var _a;
+                        const h = staff.find((x) => x.staffNo === no);
+                        return h ? [(_a = h.title) === null || _a === void 0 ? void 0 : _a.label, h.fname, h.lname].filter(Boolean).join(' ') : null;
+                    };
+                    res.status(200).json(resp.map((d) => (Object.assign(Object.assign({}, d), { courses: assigned.filter((a) => a.unitId === d.id).length, head: d.headStaffNo ? headName(d.headStaffNo) : null }))));
                 }
                 else {
                     res.status(202).json({ message: `no record found` });
@@ -3295,7 +3551,6 @@ class AisController {
                 const resp = yield ais.unit.findMany({
                     where: { status: true, levelNum: 1, type: 'ACADEMIC' },
                     include: {
-                        levelI: { select: { _count: { select: { program: true } } } },
                         _count: {
                             select: {
                                 staff: true,
@@ -5889,7 +6144,7 @@ class AisController {
                             let az = ax.reduce((acc, r) => {
                                 var _a;
                                 // Check for IC
-                                if (r.totalScore === undefined || r.totalScore == null) {
+                                if (r.totalScore === undefined || r.totalScore == null || (0, helper_1.isIncomplete)(r)) {
                                     incompleteCount += 1;
                                     return acc;
                                 }
@@ -7459,7 +7714,7 @@ class AisController {
                         : [];
                     const staffMap = new Map(staffList.map((s) => [s.staffNo, s]));
                     const data = roles.map((r) => {
-                        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
+                        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p, _q;
                         const staff = staffMap.get((_a = r.user) === null || _a === void 0 ? void 0 : _a.tag);
                         return {
                             id: r.id,
@@ -7470,7 +7725,7 @@ class AisController {
                             roleTitle: (_h = r.appRole) === null || _h === void 0 ? void 0 : _h.title,
                             roleDesc: (_j = r.appRole) === null || _j === void 0 ? void 0 : _j.description,
                             module: (_l = (_k = r.appRole) === null || _k === void 0 ? void 0 : _k.appModule) === null || _l === void 0 ? void 0 : _l.tag,
-                            app: (_p = (_o = (_m = r.appRole) === null || _m === void 0 ? void 0 : _m.appModule) === null || _o === void 0 ? void 0 : _o.app) === null || _p === void 0 ? void 0 : _p.tag,
+                            app: (_q = (_p = (_o = r.appRole) === null || _o === void 0 ? void 0 : _o.appModule) === null || _p === void 0 ? void 0 : _p.app) === null || _q === void 0 ? void 0 : _q.tag,
                             roleMeta: r.roleMeta,
                             createdAt: r.createdAt,
                         };
@@ -7611,7 +7866,7 @@ class AisController {
     // each role's holders, and each person who holds a role.
     fetchAccessOverview(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p;
             try {
                 const [apps, assignments] = yield Promise.all([
                     ais.app.findMany({
@@ -7653,8 +7908,8 @@ class AisController {
                         byUser.set(a.user.tag, Object.assign(Object.assign({}, person), { tag: a.user.tag, groupId: a.user.groupId, roles: [] }));
                     byUser.get(a.user.tag).roles.push({
                         userRoleId: a.id, roleId: a.appRoleId, role: roleTag, title: (_e = a.appRole) === null || _e === void 0 ? void 0 : _e.title,
-                        module: (_g = (_f = a.appRole) === null || _f === void 0 ? void 0 : _f.appModule) === null || _g === void 0 ? void 0 : _g.tag, moduleTitle: (_j = (_h = a.appRole) === null || _h === void 0 ? void 0 : _h.appModule) === null || _j === void 0 ? void 0 : _j.title, app: (_m = (_l = (_k = a.appRole) === null || _k === void 0 ? void 0 : _k.appModule) === null || _l === void 0 ? void 0 : _l.app) === null || _m === void 0 ? void 0 : _m.tag,
-                        active: !!((_o = a.appRole) === null || _o === void 0 ? void 0 : _o.status), note: a.roleMeta, assignedAt: a.createdAt,
+                        module: (_g = (_f = a.appRole) === null || _f === void 0 ? void 0 : _f.appModule) === null || _g === void 0 ? void 0 : _g.tag, moduleTitle: (_j = (_h = a.appRole) === null || _h === void 0 ? void 0 : _h.appModule) === null || _j === void 0 ? void 0 : _j.title, app: (_o = (_l = (_k = a.appRole) === null || _k === void 0 ? void 0 : _k.appModule) === null || _l === void 0 ? void 0 : _l.app) === null || _o === void 0 ? void 0 : _o.tag,
+                        active: !!((_p = a.appRole) === null || _p === void 0 ? void 0 : _p.status), note: a.roleMeta, assignedAt: a.createdAt,
                     });
                 }
                 res.status(200).json({
@@ -7768,14 +8023,14 @@ class AisController {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const resp = yield ais.admissionLetter.findMany({
-                    select: { id: true, title: true, category: true, status: true, programId: true, updatedAt: true, program: { select: { shortName: true, longName: true, category: true } } },
+                    select: { id: true, title: true, category: true, year: true, status: true, programId: true, updatedAt: true, program: { select: { shortName: true, longName: true, category: true } } },
                     orderBy: [{ status: 'desc' }, { updatedAt: 'desc' }],
                 });
                 res.status(200).json(resp);
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
             }
         });
     }
@@ -7790,7 +8045,7 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
             }
         });
     }
@@ -7806,6 +8061,8 @@ class AisController {
                     return res.status(404).json({ message: 'Admission letter not found' });
                 const merged = Object.assign(Object.assign({ status: true }, existing), data);
                 const missing = ['title', 'programId', 'signature'].filter((k) => !merged[k]);
+                if (merged.year != null && (merged.year < 2000 || merged.year > 2100))
+                    return res.status(400).json({ message: 'Admission year must be between 2000 and 2100.' });
                 if (missing.length)
                     return res.status(400).json({ message: `Please provide: ${missing.map((k) => (k === 'programId' ? 'programme' : k)).join(', ')}.` });
                 const program = yield ais.program.findUnique({ where: { id: merged.programId }, select: { longName: true, category: true } });
@@ -7825,7 +8082,7 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
             }
         });
     }
@@ -7837,7 +8094,7 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
             }
         });
     }
@@ -7860,7 +8117,13 @@ class AisController {
                     pid = st.programId;
                 }
                 else if (programId) {
-                    students = yield ais.student.findMany({ where: Object.assign({ programId }, FIRST_YEAR_WHERE), select: ADMISSION_STUDENT_SELECT, orderBy: [{ lname: 'asc' }, { fname: 'asc' }] });
+                    // The letter decides the cohort (its admission year), so load it first.
+                    const letter = yield activeAdmissionLetter(programId);
+                    if (letter)
+                        students = yield ais.student.findMany({ where: Object.assign({ programId }, admissionCohortWhere(letter)), select: ADMISSION_STUDENT_SELECT, orderBy: [{ lname: 'asc' }, { fname: 'asc' }] });
+                    const bundle = yield admissionPrintBundle(programId, students, letter);
+                    if (bundle.letter)
+                        return res.status(200).json(bundle);
                 }
                 else {
                     return res.status(400).json({ message: 'Choose a student or a programme.' });
@@ -7874,7 +8137,120 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
+            }
+        });
+    }
+    // "Activate Admission" on an admission letter: for the letter's freshers
+    // (its cohort -- see admissionCohortWhere -- still in Year 1 Sem 1) not
+    // yet activated, create any missing portal account + institute email,
+    // mark the offer PENDING and text each one that they've been admitted and
+    // should log in to view the letter and accept or reject the offer.
+    // Re-running only picks up freshers added since, so nobody is texted twice.
+    activateAdmission(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const letter = yield ais.admissionLetter.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, include: { program: { select: { longName: true } } } });
+                if (!letter)
+                    return res.status(404).json({ message: 'Admission letter not found.' });
+                if (!letter.status || !letter.programId)
+                    return res.status(400).json({ message: 'Only an active admission letter tied to a programme can be activated.' });
+                const freshers = yield ais.student.findMany({
+                    where: Object.assign(Object.assign({ programId: letter.programId }, admissionCohortWhere(letter)), { semesterNum: 1, deferStatus: false, admissionStatus: null }),
+                    select: { id: true, fname: true, mname: true, lname: true, phone: true, instituteEmail: true },
+                });
+                if (!freshers.length)
+                    return res.status(200).json({ total: 0, activated: 0, errors: [], message: 'No freshers awaiting activation for this programme and admission year.' });
+                const accounts = yield ais.user.findMany({ where: { tag: { in: freshers.map((s) => s.id) } }, select: { tag: true } });
+                const hasAccount = new Set(accounts.map((a) => a.tag));
+                const notice = (s, login) => admissionSmsText(letter.smsTemplate, s, letter, login);
+                const credentials = (s) => (username, password) => notice(s, `Username: ${username}, Password: ${password}`);
+                const userId = req.userId;
+                const activated = [];
+                const errors = [];
+                for (const s of freshers) {
+                    try {
+                        // Exactly one SMS per fresher: whichever step issues the
+                        // password texts it inside the admission notice.
+                        if (!hasAccount.has(s.id))
+                            yield stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s));
+                        if (!s.instituteEmail) {
+                            yield generateStudentEmail(s.id, userId, true, credentials(s));
+                        }
+                        else if (hasAccount.has(s.id) && s.phone) {
+                            try {
+                                yield sms(s.phone, notice(s, 'Use your existing portal login.'));
+                            }
+                            catch (smsError) {
+                                console.log('activateAdmission SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
+                            }
+                        }
+                        // Set last: a fresher whose provisioning failed stays NULL and
+                        // is retried by the next activation.
+                        yield ais.student.update({ where: { id: s.id }, data: { admissionStatus: 'PENDING' } });
+                        activated.push(s.id);
+                    }
+                    catch (activateError) {
+                        console.log('activateAdmission failed for', s.id, activateError);
+                        errors.push({ id: s.id, reason: (0, helper_1.errorMessage)(activateError, 'Failed to activate admission') });
+                    }
+                }
+                yield ais.log.create({ data: { action: 'ADMISSION_ACTIVATED', user: userId, meta: { letterId: letter.id, programId: letter.programId, count: activated.length, ids: activated, errors } } });
+                res.status(200).json({ total: freshers.length, activated: activated.length, errors });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
+            }
+        });
+    }
+    // Student portal: the signed-in fresher's own admission letter (the same
+    // bundle the staff print uses, incl. the fee bill + bank account) and
+    // where their offer stands.
+    fetchMyAdmission(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                if (req.userId != id)
+                    return res.status(403).json({ message: 'You can only view your own admission.' });
+                const st = yield ais.student.findUnique({ where: { id }, select: Object.assign(Object.assign({}, ADMISSION_STUDENT_SELECT), { admissionStatus: true, admissionRespondedAt: true, accountNet: true, flagPardon: true }) });
+                if (!st)
+                    return res.status(404).json({ message: 'Student not found.' });
+                // Freshers (semesters 1-2) only -- continuing students have no
+                // Admission page, matching the portal's hasAdmissionOffer.
+                if (!st.admissionStatus || !st.programId || ![1, 2].includes(Number(st.semesterNum)))
+                    return res.status(404).json({ message: 'There is no admission offer on your record.' });
+                const bundle = yield admissionPrintBundle(st.programId, [st]);
+                res.status(200).json(Object.assign(Object.assign({}, bundle), { admissionStatus: st.admissionStatus, admissionRespondedAt: st.admissionRespondedAt }));
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
+            }
+        });
+    }
+    // Student portal: accept or reject a PENDING admission offer. Final --
+    // the status is part of the where, so a second click (or a request after
+    // answering) changes nothing.
+    respondAdmission(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            try {
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                if (req.userId != id)
+                    return res.status(403).json({ message: 'You can only answer your own admission offer.' });
+                const decision = String(((_a = req.body) === null || _a === void 0 ? void 0 : _a.decision) || '').toUpperCase();
+                if (decision !== 'ACCEPTED' && decision !== 'REJECTED')
+                    return res.status(400).json({ message: 'Choose to accept or reject the offer.' });
+                const resp = yield ais.student.updateMany({ where: { id, admissionStatus: 'PENDING' }, data: { admissionStatus: decision, admissionRespondedAt: new Date() } });
+                if (!resp.count)
+                    return res.status(400).json({ message: 'This admission offer has already been answered. Contact the Registry for any change.' });
+                yield ais.log.create({ data: { action: `ADMISSION_${decision}`, user: id, student: id, meta: { decision } } });
+                res.status(200).json({ admissionStatus: decision });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
             }
         });
     }

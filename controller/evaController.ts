@@ -1108,7 +1108,17 @@ export default class EvaController {
                 },
             });
             if (resp) {
-                res.status(200).json(resp);
+                // Submission activity for the form's detail page: evaluations
+                // by status (completed / in_progress / not_started).
+                const byStatus = await eva.courseEvaluation.groupBy({ by: ['status'], where: { formId: resp.id }, _count: { _all: true } });
+                const count = (k: string) => byStatus.find((b: any) => b.status === k)?._count?._all || 0;
+                const submissions = {
+                    total: byStatus.reduce((a: number, b: any) => a + (b._count?._all || 0), 0),
+                    completed: count('completed'),
+                    inProgress: count('in_progress'),
+                    notStarted: count('not_started'),
+                };
+                res.status(200).json({ ...resp, submissions });
             } else {
                 res.status(202).json({ message: `no record found` });
             }
@@ -1380,6 +1390,104 @@ export default class EvaController {
             } else {
                 res.status(202).json({ message: `No records found` });
             }
+        } catch (error: any) {
+            console.log(error);
+            return res.status(500).json({ message: error.message });
+        }
+    }
+
+    // Every rating-scale option, enabled or not, with how many answers use
+    // it -- for the Evaluation Manager's rating-scale editor.
+    async fetchEvaluationOptions(req: Request, res: Response) {
+        try {
+            const options = await eva.evaluationOption.findMany({
+                orderBy: [{ orderNum: 'asc' }, { value: 'asc' }],
+                include: { _count: { select: { responses: true } } },
+            });
+            res.status(200).json(options);
+        } catch (error: any) {
+            console.log(error);
+            return res.status(500).json({ message: error.message });
+        }
+    }
+
+    // Saves the whole rating scale (shared by every form) in one go. The final
+    // scale is checked as a whole -- submissions match an answer to its option
+    // by label, so labels that are switched on must be unique -- and applied in
+    // one transaction. An option left out is deleted, or switched off when
+    // students have already answered with it, so those answers keep their
+    // meaning. Display order is the order the options arrive in.
+    async saveEvaluationScale(req: Request & any, res: Response) {
+        try {
+            const rows: any[] = Array.isArray(req.body?.options) ? req.body.options : [];
+            const options = rows.map((r: any, i: number) => ({
+                id: r?.id ? String(r.id) : undefined,
+                option: String(r?.option ?? '').trim(),
+                value: Number(r?.value),
+                orderNum: i + 1,
+                status: r?.status !== false,
+            }));
+
+            const problems: string[] = [];
+            if (options.some((o) => !o.option)) problems.push('Every option needs a label.');
+            if (options.some((o) => o.option.length > 100)) problems.push('Labels can be at most 100 characters.');
+            if (options.some((o) => !Number.isInteger(o.value))) problems.push('Every score must be a whole number.');
+            const enabled = options.filter((o) => o.status);
+            if (enabled.length < 2) problems.push('Keep at least two options switched on.');
+            const labels = enabled.map((o) => o.option.toLowerCase());
+            if (new Set(labels).size !== labels.length) problems.push('Two options that are switched on share a label.');
+            const values = enabled.map((o) => o.value);
+            if (new Set(values).size !== values.length) problems.push('Two options that are switched on share a score.');
+            if (problems.length) return res.status(400).json({ message: problems.join(' ') });
+
+            const existing: any[] = await eva.evaluationOption.findMany({ include: { _count: { select: { responses: true } } } });
+            const byId = new Map(existing.map((o: any) => [o.id, o]));
+            if (options.some((o) => o.id && !byId.has(o.id))) {
+                return res.status(409).json({ message: 'The rating scale changed since you opened it. Reload the page and try again.' });
+            }
+
+            const keep = new Set(options.filter((o) => o.id).map((o) => o.id));
+            const summary = { created: 0, updated: 0, deleted: 0, disabled: 0 };
+            await eva.$transaction(async (tx: any) => {
+                for (const o of existing) {
+                    if (keep.has(o.id)) continue;
+                    if (o._count.responses > 0) {
+                        if (o.status) {
+                            await tx.evaluationOption.update({ where: { id: o.id }, data: { status: false } });
+                            summary.disabled++;
+                        }
+                    } else {
+                        await tx.evaluationOption.delete({ where: { id: o.id } });
+                        summary.deleted++;
+                    }
+                }
+                for (const o of options) {
+                    const data = { option: o.option, value: o.value, orderNum: o.orderNum, status: o.status };
+                    if (o.id) {
+                        const cur: any = byId.get(o.id);
+                        if (cur.option !== data.option || cur.value !== data.value || cur.orderNum !== data.orderNum || !!cur.status !== data.status) {
+                            await tx.evaluationOption.update({ where: { id: o.id }, data });
+                            summary.updated++;
+                        }
+                    } else {
+                        await tx.evaluationOption.create({ data });
+                        summary.created++;
+                    }
+                }
+            });
+
+            await eva.log.create({
+                data: {
+                    action: `EVALUATION_SCALE_UPDATED`,
+                    user: req?.userId,
+                    meta: { ...summary, scale: enabled.map((o) => `${o.value} ${o.option}`) },
+                },
+            });
+            const fresh = await eva.evaluationOption.findMany({
+                orderBy: [{ orderNum: 'asc' }, { value: 'asc' }],
+                include: { _count: { select: { responses: true } } },
+            });
+            res.status(200).json({ summary, options: fresh });
         } catch (error: any) {
             console.log(error);
             return res.status(500).json({ message: error.message });

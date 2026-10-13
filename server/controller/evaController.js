@@ -1089,7 +1089,17 @@ class EvaController {
                     },
                 });
                 if (resp) {
-                    res.status(200).json(resp);
+                    // Submission activity for the form's detail page: evaluations
+                    // by status (completed / in_progress / not_started).
+                    const byStatus = yield eva.courseEvaluation.groupBy({ by: ['status'], where: { formId: resp.id }, _count: { _all: true } });
+                    const count = (k) => { var _a, _b; return ((_b = (_a = byStatus.find((b) => b.status === k)) === null || _a === void 0 ? void 0 : _a._count) === null || _b === void 0 ? void 0 : _b._all) || 0; };
+                    const submissions = {
+                        total: byStatus.reduce((a, b) => { var _a; return a + (((_a = b._count) === null || _a === void 0 ? void 0 : _a._all) || 0); }, 0),
+                        completed: count('completed'),
+                        inProgress: count('in_progress'),
+                        notStarted: count('not_started'),
+                    };
+                    res.status(200).json(Object.assign(Object.assign({}, resp), { submissions }));
                 }
                 else {
                     res.status(202).json({ message: `no record found` });

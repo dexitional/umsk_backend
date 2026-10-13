@@ -79,6 +79,8 @@ class AisRoute {
         this.router.get('/students/:id/notice-summary', [verifyToken], this.controller.fetchStudentNoticeSummary);
         this.router.get('/students/:id/circulars', [verifyToken], this.controller.fetchMyCirculars); // student app
         this.router.get('/students/:id/finance', [verifyToken], this.controller.fetchStudentFinance);
+        this.router.get('/students/:id/admission', [verifyToken], this.controller.fetchMyAdmission); // student portal
+        this.router.post('/students/:id/admission', [verifyToken], this.controller.respondAdmission); // student portal
         this.router.get('/students/:id/activity', [verifyToken], this.controller.fetchStudentActivity);
         this.router.post('/students/transcripts', [verifyToken], this.controller.fetchStudentTranscripts);
         this.router.post('/students/progress', [verifyToken], this.controller.postProgression);
@@ -91,6 +93,7 @@ class AisRoute {
         this.router.post('/students/pardon', [verifyToken, requireRole(STUDENT_FINANCE_ROLES)], this.controller.pardonStudent);
         this.router.post('/students', [verifyToken], this.controller.postStudent);
         this.router.post('/students/upload', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadStudent);
+        this.router.post('/students/upload-freshers', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadFresher);
         this.router.post('/students/publish', [verifyToken], this.controller.publishStudentTranscript);
         this.router.patch('/students/:id', [verifyToken], this.controller.updateStudent);
         this.router.get('/halls', [verifyToken], this.controller.fetchHalls);
@@ -196,6 +199,7 @@ class AisRoute {
         this.router.post('/admission-letters', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.saveAdmissionLetter);
         this.router.patch('/admission-letters/:id', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.saveAdmissionLetter);
         this.router.delete('/admission-letters/:id', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.deleteAdmissionLetter);
+        this.router.post('/admission-letters/:id/activate', [verifyToken, requireRole(LETTER_ADMIN_ROLES)], this.controller.activateAdmission);
         this.router.get('/letters', [verifyToken], this.controller.fetchLetters);
         this.router.get('/letters/:id', [verifyToken], this.controller.fetchLetter);
         //  this.router.post('/letters/approve', [verifyToken], this.controller.approveLetter);
