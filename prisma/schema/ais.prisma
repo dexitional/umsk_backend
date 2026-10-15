@@ -214,6 +214,12 @@ model student {
   // from the portal. NULL = no offer to answer (continuing students).
   admissionStatus      String?   @db.VarChar(20)
   admissionRespondedAt DateTime?
+  // NHIS number, admission type (REGULAR / FEE_PAYING) and scholarship:
+  // scholar = on a scholarship; scholarBody = the awarding institution.
+  nhisNo      String?  @db.VarChar(50)
+  admitType   String?  @db.VarChar(20)
+  scholar     Boolean  @default(false)
+  scholarBody String?  @db.VarChar(255)
 
   title       title?      @relation(fields: [titleId], references: [id])
   nationality country?    @relation("studentNationality", fields: [nationalityId], references: [id])

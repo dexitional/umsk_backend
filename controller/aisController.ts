@@ -228,12 +228,26 @@ async function generateStudentEmail(studentId: string, userId?: string, sendSms:
 
 // A student editing their own record (student portal web form, Akatsico
 // mobile app) via PATCH /students/:id. Only these fields are accepted --
-// anything else in the body (status flags, programme, entryDate, email...)
-// is ignored, since those stay admin-only.
-const STUDENT_SELF_TEXT_FIELDS = ['phone', 'email', 'hometown', 'address', 'ghcardNo'];
+// anything else in the body (status flags, programme, entryDate, admission
+// type, scholarship...) is ignored, since those stay admin-only. `email` is
+// the personal email; the institutional email is admin-only.
+const STUDENT_SELF_TEXT_FIELDS = ['phone', 'email', 'hometown', 'address', 'ghcardNo', 'guardianName', 'guardianPhone'];
 const STUDENT_SELF_RELATIONS: Record<string, string> = { titleId: 'title', religionId: 'religion', regionId: 'region', countryId: 'country' };
+const RESIDENTIAL_STATUSES = ['RESIDENTIAL', 'NON_RESIDENTIAL'];
 
 class StudentSelfEditError extends Error {}
+
+// NHIS number, admission type and scholarship from the AIS (admin) student
+// form. Admission type is REGULAR or FEE_PAYING; the scholarship institution
+// is only kept while the student is on a scholarship.
+const ADMIT_TYPES = ['REGULAR', 'FEE_PAYING'];
+function normaliseAdmissionFields(body: any) {
+   if (body.nhisNo !== undefined) body.nhisNo = body.nhisNo?.toString()?.trim() || null;
+   if (body.admitType !== undefined) body.admitType = ADMIT_TYPES.includes(body.admitType) ? body.admitType : null;
+   if (body.scholar !== undefined) body.scholar = [true, 1, 'true', '1', 'YES', 'yes'].includes(body.scholar);
+   if (body.scholarBody !== undefined) body.scholarBody = body.scholarBody?.toString()?.trim() || null;
+   if (body.scholar === false) body.scholarBody = null;
+}
 
 async function updateOwnStudentProfile(studentId: string, body: any) {
    const st = await ais.student.findUnique({ where: { id: studentId } });
@@ -249,6 +263,14 @@ async function updateOwnStudentProfile(studentId: string, body: any) {
       if (body[k]) data[rel] = { connect: { id: body[k] } };
    }
    if (body.majorId) data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
+   // Disability: "NONE" (or empty) clears it.
+   if (body.disabilityId !== undefined) {
+      data.disability = !body.disabilityId || body.disabilityId == 'NONE' ? { disconnect: true } : { connect: { id: body.disabilityId } };
+   }
+   if (body.residentialStatus) {
+      if (!RESIDENTIAL_STATUSES.includes(body.residentialStatus)) throw new StudentSelfEditError('Invalid Residential Status!');
+      data.residentialStatus = body.residentialStatus;
+   }
 
    // Date of Birth -- self-editable once. Re-submitting the current value
    // (the form always posts it) is not an edit and doesn't use it up.
@@ -1831,6 +1853,7 @@ export default class AisController {
          //req.body.entryDate  = !req.body.entryDate ? null : moment(req.body.entryDate).toDate();
          req.body.entryDate = toDate(req.body.entryDate);
          req.body.dob = toDate(req.body.dob);
+         normaliseAdmissionFields(req.body);
 
          const resp = await ais.student.create({
             data: {
@@ -2096,6 +2119,7 @@ export default class AisController {
          if (indexno != undefined) req.body.indexno = !req.body.indexno ? null : req.body.indexno;
          req.body.entryDate = toDate(req.body.entryDate);
          req.body.dob = toDate(req.body.dob);
+         normaliseAdmissionFields(req.body);
          const resp = await ais.student.update({
             where: { id: paramStr(req.params.id) },
             data: {

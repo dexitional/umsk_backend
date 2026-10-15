@@ -174,6 +174,10 @@ export const student = mysqlTable("ais_student", {
   instituteAffliate: varchar("instituteAffliate", { length: 350 }),
   flagPardon: boolean("flagPardon").default(false).notNull(),
   accountNet: float("accountNet").default(0),
+  nhisNo: varchar("nhisNo", { length: 50 }),
+  admitType: varchar("admitType", { length: 20 }),
+  scholar: boolean("scholar").default(false).notNull(),
+  scholarBody: varchar("scholarBody", { length: 255 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").onUpdateNow(),
 }, (table) => ({

@@ -153,6 +153,10 @@ exports.student = (0, mysql_core_1.mysqlTable)("ais_student", {
     instituteAffliate: (0, mysql_core_1.varchar)("instituteAffliate", { length: 350 }),
     flagPardon: (0, mysql_core_1.boolean)("flagPardon").default(false).notNull(),
     accountNet: (0, mysql_core_1.float)("accountNet").default(0),
+    nhisNo: (0, mysql_core_1.varchar)("nhisNo", { length: 50 }),
+    admitType: (0, mysql_core_1.varchar)("admitType", { length: 20 }),
+    scholar: (0, mysql_core_1.boolean)("scholar").default(false).notNull(),
+    scholarBody: (0, mysql_core_1.varchar)("scholarBody", { length: 255 }),
     createdAt: (0, mysql_core_1.timestamp)("createdAt").defaultNow().notNull(),
     updatedAt: (0, mysql_core_1.timestamp)("updatedAt").onUpdateNow(),
 }, (table) => ({

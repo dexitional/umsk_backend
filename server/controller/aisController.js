@@ -256,11 +256,30 @@ function generateStudentEmail(studentId_1, userId_1) {
 }
 // A student editing their own record (student portal web form, Akatsico
 // mobile app) via PATCH /students/:id. Only these fields are accepted --
-// anything else in the body (status flags, programme, entryDate, email...)
-// is ignored, since those stay admin-only.
-const STUDENT_SELF_TEXT_FIELDS = ['phone', 'email', 'hometown', 'address', 'ghcardNo'];
+// anything else in the body (status flags, programme, entryDate, admission
+// type, scholarship...) is ignored, since those stay admin-only. `email` is
+// the personal email; the institutional email is admin-only.
+const STUDENT_SELF_TEXT_FIELDS = ['phone', 'email', 'hometown', 'address', 'ghcardNo', 'guardianName', 'guardianPhone'];
 const STUDENT_SELF_RELATIONS = { titleId: 'title', religionId: 'religion', regionId: 'region', countryId: 'country' };
+const RESIDENTIAL_STATUSES = ['RESIDENTIAL', 'NON_RESIDENTIAL'];
 class StudentSelfEditError extends Error {
+}
+// NHIS number, admission type and scholarship from the AIS (admin) student
+// form. Admission type is REGULAR or FEE_PAYING; the scholarship institution
+// is only kept while the student is on a scholarship.
+const ADMIT_TYPES = ['REGULAR', 'FEE_PAYING'];
+function normaliseAdmissionFields(body) {
+    var _a, _b, _c, _d;
+    if (body.nhisNo !== undefined)
+        body.nhisNo = ((_b = (_a = body.nhisNo) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim()) || null;
+    if (body.admitType !== undefined)
+        body.admitType = ADMIT_TYPES.includes(body.admitType) ? body.admitType : null;
+    if (body.scholar !== undefined)
+        body.scholar = [true, 1, 'true', '1', 'YES', 'yes'].includes(body.scholar);
+    if (body.scholarBody !== undefined)
+        body.scholarBody = ((_d = (_c = body.scholarBody) === null || _c === void 0 ? void 0 : _c.toString()) === null || _d === void 0 ? void 0 : _d.trim()) || null;
+    if (body.scholar === false)
+        body.scholarBody = null;
 }
 function updateOwnStudentProfile(studentId, body) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -281,6 +300,15 @@ function updateOwnStudentProfile(studentId, body) {
         }
         if (body.majorId)
             data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
+        // Disability: "NONE" (or empty) clears it.
+        if (body.disabilityId !== undefined) {
+            data.disability = !body.disabilityId || body.disabilityId == 'NONE' ? { disconnect: true } : { connect: { id: body.disabilityId } };
+        }
+        if (body.residentialStatus) {
+            if (!RESIDENTIAL_STATUSES.includes(body.residentialStatus))
+                throw new StudentSelfEditError('Invalid Residential Status!');
+            data.residentialStatus = body.residentialStatus;
+        }
         // Date of Birth -- self-editable once. Re-submitting the current value
         // (the form always posts it) is not an edit and doesn't use it up.
         if (body.dob) {
@@ -1887,10 +1915,9 @@ class AisController {
                 req.body.indexno = !req.body.indexno ? null : req.body.indexno;
                 req.body.completeType = !req.body.completeType ? null : req.body.completeType;
                 //req.body.entryDate  = !req.body.entryDate ? null : moment(req.body.entryDate).toDate();
-                if (req.body.entryDate)
-                    req.body.entryDate = new Date(req.body.entryDate);
-                if (req.body.dob)
-                    req.body.dob = new Date(req.body.dob);
+                req.body.entryDate = (0, helper_1.toDate)(req.body.entryDate);
+                req.body.dob = (0, helper_1.toDate)(req.body.dob);
+                normaliseAdmissionFields(req.body);
                 const resp = yield ais.student.create({
                     data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
                 });
@@ -1934,7 +1961,7 @@ class AisController {
                 const seenIndexnos = new Set();
                 const students = [];
                 rows.forEach((row, i) => {
-                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4;
+                    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5;
                     const id = (_b = (_a = row.ApplicantID) === null || _a === void 0 ? void 0 : _a.toString()) === null || _b === void 0 ? void 0 : _b.trim();
                     if (!id) {
                         missingId.push(`row ${i + 1}`);
@@ -1960,17 +1987,17 @@ class AisController {
                         fname: ((_f = (_e = row.fname) === null || _e === void 0 ? void 0 : _e.toString()) === null || _f === void 0 ? void 0 : _f.trim()) || null,
                         mname: ((_h = (_g = row.mname) === null || _g === void 0 ? void 0 : _g.toString()) === null || _h === void 0 ? void 0 : _h.trim()) || null,
                         lname: ((_k = (_j = row.lname) === null || _j === void 0 ? void 0 : _j.toString()) === null || _k === void 0 ? void 0 : _k.trim()) || null,
-                        dob: row.dob ? new Date(row.dob) : null,
+                        dob: (_l = (0, helper_1.toDate)(row.dob)) !== null && _l !== void 0 ? _l : null,
                         semesterNum,
-                        gender: ((_o = (_l = row.gender) === null || _l === void 0 ? void 0 : _l.toString()) === null || _o === void 0 ? void 0 : _o.trim()) || null,
-                        email: ((_q = (_p = row.email) === null || _p === void 0 ? void 0 : _p.toString()) === null || _q === void 0 ? void 0 : _q.trim()) || null,
-                        phone: ((_s = (_r = row.phone) === null || _r === void 0 ? void 0 : _r.toString()) === null || _s === void 0 ? void 0 : _s.trim()) || null,
-                        address: ((_u = (_t = row.address) === null || _t === void 0 ? void 0 : _t.toString()) === null || _u === void 0 ? void 0 : _u.trim()) || null,
-                        hometown: ((_w = (_v = row.hometown) === null || _v === void 0 ? void 0 : _v.toString()) === null || _w === void 0 ? void 0 : _w.trim()) || null,
-                        programId: ((_y = (_x = row.programId) === null || _x === void 0 ? void 0 : _x.toString()) === null || _y === void 0 ? void 0 : _y.trim()) || null,
-                        majorId: ((_0 = (_z = row.majorId) === null || _z === void 0 ? void 0 : _z.toString()) === null || _0 === void 0 ? void 0 : _0.trim()) || null,
+                        gender: ((_p = (_o = row.gender) === null || _o === void 0 ? void 0 : _o.toString()) === null || _p === void 0 ? void 0 : _p.trim()) || null,
+                        email: ((_r = (_q = row.email) === null || _q === void 0 ? void 0 : _q.toString()) === null || _r === void 0 ? void 0 : _r.trim()) || null,
+                        phone: ((_t = (_s = row.phone) === null || _s === void 0 ? void 0 : _s.toString()) === null || _t === void 0 ? void 0 : _t.trim()) || null,
+                        address: ((_v = (_u = row.address) === null || _u === void 0 ? void 0 : _u.toString()) === null || _v === void 0 ? void 0 : _v.trim()) || null,
+                        hometown: ((_x = (_w = row.hometown) === null || _w === void 0 ? void 0 : _w.toString()) === null || _x === void 0 ? void 0 : _x.trim()) || null,
+                        programId: ((_z = (_y = row.programId) === null || _y === void 0 ? void 0 : _y.toString()) === null || _z === void 0 ? void 0 : _z.trim()) || null,
+                        majorId: ((_1 = (_0 = row.majorId) === null || _0 === void 0 ? void 0 : _0.toString()) === null || _1 === void 0 ? void 0 : _1.trim()) || null,
                         // Either header spelling maps to the student's hall.
-                        instituteAffliate: ((_4 = (_3 = ((_2 = (_1 = row.HALL) !== null && _1 !== void 0 ? _1 : row['HALL OF AFFILIATION']) !== null && _2 !== void 0 ? _2 : row.instituteAffliate)) === null || _3 === void 0 ? void 0 : _3.toString()) === null || _4 === void 0 ? void 0 : _4.trim()) || null,
+                        instituteAffliate: ((_5 = (_4 = ((_3 = (_2 = row.HALL) !== null && _2 !== void 0 ? _2 : row['HALL OF AFFILIATION']) !== null && _3 !== void 0 ? _3 : row.instituteAffliate)) === null || _4 === void 0 ? void 0 : _4.toString()) === null || _5 === void 0 ? void 0 : _5.trim()) || null,
                     });
                 });
                 if (missingId.length || duplicateInSheet.length || duplicateIndexInSheet.length) {
@@ -2147,10 +2174,9 @@ class AisController {
                 req.body.completeType = !req.body.completeType ? null : req.body.completeType;
                 if (indexno != undefined)
                     req.body.indexno = !req.body.indexno ? null : req.body.indexno;
-                if (req.body.entryDate)
-                    req.body.entryDate = new Date(req.body.entryDate);
-                if (req.body.dob)
-                    req.body.dob = new Date(req.body.dob);
+                req.body.entryDate = (0, helper_1.toDate)(req.body.entryDate);
+                req.body.dob = (0, helper_1.toDate)(req.body.dob);
+                normaliseAdmissionFields(req.body);
                 const resp = yield ais.student.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
                     data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
@@ -8458,7 +8484,8 @@ class AisController {
                 delete req.body.religionId;
                 delete req.body.unitId;
                 delete req.body.jobId;
-                req.body.exitDate = req.body.exitDate ? (0, moment_1.default)(req.body.exitDate).toDate() : null;
+                req.body.exitDate = (0, helper_1.toDate)(req.body.exitDate);
+                req.body.dob = (0, helper_1.toDate)(req.body.dob);
                 req.body.phone = req.body.phone ? req.body.phone : null;
                 req.body.email = req.body.email ? req.body.email : null;
                 req.body.ssnitNo = req.body.ssnitNo ? req.body.ssnitNo : null;
@@ -8493,7 +8520,8 @@ class AisController {
                 delete req.body.unitId;
                 delete req.body.jobId; //   
                 req.body.staffNo = req.body.staffNo > 0 ? (_a = req.body.staffNo) === null || _a === void 0 ? void 0 : _a.toString() : (parseInt(st === null || st === void 0 ? void 0 : st.staffNo) + 1).toString();
-                req.body.exitDate = req.body.exitDate ? (0, moment_1.default)(req.body.exitDate).toDate() : null;
+                req.body.exitDate = (0, helper_1.toDate)(req.body.exitDate);
+                req.body.dob = (0, helper_1.toDate)(req.body.dob);
                 req.body.phone = req.body.phone ? req.body.phone : null;
                 req.body.email = req.body.email ? req.body.email : null;
                 req.body.ssnitNo = req.body.ssnitNo ? req.body.ssnitNo : null;
