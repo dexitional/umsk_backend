@@ -8,6 +8,17 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
+var __rest = (this && this.__rest) || function (s, e) {
+    var t = {};
+    for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0)
+        t[p] = s[p];
+    if (s != null && typeof Object.getOwnPropertySymbols === "function")
+        for (var i = 0, p = Object.getOwnPropertySymbols(s); i < p.length; i++) {
+            if (e.indexOf(p[i]) < 0 && Object.prototype.propertyIsEnumerable.call(s, p[i]))
+                t[p[i]] = s[p[i]];
+        }
+    return t;
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -16,17 +27,84 @@ const client_1 = require("../prisma/client");
 const client_2 = require("@prisma/client");
 const moment_1 = __importDefault(require("moment"));
 const helper_1 = require("../util/helper");
+const billing_1 = require("../util/billing");
 const paramStr_1 = require("../util/paramStr");
 const auditLog_1 = require("../util/auditLog");
 const sms = require('../config/sms');
 const fms = client_1.prisma;
 // Recompute accountNet (sum of the ledger) for each student.
-function refreshAccountNet(studentIds) {
-    return __awaiter(this, void 0, void 0, function* () {
+function refreshAccountNet(studentIds_1) {
+    return __awaiter(this, arguments, void 0, function* (studentIds, db = fms) {
         var _a;
         for (const studentId of [...new Set(studentIds.filter(Boolean))]) {
-            const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-            yield fms.student.update({ where: { id: studentId }, data: { accountNet: ((_a = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _a === void 0 ? void 0 : _a.amount) || 0 } });
+            const bal = yield db.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+            yield db.student.update({ where: { id: studentId }, data: { accountNet: ((_a = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _a === void 0 ? void 0 : _a.amount) || 0 } });
+        }
+    });
+}
+function lockBill(tx, id) {
+    return __awaiter(this, void 0, void 0, function* () {
+        yield tx.$queryRaw `SELECT id FROM fms_bill WHERE id = ${id} FOR UPDATE`;
+        const bill = yield tx.bill.findUnique({ where: { id } });
+        if (!bill)
+            throw new billing_1.BillingError('Bill not found.', 404);
+        return bill;
+    });
+}
+function changeBillStudent(req, res, list) {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            const tag = typeof req.body.tag === 'string' ? req.body.tag.trim() : '';
+            const action = req.body.action;
+            if (!tag || !['create', 'remove'].includes(action))
+                throw new billing_1.BillingError('Provide a student ID or index number and a valid action.');
+            const result = yield fms.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                var _a;
+                const bill = yield lockBill(tx, (0, paramStr_1.paramStr)(req.params.id));
+                const matches = yield tx.student.findMany({ where: { OR: [{ id: tag }, { indexno: tag }] } });
+                if (matches.length !== 1)
+                    throw new billing_1.BillingError('The student reference is missing or ambiguous. Use the student ID.');
+                const student = matches[0];
+                const aliases = [student.id, student.indexno];
+                let included = (0, billing_1.studentTags)(bill.includeStudentIds);
+                let excluded = (0, billing_1.studentTags)(bill.excludeStudentIds);
+                if (list === 'include') {
+                    included = included.filter(value => !aliases.includes(value));
+                    excluded = excluded.filter(value => !aliases.includes(value));
+                    if (action === 'create')
+                        included.push(student.id);
+                    else
+                        excluded.push(student.id);
+                }
+                else {
+                    excluded = excluded.filter(value => !aliases.includes(value));
+                    if (action === 'create')
+                        excluded.push(student.id);
+                }
+                const updated = yield tx.bill.update({ where: { id: bill.id }, data: { includeStudentIds: included, excludeStudentIds: excluded } });
+                // Draft membership does not charge the student before publication.
+                if (bill.posted) {
+                    const validated = Object.assign(Object.assign({}, bill), (0, billing_1.validateBill)(bill));
+                    const target = (0, billing_1.billStudentWhere)(validated);
+                    const natural = student.programId === target.programId && student.entryGroup === target.entryGroup
+                        && target.semesterNum.in.includes((_a = student.semesterNum) !== null && _a !== void 0 ? _a : 0) && !student.deferStatus && !student.completeStatus;
+                    const receives = (natural || included.some(value => aliases.includes(value))) && !excluded.some(value => aliases.includes(value));
+                    if (!receives)
+                        yield tx.studentAccount.deleteMany({ where: { billId: bill.id, studentId: student.id } });
+                    else if (!(yield tx.studentAccount.findFirst({ where: { billId: bill.id, studentId: student.id } }))) {
+                        yield tx.studentAccount.create({ data: { billId: bill.id, studentId: student.id, sessionId: bill.sessionId,
+                                type: 'BILL', narrative: bill.narrative, currency: bill.currency, amount: (0, billing_1.studentBillAmount)(validated, student.semesterNum) } });
+                    }
+                    yield refreshAccountNet([student.id], tx);
+                }
+                return { bill: updated, studentId: student.id };
+            }));
+            yield (0, auditLog_1.logRecords)(req, `BILL_STUDENT_${list.toUpperCase()}_${action.toUpperCase()}`, 'fms_bill', [(0, auditLog_1.pick)(result.bill, auditLog_1.BILL_FIELDS)], { student: result.studentId });
+            return res.status(200).json(result.bill);
+        }
+        catch (error) {
+            console.error('Bill membership failed:', error);
+            return res.status(error instanceof billing_1.BillingError ? error.status : 500).json({ message: error instanceof billing_1.BillingError ? error.message : (0, helper_1.friendlyDbError)(error) });
         }
     });
 }
@@ -474,97 +552,23 @@ class FmsController {
         });
     }
     includeBill(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            var _a;
-            try {
-                const { tag, action } = req.body;
-                let resp;
-                const bs = yield fms.bill.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
-                if (action == 'create') {
-                    const stdata = { studentId: tag, sessionId: bs === null || bs === void 0 ? void 0 : bs.sessionId, billId: bs === null || bs === void 0 ? void 0 : bs.id, type: 'BILL', narrative: bs === null || bs === void 0 ? void 0 : bs.narrative, currency: bs === null || bs === void 0 ? void 0 : bs.currency, amount: bs === null || bs === void 0 ? void 0 : bs.amount };
-                    // Save into Student Account
-                    const st = yield fms.studentAccount.findFirst({ where: { studentId: tag, billId: bs === null || bs === void 0 ? void 0 : bs.id } });
-                    if (st)
-                        yield fms.studentAccount.updateMany({ where: { studentId: tag, billId: bs === null || bs === void 0 ? void 0 : bs.id }, data: stdata });
-                    else
-                        yield fms.studentAccount.create({ data: stdata });
-                    // Update Bill IncludeStudentIds Records
-                    const includeStudentIds = (bs === null || bs === void 0 ? void 0 : bs.includeStudentIds) ? [tag, ...bs === null || bs === void 0 ? void 0 : bs.includeStudentIds] : [tag];
-                    resp = yield fms.bill.update({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, data: { includeStudentIds } });
-                }
-                else {
-                    // Delete Bill from Student Account
-                    yield fms.studentAccount.deleteMany({ where: { studentId: tag, billId: bs === null || bs === void 0 ? void 0 : bs.id } });
-                    // Update Bill IncludeStudentIds Records
-                    const includeStudentIds = (_a = bs === null || bs === void 0 ? void 0 : bs.includeStudentIds) === null || _a === void 0 ? void 0 : _a.filter((r) => r != tag);
-                    resp = yield fms.bill.update({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, data: { includeStudentIds } });
-                }
-                if (resp) {
-                    yield (0, auditLog_1.logRecords)(req, action == 'create' ? 'BILL_STUDENT_INCLUDED' : 'BILL_STUDENT_INCLUDE_REMOVED', 'fms_bill', [(0, auditLog_1.pick)(bs, auditLog_1.BILL_FIELDS)], { student: tag });
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(202).json({ message: `no record found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(202).json({ message: error.message });
-            }
-        });
+        return __awaiter(this, void 0, void 0, function* () { return changeBillStudent(req, res, 'include'); });
     }
     excludeBill(req, res) {
-        return __awaiter(this, void 0, void 0, function* () {
-            try {
-                const { tag, action } = req.body;
-                let resp;
-                if (action == 'create')
-                    resp = yield fms.bill.update({
-                        where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                        data: { excludeStudentIds: { jsonb_set: { path: '$', value: { tag }, append: true } } }
-                    });
-                else
-                    resp = yield fms.bill.update({
-                        where: { id: (0, paramStr_1.paramStr)(req.params.id), excludeStudentIds: { path: '$', array_contains: tag } },
-                        data: {
-                            excludeStudentIds: { jsonb_remove: { path: '$' } }
-                        }
-                    });
-                if (resp) {
-                    yield (0, auditLog_1.logRecords)(req, action == 'create' ? 'BILL_STUDENT_EXCLUDED' : 'BILL_STUDENT_EXCLUDE_REMOVED', 'fms_bill', [(0, auditLog_1.pick)(resp, auditLog_1.BILL_FIELDS)], { student: tag });
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(202).json({ message: `no record found` });
-                }
-            }
-            catch (error) {
-                console.log(error);
-                return res.status(202).json({ message: error.message });
-            }
-        });
+        return __awaiter(this, void 0, void 0, function* () { return changeBillStudent(req, res, 'exclude'); });
     }
     billReceivers(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const resp = yield fms.studentAccount.findMany({
-                    where: {
-                        billId: (0, paramStr_1.paramStr)(req.params.id)
-                    },
-                    include: { student: true }
-                });
-                console.log(resp);
-                if (resp === null || resp === void 0 ? void 0 : resp.length) {
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(202).json({ message: `no record found` });
-                }
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                if (!(yield fms.bill.findUnique({ where: { id }, select: { id: true } })))
+                    return res.status(404).json({ message: 'Bill not found.' });
+                const rows = yield fms.studentAccount.findMany({ where: { billId: id }, include: { student: true } });
+                return res.status(200).json(rows);
             }
             catch (error) {
-                //console.log(error)
-                //return res.status(500).json({ message: error.message }) 
-                return res.status(202).json({ message: error.message });
+                console.error('Bill receivers failed:', error);
+                return res.status(500).json({ message: 'Bill receivers could not be loaded. Please try again.' });
             }
         });
     }
@@ -589,116 +593,89 @@ class FmsController {
     }
     activateBill(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c;
             try {
-                const bs = yield fms.bill.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, include: { session: true } });
-                if (bs) {
-                    let students = [];
-                    // Locate Students that Bill should Apply
-                    const semesters = yield (0, helper_1.getSemesterFromCode)((_a = bs.session) === null || _a === void 0 ? void 0 : _a.semester, bs.mainGroupCode);
-                    const st = (bs === null || bs === void 0 ? void 0 : bs.tag) == 'sub'
-                        ? yield fms.$queryRaw `select id from ais_student where programId = ${bs === null || bs === void 0 ? void 0 : bs.programId} and ((date_format(entryDate,'%m') = '01' and semesterNum <= 2) or (date_format(entryDate,'%m') = '01' and semesterNum <= 4 and entrySemesterNum in (3))) and entryGroup = ${bs === null || bs === void 0 ? void 0 : bs.type} and semesterNum in (${semesters}) and deferStatus = 0 and completeStatus = 0`
-                        : yield fms.$queryRaw `select id from ais_student where programId = ${bs === null || bs === void 0 ? void 0 : bs.programId} and ((date_format(entryDate,'%m') = '01' and semesterNum > 2) or (date_format(entryDate,'%m') = '01' and semesterNum <= 4 and entrySemesterNum not in (1,3)) or (date_format(entryDate,'%m') <> '01')) and entryGroup = ${bs === null || bs === void 0 ? void 0 : bs.type} and semesterNum in (${semesters}) and deferStatus = 0 and completeStatus = 0`;
-                    if (st === null || st === void 0 ? void 0 : st.length)
-                        students = [...st.map((r) => r.id)];
-                    // Locate Included Students
-                    if ((_b = bs === null || bs === void 0 ? void 0 : bs.includeStudentIds) === null || _b === void 0 ? void 0 : _b.length)
-                        students = [...students, ...bs === null || bs === void 0 ? void 0 : bs.includeStudentIds];
-                    // Remove Excluded Students
-                    if ((_c = bs === null || bs === void 0 ? void 0 : bs.excludeStudentIds) === null || _c === void 0 ? void 0 : _c.length)
-                        students = students === null || students === void 0 ? void 0 : students.filter((r) => { var _a; return !((_a = bs === null || bs === void 0 ? void 0 : bs.excludeStudentIds) === null || _a === void 0 ? void 0 : _a.includes(r)); });
-                    // Insert bills in student accounts
-                    if (students === null || students === void 0 ? void 0 : students.length) {
-                        // @ts-ignore
-                        students = Array.from(new Set(students.map(JSON.stringify))).map(JSON.parse);
-                        const stdata = yield Promise.all(students === null || students === void 0 ? void 0 : students.map((r) => __awaiter(this, void 0, void 0, function* () {
-                            const ss = yield fms.student.findFirst({ where: { OR: [{ id: r }, { indexno: r }] } });
-                            const studentId = ss === null || ss === void 0 ? void 0 : ss.id;
-                            // Sanitize Bill
-                            //const bi = await fms.studentAccount.findFirst({ where: { studentId, billId: bs?.id }});
-                            //if(bi) return null;
-                            return ({
-                                studentId,
-                                sessionId: bs === null || bs === void 0 ? void 0 : bs.sessionId,
-                                billId: bs === null || bs === void 0 ? void 0 : bs.id,
-                                type: 'BILL',
-                                narrative: bs === null || bs === void 0 ? void 0 : bs.narrative,
-                                currency: bs === null || bs === void 0 ? void 0 : bs.currency,
-                                amount: bs === null || bs === void 0 ? void 0 : bs.amount
-                            });
-                        })));
-                        const ups = yield fms.studentAccount.createMany({ data: stdata });
-                        if (ups === null || ups === void 0 ? void 0 : ups.count) {
-                            // Retire Student Accounts
-                            yield Promise.all(students === null || students === void 0 ? void 0 : students.map((studentId) => __awaiter(this, void 0, void 0, function* () {
-                                var _a;
-                                const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                                yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_a = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _a === void 0 ? void 0 : _a.amount } });
-                            })));
-                        }
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                const result = yield fms.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    // Claim the unpublished bill inside the transaction. Concurrent requests
+                    // serialize here; a failed publication rolls the flag and ledger back.
+                    const claim = yield tx.bill.updateMany({ where: { id, posted: false }, data: { posted: true } });
+                    const bill = yield tx.bill.findUnique({ where: { id } });
+                    if (!bill)
+                        throw new billing_1.BillingError('Bill not found.', 404);
+                    if (!claim.count)
+                        throw new billing_1.BillingError('This bill is already published. Revoke it before changing its recipients.', 409);
+                    if (!bill.status)
+                        throw new billing_1.BillingError('This bill is inactive. Enable it before publishing.');
+                    const validated = Object.assign(Object.assign({}, bill), (0, billing_1.validateBill)(bill));
+                    const select = { id: true, indexno: true, semesterNum: true };
+                    const targets = yield tx.student.findMany({ where: (0, billing_1.billStudentWhere)(validated), select });
+                    const included = (0, billing_1.studentTags)(bill.includeStudentIds);
+                    const excluded = (0, billing_1.studentTags)(bill.excludeStudentIds);
+                    const tags = [...new Set([...included, ...excluded])];
+                    const exceptions = tags.length ? yield tx.student.findMany({ where: { OR: [{ id: { in: tags } }, { indexno: { in: tags } }] }, select }) : [];
+                    const resolve = (tag) => {
+                        const matches = exceptions.filter(st => st.id === tag || st.indexno === tag);
+                        if (matches.length !== 1)
+                            throw new billing_1.BillingError(`Student reference ${tag} is missing or ambiguous. Correct the bill's inclusion/exclusion list.`);
+                        return matches[0];
+                    };
+                    const recipients = new Map(targets.map(st => [st.id, st]));
+                    included.forEach(tag => { const st = resolve(tag); recipients.set(st.id, st); });
+                    excluded.forEach(tag => recipients.delete(resolve(tag).id));
+                    const students = [...recipients.keys()];
+                    if (!students.length)
+                        throw new billing_1.BillingError('No students match this bill. Check its programme, category and target years.');
+                    const existing = yield tx.studentAccount.findMany({ where: { billId: id }, select: { studentId: true } });
+                    const billed = new Set(existing.map(row => row.studentId));
+                    const entries = [...recipients.values()].filter(st => !billed.has(st.id)).map(st => ({
+                        studentId: st.id, sessionId: bill.sessionId, billId: id, type: 'BILL',
+                        narrative: bill.narrative, currency: bill.currency, amount: (0, billing_1.studentBillAmount)(validated, st.semesterNum),
+                    }));
+                    if (entries.length)
+                        yield tx.studentAccount.createMany({ data: entries });
+                    for (const studentId of students) {
+                        const balance = yield tx.studentAccount.aggregate({ where: { studentId }, _sum: { amount: true } });
+                        yield tx.student.update({ where: { id: studentId }, data: { accountNet: balance._sum.amount || 0 } });
                     }
-                    // Update bill Status
-                    const ds = yield fms.bill.update({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, data: { posted: true } });
-                    if (ds) {
-                        // Log Publish Activity & Receipients
-                        yield fms.activityBill.create({ data: { billId: bs === null || bs === void 0 ? void 0 : bs.id, amount: bs === null || bs === void 0 ? void 0 : bs.amount, discount: bs === null || bs === void 0 ? void 0 : bs.discount, receivers: students } });
-                        yield (0, auditLog_1.logRecords)(req, 'BILL_POSTED', 'fms_bill', [(0, auditLog_1.pick)(ds, auditLog_1.BILL_FIELDS)], { studentsBilled: (students === null || students === void 0 ? void 0 : students.length) || 0 });
-                        // Return Response
-                        res.status(200).json(bs);
-                    }
-                    else {
-                        res.status(204).json({ message: `something happened, No bill created` });
-                    }
-                }
-                else {
-                    res.status(204).json({ message: `no bill found` });
-                }
+                    yield tx.activityBill.create({ data: { billId: id, amount: bill.amount, discount: bill.discount, receivers: students } });
+                    return { bill, studentsBilled: entries.length };
+                }), { timeout: 60000 });
+                yield (0, auditLog_1.logRecords)(req, 'BILL_POSTED', 'fms_bill', [(0, auditLog_1.pick)(result.bill, auditLog_1.BILL_FIELDS)], { studentsBilled: result.studentsBilled });
+                return res.status(200).json(result.bill);
             }
             catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
+                console.error('Bill publication failed:', error);
+                return res.status(error instanceof billing_1.BillingError ? error.status : 500).json({ message: error instanceof billing_1.BillingError ? error.message : (0, helper_1.friendlyDbError)(error) });
             }
         });
     }
     revokeBill(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const sts = yield fms.studentAccount.findMany({ where: { billId: (0, paramStr_1.paramStr)(req.params.id) } });
-                // Update Bill status
-                const resp = yield fms.bill.update({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, data: { posted: false } });
-                if ((sts === null || sts === void 0 ? void 0 : sts.length) && resp) {
-                    yield (0, auditLog_1.logRecords)(req, 'BILL_REVOKED', 'fms_bill', [(0, auditLog_1.pick)(resp, auditLog_1.BILL_FIELDS)], { studentsAffected: new Set(sts.map((a) => a.studentId)).size, accountEntriesRemoved: sts.length });
-                    // Remove Bill from student accounts
-                    yield fms.studentAccount.deleteMany({ where: { billId: (0, paramStr_1.paramStr)(req.params.id) } });
-                    // Retire Student Accounts
-                    yield Promise.all(sts === null || sts === void 0 ? void 0 : sts.map((account) => __awaiter(this, void 0, void 0, function* () {
-                        var _a;
-                        const { studentId } = account;
-                        const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                        yield fms.student.update({ where: { id: studentId }, data: { accountNet: (_a = bal === null || bal === void 0 ? void 0 : bal._sum) === null || _a === void 0 ? void 0 : _a.amount } });
-                    })));
-                    // Return Response
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(204).json({ message: `no record found` });
-                }
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                const result = yield fms.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    yield lockBill(tx, id);
+                    const rows = yield tx.studentAccount.findMany({ where: { billId: id }, select: { studentId: true } });
+                    yield tx.studentAccount.deleteMany({ where: { billId: id } });
+                    const bill = yield tx.bill.update({ where: { id }, data: { posted: false } });
+                    yield refreshAccountNet(rows.map(row => row.studentId), tx);
+                    return { bill, removed: rows.length };
+                }), { timeout: 60000 });
+                yield (0, auditLog_1.logRecords)(req, 'BILL_REVOKED', 'fms_bill', [(0, auditLog_1.pick)(result.bill, auditLog_1.BILL_FIELDS)], { accountEntriesRemoved: result.removed });
+                return res.status(200).json(result.bill);
             }
             catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
+                console.error('Bill revocation failed:', error);
+                return res.status(error instanceof billing_1.BillingError ? error.status : 500).json({ message: error instanceof billing_1.BillingError ? error.message : (0, helper_1.friendlyDbError)(error) });
             }
         });
     }
     postBill(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { programId, bankaccId, sessionId } = req.body;
-                delete req.body.sessionId;
-                delete req.body.bankaccId;
-                delete req.body.programId;
+                const _a = (0, billing_1.validateBill)(req.body), { programId, bankaccId, sessionId } = _a, fields = __rest(_a, ["programId", "bankaccId", "sessionId"]);
                 const resp = yield fms.bill.create({
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, fields), { currency: 'GHC' }), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
                 });
                 if (resp) {
                     yield (0, auditLog_1.logRecords)(req, 'BILL_CREATED', 'fms_bill', [(0, auditLog_1.pick)(resp, auditLog_1.BILL_FIELDS)]);
@@ -710,35 +687,28 @@ class FmsController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(error instanceof billing_1.BillingError ? error.status : 500).json({ message: error instanceof billing_1.BillingError ? error.message : (0, helper_1.friendlyDbError)(error) });
             }
         });
     }
     updateBill(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const { programId, bankaccId, sessionId } = req.body;
-                delete req.body.sessionId;
-                delete req.body.bankaccId;
-                delete req.body.programId;
-                const before = yield fms.bill.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) } });
-                const resp = yield fms.bill.update({
-                    where: {
-                        id: (0, paramStr_1.paramStr)(req.params.id)
-                    },
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { currency: 'GHC' }), sessionId && ({ session: { connect: { id: sessionId } } })), bankaccId && ({ bankacc: { connect: { id: bankaccId } } })), programId && ({ program: { connect: { id: programId } } }))
-                });
-                if (resp) {
-                    yield (0, auditLog_1.logRecords)(req, 'BILL_UPDATED', 'fms_bill', [{ id: resp.id, narrative: resp.narrative, changes: (0, auditLog_1.diff)(before, resp, auditLog_1.BILL_FIELDS) }]);
-                    res.status(200).json(resp);
-                }
-                else {
-                    res.status(204).json({ message: `No records found` });
-                }
+                const data = (0, billing_1.validateBill)(req.body);
+                const id = (0, paramStr_1.paramStr)(req.params.id);
+                const { before, bill } = yield fms.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    const before = yield lockBill(tx, id);
+                    if (before.posted)
+                        throw new billing_1.BillingError('Revoke the bill before editing its amount or target years.', 409);
+                    const bill = yield tx.bill.update({ where: { id }, data });
+                    return { before, bill };
+                }));
+                yield (0, auditLog_1.logRecords)(req, 'BILL_UPDATED', 'fms_bill', [{ id: bill.id, narrative: bill.narrative, changes: (0, auditLog_1.diff)(before, bill, auditLog_1.BILL_FIELDS) }]);
+                return res.status(200).json(bill);
             }
             catch (error) {
-                console.log(error);
-                return res.status(500).json({ message: error.message });
+                console.error('Bill update failed:', error);
+                return res.status(error instanceof billing_1.BillingError ? error.status : 500).json({ message: error instanceof billing_1.BillingError ? error.message : (0, helper_1.friendlyDbError)(error) });
             }
         });
     }

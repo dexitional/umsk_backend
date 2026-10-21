@@ -2,7 +2,8 @@ import { prisma } from "../prisma/client";
 import { Prisma } from "@prisma/client";
 import { Request, Response } from "express";
 import moment from "moment";
-import { getSemesterFromCode } from "../util/helper";
+import { friendlyDbError } from "../util/helper";
+import { BillingError, billStudentWhere, studentBillAmount, studentTags, validateBill } from "../util/billing";
 import { paramStr } from "../util/paramStr";
 import { BILL_FIELDS, PAYMENT_FIELDS, diff, logRecords, pick } from "../util/auditLog";
 
@@ -10,10 +11,64 @@ const sms = require('../config/sms');
 const fms = prisma;
 
 // Recompute accountNet (sum of the ledger) for each student.
-async function refreshAccountNet(studentIds: (string | null | undefined)[]) {
+async function refreshAccountNet(studentIds: (string | null | undefined)[], db: any = fms) {
    for (const studentId of [...new Set(studentIds.filter(Boolean))] as string[]) {
-      const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-      await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount || 0 } });
+      const bal: any = await db.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
+      await db.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount || 0 } });
+   }
+}
+
+async function lockBill(tx: any, id: string) {
+   await tx.$queryRaw`SELECT id FROM fms_bill WHERE id = ${id} FOR UPDATE`;
+   const bill = await tx.bill.findUnique({ where: { id } });
+   if (!bill) throw new BillingError('Bill not found.', 404);
+   return bill;
+}
+
+async function changeBillStudent(req: Request, res: Response, list: 'include' | 'exclude') {
+   try {
+      const tag = typeof req.body.tag === 'string' ? req.body.tag.trim() : '';
+      const action = req.body.action;
+      if (!tag || !['create', 'remove'].includes(action)) throw new BillingError('Provide a student ID or index number and a valid action.');
+      const result = await fms.$transaction(async (tx) => {
+         const bill = await lockBill(tx, paramStr(req.params.id));
+         const matches = await tx.student.findMany({ where: { OR: [{ id: tag }, { indexno: tag }] } });
+         if (matches.length !== 1) throw new BillingError('The student reference is missing or ambiguous. Use the student ID.');
+         const student = matches[0];
+         const aliases = [student.id, student.indexno];
+         let included = studentTags(bill.includeStudentIds);
+         let excluded = studentTags(bill.excludeStudentIds);
+         if (list === 'include') {
+            included = included.filter(value => !aliases.includes(value));
+            excluded = excluded.filter(value => !aliases.includes(value));
+            if (action === 'create') included.push(student.id);
+            else excluded.push(student.id);
+         } else {
+            excluded = excluded.filter(value => !aliases.includes(value));
+            if (action === 'create') excluded.push(student.id);
+         }
+         const updated = await tx.bill.update({ where: { id: bill.id }, data: { includeStudentIds: included, excludeStudentIds: excluded } });
+         // Draft membership does not charge the student before publication.
+         if (bill.posted) {
+            const validated = { ...bill, ...validateBill(bill) };
+            const target = billStudentWhere(validated);
+            const natural = student.programId === target.programId && student.entryGroup === target.entryGroup
+               && target.semesterNum.in.includes(student.semesterNum ?? 0) && !student.deferStatus && !student.completeStatus;
+            const receives = (natural || included.some(value => aliases.includes(value))) && !excluded.some(value => aliases.includes(value));
+            if (!receives) await tx.studentAccount.deleteMany({ where: { billId: bill.id, studentId: student.id } });
+            else if (!await tx.studentAccount.findFirst({ where: { billId: bill.id, studentId: student.id } })) {
+               await tx.studentAccount.create({ data: { billId: bill.id, studentId: student.id, sessionId: bill.sessionId,
+                  type: 'BILL', narrative: bill.narrative, currency: bill.currency, amount: studentBillAmount(validated, student.semesterNum) } });
+            }
+            await refreshAccountNet([student.id], tx);
+         }
+         return { bill: updated, studentId: student.id };
+      });
+      await logRecords(req, `BILL_STUDENT_${list.toUpperCase()}_${action.toUpperCase()}`, 'fms_bill', [pick(result.bill, BILL_FIELDS)], { student: result.studentId });
+      return res.status(200).json(result.bill);
+   } catch (error: any) {
+      console.error('Bill membership failed:', error);
+      return res.status(error instanceof BillingError ? error.status : 500).json({ message: error instanceof BillingError ? error.message : friendlyDbError(error) });
    }
 }
 
@@ -465,89 +520,18 @@ export default class FmsController {
       }
    }
 
-   async includeBill(req: Request, res: Response) {
-      try {
-         const { tag, action } = req.body;
-         let resp;
-         const bs: any = await fms.bill.findUnique({ where: { id: paramStr(req.params.id) } })
-
-         if (action == 'create') {
-            const stdata: any = { studentId: tag, sessionId: bs?.sessionId, billId: bs?.id, type: 'BILL', narrative: bs?.narrative, currency: bs?.currency, amount: bs?.amount }
-            // Save into Student Account
-            const st = await fms.studentAccount.findFirst({ where: { studentId: tag, billId: bs?.id } })
-            if (st) await fms.studentAccount.updateMany({ where: { studentId: tag, billId: bs?.id }, data: stdata });
-            else await fms.studentAccount.create({ data: stdata });
-            // Update Bill IncludeStudentIds Records
-            const includeStudentIds: any = bs?.includeStudentIds ? [tag, ...bs?.includeStudentIds] : [tag];
-            resp = await fms.bill.update({ where: { id: paramStr(req.params.id) }, data: { includeStudentIds } });
-         } else {
-            // Delete Bill from Student Account
-            await fms.studentAccount.deleteMany({ where: { studentId: tag, billId: bs?.id } })
-            // Update Bill IncludeStudentIds Records
-            const includeStudentIds: any = bs?.includeStudentIds?.filter((r: any) => r != tag);
-            resp = await fms.bill.update({ where: { id: paramStr(req.params.id) }, data: { includeStudentIds } });
-         }
-
-         if (resp) {
-            await logRecords(req, action == 'create' ? 'BILL_STUDENT_INCLUDED' : 'BILL_STUDENT_INCLUDE_REMOVED', 'fms_bill', [pick(bs, BILL_FIELDS)], { student: tag });
-            res.status(200).json(resp)
-         } else {
-            res.status(202).json({ message: `no record found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(202).json({ message: error.message })
-      }
-   }
-
-   async excludeBill(req: Request, res: Response) {
-      try {
-         const { tag, action } = req.body;
-         let resp;
-         if (action == 'create')
-            resp = await fms.bill.update({
-               where: { id: paramStr(req.params.id) },
-               data: { excludeStudentIds: { jsonb_set: { path: '$', value: { tag }, append: true } } }
-            })
-         else
-            resp = await fms.bill.update({
-               where: { id: paramStr(req.params.id), excludeStudentIds: { path: '$', array_contains: tag } },
-               data: {
-                  excludeStudentIds: { jsonb_remove: { path: '$' } }
-               }
-            })
-
-         if (resp) {
-            await logRecords(req, action == 'create' ? 'BILL_STUDENT_EXCLUDED' : 'BILL_STUDENT_EXCLUDE_REMOVED', 'fms_bill', [pick(resp, BILL_FIELDS)], { student: tag });
-            res.status(200).json(resp)
-         } else {
-            res.status(202).json({ message: `no record found` })
-         }
-      } catch (error: any) {
-         console.log(error)
-         return res.status(202).json({ message: error.message })
-      }
-   }
+   async includeBill(req: Request, res: Response) { return changeBillStudent(req, res, 'include'); }
+   async excludeBill(req: Request, res: Response) { return changeBillStudent(req, res, 'exclude'); }
 
    async billReceivers(req: Request, res: Response) {
       try {
-         const resp = await fms.studentAccount.findMany({
-            where: {
-               billId: paramStr(req.params.id)
-            },
-            include: { student: true }
-         })
-
-         console.log(resp)
-         if (resp?.length) {
-            res.status(200).json(resp)
-         } else {
-            res.status(202).json({ message: `no record found` })
-         }
+         const id = paramStr(req.params.id);
+         if (!await fms.bill.findUnique({ where: { id }, select: { id: true } })) return res.status(404).json({ message: 'Bill not found.' });
+         const rows = await fms.studentAccount.findMany({ where: { billId: id }, include: { student: true } });
+         return res.status(200).json(rows);
       } catch (error: any) {
-         //console.log(error)
-         //return res.status(500).json({ message: error.message }) 
-         return res.status(202).json({ message: error.message })
+         console.error('Bill receivers failed:', error);
+         return res.status(500).json({ message: 'Bill receivers could not be loaded. Please try again.' });
       }
    }
 
@@ -569,105 +553,80 @@ export default class FmsController {
 
    async activateBill(req: Request, res: Response) {
       try {
-         const bs: any = await fms.bill.findUnique({ where: { id: paramStr(req.params.id) }, include: { session: true } });
-         if (bs) {
-            let students: any = [];
-            // Locate Students that Bill should Apply
-            const semesters = await getSemesterFromCode(bs.session?.semester, bs.mainGroupCode);
-            const st: any = bs?.tag == 'sub'
-               ? await fms.$queryRaw`select id from ais_student where programId = ${bs?.programId} and ((date_format(entryDate,'%m') = '01' and semesterNum <= 2) or (date_format(entryDate,'%m') = '01' and semesterNum <= 4 and entrySemesterNum in (3))) and entryGroup = ${bs?.type} and semesterNum in (${semesters}) and deferStatus = 0 and completeStatus = 0`
-               : await fms.$queryRaw`select id from ais_student where programId = ${bs?.programId} and ((date_format(entryDate,'%m') = '01' and semesterNum > 2) or (date_format(entryDate,'%m') = '01' and semesterNum <= 4 and entrySemesterNum not in (1,3)) or (date_format(entryDate,'%m') <> '01')) and entryGroup = ${bs?.type} and semesterNum in (${semesters}) and deferStatus = 0 and completeStatus = 0`;
-            if (st?.length) students = [...st.map((r: any) => r.id)];
-            // Locate Included Students
-            if (bs?.includeStudentIds?.length) students = [...students, ...bs?.includeStudentIds];
-            // Remove Excluded Students
-            if (bs?.excludeStudentIds?.length) students = students?.filter((r: any) => !bs?.excludeStudentIds?.includes(r));
-            // Insert bills in student accounts
-            if (students?.length) {
-               // @ts-ignore
-               students = Array.from(new Set(students.map(JSON.stringify))).map(JSON.parse);
-               const stdata = await Promise.all(students?.map(async (r: any) => {
-                  const ss = await fms.student.findFirst({ where: { OR: [{ id: r }, { indexno: r }] } });
-                  const studentId = ss?.id;
-                  // Sanitize Bill
-                  //const bi = await fms.studentAccount.findFirst({ where: { studentId, billId: bs?.id }});
-                  //if(bi) return null;
-                  return ({
-                     studentId,
-                     sessionId: bs?.sessionId,
-                     billId: bs?.id,
-                     type: 'BILL',
-                     narrative: bs?.narrative,
-                     currency: bs?.currency,
-                     amount: bs?.amount
-                  })
-               }));
-
-               const ups = await fms.studentAccount.createMany({ data: stdata })
-               if (ups?.count) {
-                  // Retire Student Accounts
-                  await Promise.all(students?.map(async (studentId: any) => {
-                     const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-                     await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount } })
-                  }))
-               }
+         const id = paramStr(req.params.id);
+         const result = await fms.$transaction(async (tx) => {
+            // Claim the unpublished bill inside the transaction. Concurrent requests
+            // serialize here; a failed publication rolls the flag and ledger back.
+            const claim = await tx.bill.updateMany({ where: { id, posted: false }, data: { posted: true } });
+            const bill = await tx.bill.findUnique({ where: { id } });
+            if (!bill) throw new BillingError('Bill not found.', 404);
+            if (!claim.count) throw new BillingError('This bill is already published. Revoke it before changing its recipients.', 409);
+            if (!bill.status) throw new BillingError('This bill is inactive. Enable it before publishing.');
+            const validated = { ...bill, ...validateBill(bill) };
+            const select = { id: true, indexno: true, semesterNum: true };
+            const targets = await tx.student.findMany({ where: billStudentWhere(validated), select });
+            const included = studentTags(bill.includeStudentIds);
+            const excluded = studentTags(bill.excludeStudentIds);
+            const tags = [...new Set([...included, ...excluded])];
+            const exceptions = tags.length ? await tx.student.findMany({ where: { OR: [{ id: { in: tags } }, { indexno: { in: tags } }] }, select }) : [];
+            const resolve = (tag: string) => {
+               const matches = exceptions.filter(st => st.id === tag || st.indexno === tag);
+               if (matches.length !== 1) throw new BillingError(`Student reference ${tag} is missing or ambiguous. Correct the bill's inclusion/exclusion list.`);
+               return matches[0];
+            };
+            const recipients = new Map(targets.map(st => [st.id, st]));
+            included.forEach(tag => { const st = resolve(tag); recipients.set(st.id, st); });
+            excluded.forEach(tag => recipients.delete(resolve(tag).id));
+            const students = [...recipients.keys()];
+            if (!students.length) throw new BillingError('No students match this bill. Check its programme, category and target years.');
+            const existing = await tx.studentAccount.findMany({ where: { billId: id }, select: { studentId: true } });
+            const billed = new Set(existing.map(row => row.studentId));
+            const entries = [...recipients.values()].filter(st => !billed.has(st.id)).map(st => ({
+               studentId: st.id, sessionId: bill.sessionId, billId: id, type: 'BILL' as const,
+               narrative: bill.narrative, currency: bill.currency, amount: studentBillAmount(validated, st.semesterNum),
+            }));
+            if (entries.length) await tx.studentAccount.createMany({ data: entries });
+            for (const studentId of students) {
+               const balance = await tx.studentAccount.aggregate({ where: { studentId }, _sum: { amount: true } });
+               await tx.student.update({ where: { id: studentId }, data: { accountNet: balance._sum.amount || 0 } });
             }
-            // Update bill Status
-            const ds = await fms.bill.update({ where: { id: paramStr(req.params.id) }, data: { posted: true } })
-            if (ds) {
-               // Log Publish Activity & Receipients
-               await fms.activityBill.create({ data: { billId: bs?.id, amount: bs?.amount, discount: bs?.discount, receivers: students } })
-               await logRecords(req, 'BILL_POSTED', 'fms_bill', [pick(ds, BILL_FIELDS)], { studentsBilled: students?.length || 0 });
-               // Return Response
-               res.status(200).json(bs)
-            } else {
-               res.status(204).json({ message: `something happened, No bill created` })
-            }
-
-         } else {
-            res.status(204).json({ message: `no bill found` })
-         }
+            await tx.activityBill.create({ data: { billId: id, amount: bill.amount, discount: bill.discount, receivers: students } });
+            return { bill, studentsBilled: entries.length };
+         }, { timeout: 60000 });
+         await logRecords(req, 'BILL_POSTED', 'fms_bill', [pick(result.bill, BILL_FIELDS)], { studentsBilled: result.studentsBilled });
+         return res.status(200).json(result.bill);
       } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
+         console.error('Bill publication failed:', error);
+         return res.status(error instanceof BillingError ? error.status : 500).json({ message: error instanceof BillingError ? error.message : friendlyDbError(error) });
       }
    }
 
    async revokeBill(req: Request, res: Response) {
       try {
-         const sts = await fms.studentAccount.findMany({ where: { billId: paramStr(req.params.id) } })
-         // Update Bill status
-         const resp = await fms.bill.update({ where: { id: paramStr(req.params.id) }, data: { posted: false } })
-         if (sts?.length && resp) {
-            await logRecords(req, 'BILL_REVOKED', 'fms_bill', [pick(resp, BILL_FIELDS)], { studentsAffected: new Set(sts.map((a: any) => a.studentId)).size, accountEntriesRemoved: sts.length });
-            // Remove Bill from student accounts
-            await fms.studentAccount.deleteMany({ where: { billId: paramStr(req.params.id) } })
-            // Retire Student Accounts
-            await Promise.all(sts?.map(async (account: any) => {
-               const { studentId } = account;
-               const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
-               await fms.student.update({ where: { id: studentId }, data: { accountNet: bal?._sum?.amount } })
-            }))
-            // Return Response
-            res.status(200).json(resp)
-         } else {
-            res.status(204).json({ message: `no record found` })
-         }
+         const id = paramStr(req.params.id);
+         const result = await fms.$transaction(async (tx) => {
+            await lockBill(tx, id);
+            const rows = await tx.studentAccount.findMany({ where: { billId: id }, select: { studentId: true } });
+            await tx.studentAccount.deleteMany({ where: { billId: id } });
+            const bill = await tx.bill.update({ where: { id }, data: { posted: false } });
+            await refreshAccountNet(rows.map(row => row.studentId), tx);
+            return { bill, removed: rows.length };
+         }, { timeout: 60000 });
+         await logRecords(req, 'BILL_REVOKED', 'fms_bill', [pick(result.bill, BILL_FIELDS)], { accountEntriesRemoved: result.removed });
+         return res.status(200).json(result.bill);
       } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
+         console.error('Bill revocation failed:', error);
+         return res.status(error instanceof BillingError ? error.status : 500).json({ message: error instanceof BillingError ? error.message : friendlyDbError(error) });
       }
    }
 
    async postBill(req: Request, res: Response) {
       try {
-         const { programId, bankaccId, sessionId } = req.body
-         delete req.body.sessionId; delete req.body.bankaccId;
-         delete req.body.programId;
+         const { programId, bankaccId, sessionId, ...fields } = validateBill(req.body);
 
          const resp = await fms.bill.create({
             data: {
-               ...req.body,
+               ...fields,
                currency: 'GHC', // the application only transacts in GHC
                ...sessionId && ({ session: { connect: { id: sessionId } } }),
                ...bankaccId && ({ bankacc: { connect: { id: bankaccId } } }),
@@ -683,38 +642,25 @@ export default class FmsController {
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(error instanceof BillingError ? error.status : 500).json({ message: error instanceof BillingError ? error.message : friendlyDbError(error) })
       }
    }
 
    async updateBill(req: Request, res: Response) {
       try {
-         const { programId, bankaccId, sessionId } = req.body
-         delete req.body.sessionId; delete req.body.bankaccId;
-         delete req.body.programId;
-
-         const before = await fms.bill.findUnique({ where: { id: paramStr(req.params.id) } });
-         const resp = await fms.bill.update({
-            where: {
-               id: paramStr(req.params.id)
-            },
-            data: {
-               ...req.body,
-               currency: 'GHC', // the application only transacts in GHC
-               ...sessionId && ({ session: { connect: { id: sessionId } } }),
-               ...bankaccId && ({ bankacc: { connect: { id: bankaccId } } }),
-               ...programId && ({ program: { connect: { id: programId } } }),
-            }
-         })
-         if (resp) {
-            await logRecords(req, 'BILL_UPDATED', 'fms_bill', [{ id: resp.id, narrative: resp.narrative, changes: diff(before, resp, BILL_FIELDS) }]);
-            res.status(200).json(resp)
-         } else {
-            res.status(204).json({ message: `No records found` })
-         }
+         const data = validateBill(req.body);
+         const id = paramStr(req.params.id);
+         const { before, bill } = await fms.$transaction(async (tx) => {
+            const before = await lockBill(tx, id);
+            if (before.posted) throw new BillingError('Revoke the bill before editing its amount or target years.', 409);
+            const bill = await tx.bill.update({ where: { id }, data });
+            return { before, bill };
+         });
+         await logRecords(req, 'BILL_UPDATED', 'fms_bill', [{ id: bill.id, narrative: bill.narrative, changes: diff(before, bill, BILL_FIELDS) }]);
+         return res.status(200).json(bill);
       } catch (error: any) {
-         console.log(error)
-         return res.status(500).json({ message: error.message })
+         console.error('Bill update failed:', error);
+         return res.status(error instanceof BillingError ? error.status : 500).json({ message: error instanceof BillingError ? error.message : friendlyDbError(error) });
       }
    }
 

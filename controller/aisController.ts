@@ -250,69 +250,74 @@ function normaliseAdmissionFields(body: any) {
 }
 
 async function updateOwnStudentProfile(studentId: string, body: any) {
-   const st = await ais.student.findUnique({ where: { id: studentId } });
-   if (!st) throw new StudentSelfEditError('Student record not found!');
+   return ais.$transaction(async (tx: any) => {
+      // Serialize one-time confirmations so concurrent saves cannot choose two halls.
+      await tx.$queryRaw`SELECT id FROM ais_student WHERE id = ${studentId} FOR UPDATE`;
+      const st = await tx.student.findUnique({ where: { id: studentId } });
+      if (!st) throw new StudentSelfEditError('Student record not found!');
 
-   const data: any = {};
-   const changed: string[] = [];
-   for (const k of STUDENT_SELF_TEXT_FIELDS) {
-      if (body[k] === undefined) continue;
-      data[k] = body[k]?.toString()?.trim() || null;
-   }
-   for (const [k, rel] of Object.entries(STUDENT_SELF_RELATIONS)) {
-      if (body[k]) data[rel] = { connect: { id: body[k] } };
-   }
-   if (body.majorId) data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
-   // Disability: "NONE" (or empty) clears it.
-   if (body.disabilityId !== undefined) {
-      data.disability = !body.disabilityId || body.disabilityId == 'NONE' ? { disconnect: true } : { connect: { id: body.disabilityId } };
-   }
-   if (body.residentialStatus) {
-      if (!RESIDENTIAL_STATUSES.includes(body.residentialStatus)) throw new StudentSelfEditError('Invalid Residential Status!');
-      data.residentialStatus = body.residentialStatus;
-   }
-
-   // Date of Birth -- self-editable once. Re-submitting the current value
-   // (the form always posts it) is not an edit and doesn't use it up.
-   if (body.dob) {
-      const ymd = body.dob.toString().slice(0, 10);
-      const dob = new Date(`${ymd}T00:00:00.000Z`);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || isNaN(dob.getTime())) throw new StudentSelfEditError('Invalid Date of Birth!');
-      if (st.dob?.toISOString()?.slice(0, 10) !== ymd) {
-         if (st.dobEditedAt) throw new StudentSelfEditError('Date of Birth has already been changed once. Contact the College Registry for further corrections.');
-         const age = moment().diff(moment.utc(ymd), 'years');
-         if (age < 10 || age > 100) throw new StudentSelfEditError('Date of Birth is out of range!');
-         data.dob = dob;
-         data.dobEditedAt = new Date();
-         changed.push('dob');
+      const data: any = {};
+      const changed: string[] = [];
+      for (const k of STUDENT_SELF_TEXT_FIELDS) {
+         if (body[k] === undefined) continue;
+         data[k] = body[k]?.toString()?.trim() || null;
       }
-   }
-
-   // Hall of Affiliation -- self-editable once, and only to a hall already
-   // in use (halls come in via the student upload's HALL column).
-   if (body.instituteAffliate) {
-      const hall = body.instituteAffliate.toString().trim();
-      if ((st.instituteAffliate || '').trim().toUpperCase() !== hall.toUpperCase()) {
-         if (st.affiliateEditedAt) throw new StudentSelfEditError('Hall of Affiliation has already been changed once. Contact the College Registry for further corrections.');
-         const known = await ais.student.findFirst({ where: { instituteAffliate: hall }, select: { instituteAffliate: true } });
-         if (!known) throw new StudentSelfEditError('Unknown Hall of Affiliation!');
-         data.instituteAffliate = known.instituteAffliate;
-         data.affiliateEditedAt = new Date();
-         changed.push('instituteAffliate');
+      for (const [k, rel] of Object.entries(STUDENT_SELF_RELATIONS)) {
+         if (body[k]) data[rel] = { connect: { id: body[k] } };
       }
-   }
+      if (body.majorId) data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
+      // Disability: "NONE" (or empty) clears it.
+      if (body.disabilityId !== undefined) {
+         data.disability = !body.disabilityId || body.disabilityId == 'NONE' ? { disconnect: true } : { connect: { id: body.disabilityId } };
+      }
+      if (body.residentialStatus) {
+         if (!RESIDENTIAL_STATUSES.includes(body.residentialStatus)) throw new StudentSelfEditError('Invalid Residential Status!');
+         data.residentialStatus = body.residentialStatus;
+      }
 
-   const resp = await ais.student.update({ where: { id: studentId }, data });
-   await ais.log.create({
-      data: {
-         action: `STUDENT_PROFILE_SELF_UPDATED`, user: studentId, student: studentId, meta: {
-            fields: Object.keys(data),
-            ...changed.includes('dob') && ({ dob: { from: st.dob, to: data.dob } }),
-            ...changed.includes('instituteAffliate') && ({ instituteAffliate: { from: st.instituteAffliate, to: data.instituteAffliate } }),
+      // Date of Birth -- self-editable once. Re-submitting the current value
+      // (the form always posts it) is not an edit and doesn't use it up.
+      if (body.dob) {
+         const ymd = body.dob.toString().slice(0, 10);
+         const dob = new Date(`${ymd}T00:00:00.000Z`);
+         if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || isNaN(dob.getTime())) throw new StudentSelfEditError('Invalid Date of Birth!');
+         if (st.dob?.toISOString()?.slice(0, 10) !== ymd) {
+            if (st.dobEditedAt) throw new StudentSelfEditError('Date of Birth has already been changed once. Contact the College Registry for further corrections.');
+            const age = moment().diff(moment.utc(ymd), 'years');
+            if (age < 10 || age > 100) throw new StudentSelfEditError('Date of Birth is out of range!');
+            data.dob = dob;
+            data.dobEditedAt = new Date();
+            changed.push('dob');
          }
       }
+
+      // Every student confirms a hall once, including a pre-filled/imported hall.
+      const hall = typeof body.instituteAffliate === 'string' ? body.instituteAffliate.trim() : '';
+      const currentHall = (st.instituteAffliate || '').trim();
+      if (!st.affiliateEditedAt) {
+         if (!hall) throw new StudentSelfEditError('Select and confirm your Hall of Affiliation before saving your profile.');
+         const halls = await tx.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } } });
+         const known = halls.map((row: any) => row.instituteAffliate?.trim()).find((value: string | undefined) => value?.toUpperCase() === hall.toUpperCase());
+         if (!known) throw new StudentSelfEditError('Choose a Hall of Affiliation from the list. Contact the College Registry if your hall is missing.');
+         data.instituteAffliate = known;
+         data.affiliateEditedAt = new Date();
+         changed.push('instituteAffliate');
+      } else if (body.instituteAffliate !== undefined && hall.toUpperCase() !== currentHall.toUpperCase()) {
+         throw new StudentSelfEditError('Your Hall of Affiliation has already been confirmed. Contact the College Registry for further corrections.');
+      }
+
+      const resp = await tx.student.update({ where: { id: studentId }, data });
+      await tx.log.create({
+         data: {
+            action: `STUDENT_PROFILE_SELF_UPDATED`, user: studentId, student: studentId, meta: {
+               fields: Object.keys(data),
+               ...changed.includes('dob') && ({ dob: { from: st.dob, to: data.dob } }),
+               ...changed.includes('instituteAffliate') && ({ instituteAffliate: { from: st.instituteAffliate, to: data.instituteAffliate } }),
+            }
+         }
+      });
+      return resp;
    });
-   return resp;
 }
 
 // Service letters: only the letter's own fields are saved. Letters are

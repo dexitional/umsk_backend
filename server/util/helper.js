@@ -10,6 +10,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.errorMessage = exports.friendlyDbError = exports.stripBlank = exports.toDate = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.getGradePoint = exports.gradePointFor = exports.gradeFor = exports.isIncomplete = exports.getGrade = void 0;
+const billing_1 = require("./billing");
 const redis_1 = require("../config/redis");
 const client_1 = require("../prisma/client");
 const auditLog_1 = require("./auditLog");
@@ -49,14 +50,7 @@ const getClass = (num, classes) => {
     return (vs && vs.class) || 'No Class';
 };
 exports.getClass = getClass;
-const getBillCodePrisma = (semesterNum) => {
-    if ([1, 2].includes(semesterNum))
-        return [{ mainGroupCode: { contains: '1000' } }, { mainGroupCode: { contains: '1001' } }, { mainGroupCode: { contains: '1010' } }, { mainGroupCode: { contains: '1100' } }, { mainGroupCode: { contains: '1101' } }, { mainGroupCode: { contains: '1110' } }, { mainGroupCode: { contains: '1111' } }];
-    if ([3, 4].includes(semesterNum))
-        return [{ mainGroupCode: { contains: '0100' } }, { mainGroupCode: { contains: '0101' } }, { mainGroupCode: { contains: '0110' } }, { mainGroupCode: { contains: '0111' } }, { mainGroupCode: { contains: '1111' } }, { mainGroupCode: { contains: '1110' } }, { mainGroupCode: { contains: '1100' } }];
-    if ([5, 6].includes(semesterNum))
-        return [{ mainGroupCode: { contains: '0010' } }, { mainGroupCode: { contains: '0011' } }, { mainGroupCode: { contains: '1010' } }, { mainGroupCode: { contains: '1011' } }, { mainGroupCode: { contains: '1111' } }, { mainGroupCode: { contains: '0110' } }, { mainGroupCode: { contains: '0111' } }];
-};
+const getBillCodePrisma = (semesterNum) => (0, billing_1.codesForSemester)(semesterNum).map(code => ({ mainGroupCode: { equals: code } }));
 exports.getBillCodePrisma = getBillCodePrisma;
 const getSemesterFromCode = (semester, code) => {
     const levels = code.split("");
