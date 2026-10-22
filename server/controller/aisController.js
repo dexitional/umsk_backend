@@ -23,6 +23,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const academic_1 = require("../util/academic");
 const curriculumScheme_1 = require("../util/curriculumScheme");
 const moment_1 = __importDefault(require("moment"));
 const client_1 = require("../prisma/client");
@@ -1379,7 +1380,6 @@ class AisController {
     }
     fetchStudentTranscript(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d;
             try {
                 const st = yield ais.student.findFirst({
                     where: {
@@ -1405,54 +1405,14 @@ class AisController {
                         //student: true,
                         //  student: { include: { program: true } },
                         //  student: { select: { indexno: true, fname: true, mname: true, lname: true, id: true, gender: true, entryDate: true, exitDate: true, program: { select: { longName: true, shortName: true, stype: true, category: true } } } },
-                        scheme: { select: { gradeMeta: true, classMeta: true } },
+                        scheme: { select: { gradeMeta: true, classMeta: true, passMark: true } },
                         session: { select: { title: true, year: true, semester: true } },
                         course: { select: { title: true } },
                     },
-                    orderBy: { session: { createdAt: 'asc' } }
+                    orderBy: [{ session: { createdAt: 'asc' } }, { sessionId: 'asc' }, { courseId: 'asc' }, { id: 'asc' }]
                 });
                 if (resp) {
-                    // Class Awards
-                    var mdata = new Map();
-                    for (const sv of resp) {
-                        const index = (_b = (_a = sv === null || sv === void 0 ? void 0 : sv.session) === null || _a === void 0 ? void 0 : _a.title) !== null && _b !== void 0 ? _b : 'none';
-                        const grades = (_c = sv.scheme) === null || _c === void 0 ? void 0 : _c.gradeMeta;
-                        const classes = (_d = sv.scheme) === null || _d === void 0 ? void 0 : _d.classMeta;
-                        const zd = Object.assign(Object.assign({}, sv), { student: st, grade: (0, helper_1.gradeFor)(sv, grades), gradepoint: (0, helper_1.gradePointFor)(sv, grades), classes });
-                        // Data By Courses
-                        if (mdata.has(index)) {
-                            mdata.set(index, [...mdata.get(index), Object.assign({}, zd)]);
-                        }
-                        else {
-                            mdata.set(index, [Object.assign({}, zd)]);
-                        }
-                    }
-                    // Single source of truth for GPA/CGPA — computed here once so
-                    // every page that renders a transcript (student self-service,
-                    // admin view, ...) shows the same numbers instead of each
-                    // re-deriving its own (which had drifted: one page filtered by
-                    // published status, the other didn't). Only rows that are
-                    // published (status===true) AND actually graded (totalScore not
-                    // null — excludes "I" Incompletes) count toward attempted
-                    // credit; an Incomplete contributes to neither the numerator nor
-                    // the denominator until it's resolved to a real score.
-                    let runningCredit = 0;
-                    let runningGradepoint = 0;
-                    const groups = Array.from(mdata).map(([title, rows]) => {
-                        // IC results (no exam score yet) count toward neither credit nor grade points.
-                        const gradedRows = rows.filter((r) => r.status === true && r.totalScore != null && !(0, helper_1.isIncomplete)(r));
-                        const semCredit = gradedRows.reduce((sum, cur) => sum + cur.credit, 0);
-                        const semGradepoint = gradedRows.reduce((sum, cur) => sum + cur.credit * cur.gradepoint, 0);
-                        runningCredit += semCredit;
-                        runningGradepoint += semGradepoint;
-                        const meta = {
-                            credit: semCredit,
-                            gradepoint: semGradepoint,
-                            gpa: semCredit ? +(semGradepoint / semCredit).toFixed(2) : null,
-                            cgpa: runningCredit ? +(runningGradepoint / runningCredit).toFixed(2) : null,
-                        };
-                        return [title, rows, meta];
-                    });
+                    const groups = (0, academic_1.transcriptGroups)(resp.map((row) => (Object.assign(Object.assign({}, row), { student: st }))));
                     return res.status(200).json(groups);
                 }
                 else {
@@ -2250,7 +2210,11 @@ class AisController {
     publishStudentTranscript(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                console.log(req.body.assessmentId);
+                const record = yield ais.assessment.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.body.assessmentId) }, include: { scheme: true } });
+                if (!record)
+                    return res.status(404).json({ message: 'Assessment not found.' });
+                if (!(0, academic_1.assessmentGrade)(record).validGrade)
+                    return res.status(422).json({ message: 'A valid final score and credit are required before publication.' });
                 // Prisma (not raw SQL) so the change is captured by the
                 // ais_assessment audit trail (prisma/auditAssessment.ts).
                 const { count: resp } = yield ais.assessment.updateMany({ where: { id: (0, paramStr_1.paramStr)(req.body.assessmentId), NOT: { totalScore: null } }, data: { status: true } });
@@ -6160,29 +6124,19 @@ class AisController {
                             // registered/attempted enough credit hours," not "how many
                             // are graded."
                             const as = yield tx.assessment.aggregate({ _sum: { credit: true }, where: { indexno: st.indexno } }); // Credit Total
-                            // Get CGPA for Student
-                            let ax = yield tx.assessment.findMany({ where: { indexno: st.indexno }, include: { scheme: true } });
-                            // Only graded courses count toward CGPA — an IC (null
-                            // totalScore) used to zero-fill into the average (silently
-                            // scoring it as a fail) and its credit still sat in the
-                            // denominator via as._sum.credit, dragging the CGPA down
-                            // before staff ever saw the "IC Identified" flag. Track a
-                            // separate gradedCredit total instead.
-                            let gradedCredit = 0;
-                            let az = ax.reduce((acc, r) => {
-                                var _a;
-                                // Check for IC
-                                if (r.totalScore === undefined || r.totalScore == null || (0, helper_1.isIncomplete)(r)) {
-                                    incompleteCount += 1;
-                                    return acc;
-                                }
-                                // Compute Gradepoint
-                                const grades = (_a = r.scheme) === null || _a === void 0 ? void 0 : _a.gradeMeta;
-                                const gv = (0, helper_1.getGradePoint)(r.totalScore, grades);
-                                gradedCredit += r.credit;
-                                return acc + (gv * r.credit);
-                            }, 0);
-                            const cgpa = (az / (gradedCredit || 1)).toFixed(2);
+                            const ax = yield tx.assessment.findMany({ where: { indexno: st.indexno }, include: { scheme: true } });
+                            const totals = (0, academic_1.academicTotals)(ax);
+                            incompleteCount = totals.incomplete;
+                            const cgpa = totals.cgpa == null ? null : totals.cgpa.toFixed(2);
+                            if (totals.invalid || totals.unpublished || totals.cgpa == null) {
+                                verified = false;
+                                if (totals.invalid)
+                                    verifiedRemark.push(`${totals.invalid} invalid grade(s)`);
+                                if (totals.unpublished)
+                                    verifiedRemark.push(`${totals.unpublished} unpublished result(s)`);
+                                if (totals.cgpa == null)
+                                    verifiedRemark.push('No published graded credits');
+                            }
                             const classes = (ax === null || ax === void 0 ? void 0 : ax.length) ? (_a = ax[0].scheme) === null || _a === void 0 ? void 0 : _a.classMeta : null;
                             const graduateClass = (0, helper_1.getClass)(cgpa, classes);
                             // #1. Check From Resit Table, whether Student doesnt have Pending and Untaken Resits

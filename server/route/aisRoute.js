@@ -96,7 +96,7 @@ class AisRoute {
         this.router.post('/students', [verifyToken], this.controller.postStudent);
         this.router.post('/students/upload', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadStudent);
         this.router.post('/students/upload-freshers', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadFresher);
-        this.router.post('/students/publish', [verifyToken], this.controller.publishStudentTranscript);
+        this.router.post('/students/publish', [verifyToken, requireRole(['sheet::admin'])], this.controller.publishStudentTranscript);
         this.router.patch('/students/:id', [verifyToken], this.controller.updateStudent);
         this.router.get('/halls', [verifyToken], this.controller.fetchHalls);
         this.router.delete('/students/:id', [verifyToken], this.controller.deleteStudent);

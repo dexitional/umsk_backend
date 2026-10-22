@@ -202,13 +202,21 @@ model student {
   completeType      completeType?
   graduateStatus    Boolean            @default(false)
   instituteEmail    String?            @db.VarChar(350)
+  // Legacy display value for the original affiliation; never changed by room transfers.
   instituteAffliate String?            @db.VarChar(350)
+  originalHallId String?
+  currentHallId String?
+  originalHallSource String? @db.VarChar(30)
+  originalHall residenceHall? @relation("originalHall", fields: [originalHallId], references: [id], onDelete: Restrict)
+  currentHall residenceHall? @relation("currentHall", fields: [currentHallId], references: [id], onDelete: Restrict)
+  roomAssignments residenceAssignment[]
+  hallAffiliationEvents hallAffiliationEvent[]
   flagPardon        Boolean            @default(false)
   accountNet        Float?             @default(0) @db.Float
   gsuiteSynced      Boolean            @default(false)
   gsuiteSyncedAt    DateTime?
   // Set when the student changes dob / instituteAffliate from the student
-  // portal -- each may be self-edited once; admins can still change both.
+  // portal. Original hall affiliation is immutable once recorded.
   dobEditedAt       DateTime?
   affiliateEditedAt DateTime?
   // Fresher admission offer: PENDING once "Activate Admission" runs on the
@@ -301,6 +309,7 @@ model session {
   courseEvaluations  courseEvaluation[]
 
   stsAssignments stsAssignment[]
+  roomAssignments residenceAssignment[]
 
   @@map("ais_session")
 }

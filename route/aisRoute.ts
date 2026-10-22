@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import AisController from '../controller/aisController';
 import stsRoute from './stsRoute';
+import residenceRoute from './residenceRoute';
 
 const { voteLimiter } = require("../middleware/rateLimitterFlexible");
 const { verifyToken } = require("../middleware/verifyToken");
@@ -63,6 +64,7 @@ class AisRoute {
 
     initializeRoute(){
       this.router.use('/sts', stsRoute);
+      this.router.use('/residence', residenceRoute);
       this.router.get('/dash', this.controller.loadDashboard);
       this.router.post('/report', [verifyToken, requireRole(REPORT_ROLES)], this.controller.loadReport);
       this.router.post('/report/statutory', [verifyToken, requireRole(REPORT_ROLES)], this.controller.exportStatutoryReport);
@@ -107,7 +109,7 @@ class AisRoute {
       this.router.post('/students', [verifyToken], this.controller.postStudent);
       this.router.post('/students/upload', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadStudent);
       this.router.post('/students/upload-freshers', [verifyToken, requireRole(STUDENT_UPLOAD_ROLES)], this.controller.uploadFresher);
-      this.router.post('/students/publish', [verifyToken], this.controller.publishStudentTranscript);
+      this.router.post('/students/publish', [verifyToken, requireRole(['sheet::admin'])], this.controller.publishStudentTranscript);
       this.router.patch('/students/:id', [verifyToken], this.controller.updateStudent);
       this.router.get('/halls', [verifyToken], this.controller.fetchHalls);
       this.router.delete('/students/:id', [verifyToken], this.controller.deleteStudent);

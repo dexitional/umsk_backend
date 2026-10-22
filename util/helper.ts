@@ -1,3 +1,4 @@
+import { gradeBand } from "./academic";
 import { codesForSemester } from "./billing";
 import { NextFunction, Request, Response } from 'express'
 import { redisClient } from "../config/redis"; 
@@ -5,28 +6,16 @@ import { prisma } from "../prisma/client";
 import { requestInfo, writeLog } from "./auditLog";
 const CACHE_TTL = 3600; // 1 hour
 
-export const getGrade = (num: any,grades: any) => {
-    if(num == null) return 'I'
-    num = parseFloat(num)
-    const vs = grades && grades.find((row: any) => parseFloat(row.min) <= parseFloat(num) && parseFloat(num) <= parseFloat(row.max))
-    console.log(num,vs)
-    return (vs && vs.grade) || 'I';
-}
+export const getGrade = (num: any, grades: any) =>
+    num == null ? 'I' : gradeBand(num, grades)?.grade ?? 'Invalid';
 
-// IC (Incomplete): the course's exam score hasn't been entered. A result
-// entered as a total only (no class or exam score -- e.g. a backlog upload)
-// is complete, not IC. IC results show grade "IC" and carry no grade points
-// or GPA/CGPA credits until the exam score is in.
-export const isIncomplete = (r: any) => r?.examScore == null && !(r?.classScore == null && r?.totalScore != null);
-export const gradeFor = (r: any, grades: any) => (isIncomplete(r) ? 'IC' : getGrade(r?.totalScore, grades));
-export const gradePointFor = (r: any, grades: any) => (isIncomplete(r) ? 0 : getGradePoint(r?.totalScore, grades));
+export const getGradePoint = (num: any, grades: any) =>
+    gradeBand(num, grades)?.gradepoint ?? 0;
 
-export const getGradePoint = (num: any,grades: any) => {
-    if(num == null) return 0
-    num = parseFloat(num)
-    const vs = grades && grades.find((row: any) => parseFloat(row.min) <= parseFloat(num) && parseFloat(num) <= parseFloat(row.max))
-    return (vs && vs.gradepoint) || 0;
-}
+// Final totalScore is authoritative, including imported total-only results.
+export const isIncomplete = (row: any) => row?.totalScore == null;
+export const gradeFor = (row: any, grades: any) => getGrade(row?.totalScore, grades);
+export const gradePointFor = (row: any, grades: any) => getGradePoint(row?.totalScore, grades);
 
 export const getClass = (num: any,classes: any) => {
     if(num == null || classes == null ) return 'No Class'

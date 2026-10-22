@@ -37,6 +37,7 @@ function fixture(config = {}) {
     assignments: [], events: [], ...config };
   const matches = (row, where = {}) => Object.entries(where).every(([key, value]) => {
     if (key === 'mentor') return matches(state.mentors.find(m => m.id === row.mentorId) || {}, value);
+    if (value && typeof value === 'object' && 'in' in value) return value.in.includes(row[key]);
     if (key === 'OR') return value.some(w => matches(row, w));
     if (value && typeof value === 'object' && 'contains' in value) return String(row[key] || '').includes(value.contains);
     return row[key] === value;
@@ -45,7 +46,7 @@ function fixture(config = {}) {
   const tx = {
     $queryRaw: async () => [],
     student: { findUnique: async ({ where }) => state.students.find(s => matches(s, where)), findMany: async ({ where }) => state.students.filter(s => matches(s, where)) },
-    session: { findUnique: async ({ where }) => state.sessions.find(s => matches(s, where)) },
+    session: { findFirst: async ({ where }) => { if (config.failSession) throw new Error('Database unavailable'); return state.sessions.find(s => matches(s, where)) || null; }, findUnique: async ({ where }) => state.sessions.find(s => matches(s, where)) },
     stsSchool: { findUnique: async ({ where }) => state.schools.find(s => matches(s, where)), delete: async ({ where }) => {
       if (state.mentors.some(m => m.schoolId === where.id) || state.assignments.some(a => a.schoolId === where.id)) throw { code: 'P2003' };
       return state.schools.find(s => matches(s, where));
@@ -59,7 +60,7 @@ function fixture(config = {}) {
         if (state.assignments.some(a => a.studentId === data.studentId && a.sessionId === data.sessionId)) throw { code: 'P2002' };
         const row = { id: 'a' + state.assignments.length, status: 'ACTIVE', version: 1, ...data }; state.assignments.push(row); return { ...row };
       },
-      findFirst: async ({ where, include }) => { const row = state.assignments.find(a => matches(a, where)); return row && include?.events ? { ...row, events: state.events.filter(e => e.assignmentId === row.id) } : row && { ...row }; },
+      findFirst: async ({ where, include }) => { const row = state.assignments.find(a => matches(a, where)); return row && include?.events ? { ...row, events: state.events.filter(e => e.assignmentId === row.id) } : row ? (include ? detail(row) : { ...row }) : null; },
       findUniqueOrThrow: async ({ where }) => ({ ...state.assignments.find(a => matches(a, where)) }),
       updateMany: async ({ where, data }) => { const row = state.assignments.find(a => matches(a, where)); if (!row || config.conflict) return { count: 0 }; const version = row.version + 1; Object.assign(row, data, { version }); return { count: 1 }; },
       findMany: async ({ where, skip = 0, take = Infinity }) => state.assignments.filter(a => matches(a, where)).slice(skip, skip + take).map(detail),
@@ -192,7 +193,7 @@ test('route middleware rejects student management and mentor school/assignment w
   const fakeRouter = { use: (...handlers) => routes.push({ path: '*', handlers }) };
   for (const method of ['get', 'post', 'patch', 'delete']) fakeRouter[method] = (path, ...handlers) => routes.push({ path, method, handlers });
   const Controller = function () {};
-  for (const name of ['mine','options','candidates','saveSchool','deleteSchool','saveMentor','deleteMentor','assignments','history','createAssignment','updateAssignment','report']) Controller.prototype[name] = (req, res) => res.json({ reached: true });
+  for (const name of ['mine','current','options','candidates','saveSchool','deleteSchool','saveMentor','deleteMentor','assignments','history','createAssignment','updateAssignment','report']) Controller.prototype[name] = (req, res) => res.json({ reached: true });
   load(path.join(root, 'route/stsRoute.ts'), { express: { Router: () => fakeRouter }, '../controller/stsController': Controller,
     '../util/sts': rules, '../middleware/verifyToken': { verifyToken: (req,res,next) => next() },
     '../middleware/requireRole': load(path.join(root, 'middleware/requireRole.ts')) });
@@ -222,4 +223,42 @@ test('frontend service surfaces request failures as Error instances', async () =
   const requests = load(path.join(front, 'src/utils/requestError.ts'));
   const service = load(path.join(front, 'src/utils/stsService.ts'), { './axios': { request: async () => { throw { response: { data: { message: 'Mentor does not belong to school.' } } }; } }, './requestError': requests }).stsService;
   await assert.rejects(service.save('assignments', placement), /Mentor does not belong to school/);
+});
+
+
+test('current placement is scoped to the logged-in student and active semester', async () => {
+  const f = fixture(); await f.call('createAssignment', placement);
+  const identity = { userId: 'st1', groupId: 1 };
+  const current = await f.call('current', {}, {}, identity);
+  assert.equal(current.body.session.id, 'sem1');
+  assert.equal(current.body.placement.schoolName, 'School One');
+  assert.equal(current.body.placement.mentor.name, 'Mentor One');
+  assert.equal((await f.call('current', {}, { query: { studentId: 'st1' } }, { userId: 'st2', groupId: 1 })).body.placement, null);
+  f.state().assignments[0].status = 'COMPLETED';
+  assert.equal((await f.call('current', {}, {}, identity)).body.placement.status, 'COMPLETED');
+  f.state().assignments[0].status = 'CANCELLED';
+  assert.equal((await f.call('current', {}, {}, identity)).body.placement, null);
+  f.state().assignments[0].status = 'ACTIVE';
+  f.state().sessions[0].default = false;
+  f.state().sessions.push({ id: 'sem2', default: true, status: true });
+  assert.equal((await f.call('current', {}, {}, identity)).body.placement, null);
+});
+test('current placement distinguishes no semester, forbidden access and database failure', async () => {
+  const identity = { userId: 'st1', groupId: 1 };
+  const f = fixture({ sessions: [] });
+  const result = await f.call('current', {}, {}, identity);
+  assert.equal(result.body.session, null); assert.equal(result.body.placement, null);
+  assert.equal((await f.call('current')).code, 403);
+  assert.equal((await fixture({ failSession: true }).call('current', {}, {}, identity)).code, 500);
+});
+test('dashboard STS card distinguishes assigned, unassigned and failed responses', () => {
+  const Card = load(path.join(front, 'src/components/aisp/AISPSTSCard.tsx'), {
+    'react-router-dom': { Link: ({children}) => React.createElement('a', null, children), useRevalidator: () => ({ state: 'idle', revalidate() {} }) },
+  }).default;
+  const render = data => renderToStaticMarkup(React.createElement(Card, { data }));
+  assert.match(render(null), /could not be loaded/);
+  assert.match(render({ session: null, placement: null }), /No active academic semester/);
+  assert.match(render({ session: { title: 'Current' }, placement: null }), /No STS school has been assigned/);
+  const html = render({ session: { title: 'Current' }, placement: { schoolName: 'Assigned School', mentorName: 'Assigned Mentor', status: 'ACTIVE' } });
+  assert.match(html, /Assigned School/); assert.match(html, /Assigned Mentor/); assert.match(html, /Current/);
 });

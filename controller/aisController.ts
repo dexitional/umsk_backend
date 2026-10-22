@@ -1,3 +1,5 @@
+import { ResidenceError, initialAffiliation, recordAdmissionHall, lockStudent, genderOf, academicYear, transactionOptions } from "../util/residence";
+import { academicTotals, assessmentGrade, transcriptGroups } from "../util/academic";
 import { CurriculumSchemeError, curriculumRows, selectCurriculum, registrationCourses, curriculumClassMeta, curriculumSchemeId } from "../util/curriculumScheme";
 import { Request, Response } from "express";
 import moment from "moment";
@@ -292,19 +294,21 @@ async function updateOwnStudentProfile(studentId: string, body: any) {
          }
       }
 
-      // Every student confirms a hall once, including a pre-filled/imported hall.
-      const hall = typeof body.instituteAffliate === 'string' ? body.instituteAffliate.trim() : '';
-      const currentHall = (st.instituteAffliate || '').trim();
-      if (!st.affiliateEditedAt) {
-         if (!hall) throw new StudentSelfEditError('Select and confirm your Hall of Affiliation before saving your profile.');
-         const halls = await tx.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } } });
-         const known = halls.map((row: any) => row.instituteAffliate?.trim()).find((value: string | undefined) => value?.toUpperCase() === hall.toUpperCase());
-         if (!known) throw new StudentSelfEditError('Choose a Hall of Affiliation from the list. Contact the College Registry if your hall is missing.');
-         data.instituteAffliate = known;
+      // Existing affiliation is confirmed, never replaced through a profile save.
+      const hallName = typeof body.instituteAffliate === 'string' ? body.instituteAffliate.trim() : '';
+      if (!st.affiliateEditedAt && (st.originalHallId || st.semesterNum === 1)) {
+         if (!hallName) throw new StudentSelfEditError('Confirm your original Hall of Affiliation before saving your profile.');
+         if (st.originalHallId) {
+            const original = await tx.residenceHall.findUnique({ where: { id: st.originalHallId } });
+            if (![st.instituteAffliate, original?.name].some(n => n?.trim().toUpperCase() === hallName.toUpperCase())) throw new StudentSelfEditError('Your original hall is already recorded. Room transfers are managed in the Hall Module.');
+         } else {
+            const hall = await tx.residenceHall.findUnique({ where: { name: hallName } });
+            await initialAffiliation(tx, st, hall, studentId, 'SELF', 'Fresher profile confirmation');
+            changed.push('instituteAffliate');
+         }
          data.affiliateEditedAt = new Date();
-         changed.push('instituteAffliate');
-      } else if (body.instituteAffliate !== undefined && hall.toUpperCase() !== currentHall.toUpperCase()) {
-         throw new StudentSelfEditError('Your Hall of Affiliation has already been confirmed. Contact the College Registry for further corrections.');
+      } else if (body.instituteAffliate !== undefined && hallName.toUpperCase() !== (st.instituteAffliate || '').trim().toUpperCase()) {
+         throw new StudentSelfEditError('Your original hall cannot be changed here. Contact the College Registry.');
       }
 
       const resp = await tx.student.update({ where: { id: studentId }, data });
@@ -499,7 +503,7 @@ async function createStudentBatch(allStudents: any[], createdBy: string, action:
                      ...majorId && ({ major: { connect: { id: majorId } } }),
                   },
                });
-               created.push(row);
+               created.push(await recordAdmissionHall(tx, row, createdBy));
             } catch (rowError: any) {
                rowError.studentId = s.id;
                throw rowError;
@@ -1301,6 +1305,7 @@ export default class AisController {
                id: paramStr(req.params.id)
             },
             include: {
+               originalHall: true, currentHall: true,
                title: { select: { label: true } },
                country: { select: { longName: true, nationality: true } },
                region: { select: { title: true } },
@@ -1359,57 +1364,15 @@ export default class AisController {
                //  student: { include: { program: true } },
                //  student: { select: { indexno: true, fname: true, mname: true, lname: true, id: true, gender: true, entryDate: true, exitDate: true, program: { select: { longName: true, shortName: true, stype: true, category: true } } } },
 
-               scheme: { select: { gradeMeta: true, classMeta: true } },
+               scheme: { select: { gradeMeta: true, classMeta: true, passMark: true } },
                session: { select: { title: true, year: true, semester: true } },
                course: { select: { title: true } },
             },
-            orderBy: { session: { createdAt: 'asc' } }
+            orderBy: [{ session: { createdAt: 'asc' } }, { sessionId: 'asc' }, { courseId: 'asc' }, { id: 'asc' }]
          });
 
          if (resp) {
-            // Class Awards
-            var mdata: any = new Map();
-            for (const sv of resp) {
-               const index: string = sv?.session?.title ?? 'none';
-               const grades: any = sv.scheme?.gradeMeta;
-               const classes: any = sv.scheme?.classMeta;
-               const zd = { ...sv, student: st, grade: gradeFor(sv, grades), gradepoint: gradePointFor(sv, grades), classes }
-               // Data By Courses
-               if (mdata.has(index)) {
-                  mdata.set(index, [...mdata.get(index), { ...zd }])
-               } else {
-                  mdata.set(index, [{ ...zd }])
-               }
-            }
-
-            // Single source of truth for GPA/CGPA — computed here once so
-            // every page that renders a transcript (student self-service,
-            // admin view, ...) shows the same numbers instead of each
-            // re-deriving its own (which had drifted: one page filtered by
-            // published status, the other didn't). Only rows that are
-            // published (status===true) AND actually graded (totalScore not
-            // null — excludes "I" Incompletes) count toward attempted
-            // credit; an Incomplete contributes to neither the numerator nor
-            // the denominator until it's resolved to a real score.
-            let runningCredit = 0;
-            let runningGradepoint = 0;
-            const groups = Array.from(mdata).map(([title, rows]: any) => {
-               // IC results (no exam score yet) count toward neither credit nor grade points.
-               const gradedRows = rows.filter((r: any) => r.status === true && r.totalScore != null && !isIncomplete(r));
-               const semCredit = gradedRows.reduce((sum: number, cur: any) => sum + cur.credit, 0);
-               const semGradepoint = gradedRows.reduce((sum: number, cur: any) => sum + cur.credit * cur.gradepoint, 0);
-
-               runningCredit += semCredit;
-               runningGradepoint += semGradepoint;
-
-               const meta = {
-                  credit: semCredit,
-                  gradepoint: semGradepoint,
-                  gpa: semCredit ? +(semGradepoint / semCredit).toFixed(2) : null,
-                  cgpa: runningCredit ? +(runningGradepoint / runningCredit).toFixed(2) : null,
-               };
-               return [title, rows, meta];
-            });
+            const groups = transcriptGroups(resp.map((row: any) => ({ ...row, student: st })));
 
             return res.status(200).json(groups)
          } else {
@@ -1861,7 +1824,9 @@ export default class AisController {
          req.body.dob = toDate(req.body.dob);
          normaliseAdmissionFields(req.body);
 
-         const resp = await ais.student.create({
+         for (const key of ['originalHallId', 'currentHallId', 'originalHall', 'currentHall', 'originalHallSource', 'roomAssignments', 'hallAffiliationEvents', 'affiliateEditedAt']) delete req.body[key];
+         const resp = await ais.$transaction(async (tx: any) => {
+         const created = await tx.student.create({
             data: {
                ...req.body,
                ...programId && ({ program: { connect: { id: programId } } }),
@@ -1876,6 +1841,8 @@ export default class AisController {
                ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
             }
          })
+         return recordAdmissionHall(tx, created, req.userId);
+         });
          if (resp) {
             // Log Login Response
             await ais.log.create({
@@ -1900,7 +1867,7 @@ export default class AisController {
 
       } catch (error: any) {
          console.log(error)
-         return res.status(500).json({ message: error.message })
+         return res.status(error instanceof ResidenceError ? error.status : 500).json({ message: error.message })
       }
    }
 
@@ -2114,6 +2081,13 @@ export default class AisController {
             const resp = await updateOwnStudentProfile(req.userId, req.body);
             return res.status(200).json(resp);
          }
+         const protectedHallFields = ['originalHallId', 'currentHallId', 'originalHall', 'currentHall', 'originalHallSource', 'roomAssignments', 'hallAffiliationEvents', 'affiliateEditedAt'];
+         if (protectedHallFields.some(key => req.body[key] !== undefined)) return res.status(400).json({ message: 'Manage hall affiliation and room placements in the Hall Module.' });
+         if (req.body.instituteAffliate !== undefined) {
+            const existing = await ais.student.findUnique({ where: { id: paramStr(req.params.id) }, select: { instituteAffliate: true } });
+            if ((req.body.instituteAffliate || '').trim() !== (existing?.instituteAffliate || '').trim()) return res.status(400).json({ message: 'Original hall affiliation is preserved. Use the Hall Module to record affiliation or reassign a room.' });
+            delete req.body.instituteAffliate;
+         }
          const { titleId, programId, countryId, regionId, religionId, disabilityId, majorId, instituteEmail, indexno } = req.body
          delete req.body.titleId; delete req.body.programId;
          delete req.body.countryId; delete req.body.regionId;
@@ -2126,7 +2100,16 @@ export default class AisController {
          req.body.entryDate = toDate(req.body.entryDate);
          req.body.dob = toDate(req.body.dob);
          normaliseAdmissionFields(req.body);
-         const resp = await ais.student.update({
+         const resp = await ais.$transaction(async (tx: any) => {
+         await lockStudent(tx, paramStr(req.params.id));
+         if (req.body.gender !== undefined) {
+            const session = await tx.session.findFirst({ where: { default: true, status: true }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }] });
+            if (session) {
+               const placement = await tx.residenceAssignment.findFirst({ where: { studentId: paramStr(req.params.id), academicYear: academicYear(session), status: 'ACTIVE' } });
+               if (placement && genderOf(req.body.gender) !== placement.gender) throw new ResidenceError('Release the current room in the Hall Module before changing the student gender.');
+            }
+         }
+         return tx.student.update({
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
@@ -2141,6 +2124,7 @@ export default class AisController {
                ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
             }
          })
+         }, transactionOptions);
          if (resp) {
             // Update Email as tag in sso_user
             if (instituteEmail) await ais.user.updateMany({ where: { tag: paramStr(req.params.id) }, data: { username: instituteEmail } });
@@ -2167,7 +2151,7 @@ export default class AisController {
          }
       } catch (error: any) {
          console.log(error)
-         return res.status(error instanceof StudentSelfEditError ? 400 : 500).json({ message: error.message })
+         return res.status(error instanceof StudentSelfEditError ? 400 : error instanceof ResidenceError ? error.status : 500).json({ message: error.message })
       }
    }
 
@@ -2175,8 +2159,8 @@ export default class AisController {
    // one-time Hall of Affiliation edit (see updateOwnStudentProfile).
    async fetchHalls(req: Request, res: Response) {
       try {
-         const rows = await ais.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } }, orderBy: { instituteAffliate: 'asc' } });
-         res.status(200).json(rows.map((r: any) => r.instituteAffliate?.trim()).filter(Boolean))
+         const rows = await ais.residenceHall.findMany({ where: { active: true }, select: { name: true }, orderBy: { name: 'asc' } });
+         res.status(200).json(rows.map((r: any) => r.name))
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
@@ -2203,7 +2187,10 @@ export default class AisController {
    }
 
    async publishStudentTranscript(req: Request & any, res: Response) {
-      try {console.log(req.body.assessmentId)
+      try {
+         const record = await ais.assessment.findUnique({ where: { id: paramStr(req.body.assessmentId) }, include: { scheme: true } });
+         if (!record) return res.status(404).json({ message: 'Assessment not found.' });
+         if (!assessmentGrade(record).validGrade) return res.status(422).json({ message: 'A valid final score and credit are required before publication.' });
          // Prisma (not raw SQL) so the change is captured by the
          // ais_assessment audit trail (prisma/auditAssessment.ts).
          const { count: resp } = await ais.assessment.updateMany({ where: { id: paramStr(req.body.assessmentId), NOT: { totalScore: null } }, data: { status: true } });
@@ -6158,26 +6145,16 @@ export default class AisController {
                   // registered/attempted enough credit hours," not "how many
                   // are graded."
                   const as = await tx.assessment.aggregate({ _sum: { credit: true }, where: { indexno: st.indexno } }); // Credit Total
-                  // Get CGPA for Student
-                  let ax = await tx.assessment.findMany({ where: { indexno: st.indexno }, include: { scheme: true } });
-                  // Only graded courses count toward CGPA — an IC (null
-                  // totalScore) used to zero-fill into the average (silently
-                  // scoring it as a fail) and its credit still sat in the
-                  // denominator via as._sum.credit, dragging the CGPA down
-                  // before staff ever saw the "IC Identified" flag. Track a
-                  // separate gradedCredit total instead.
-                  let gradedCredit = 0;
-                  let az = ax.reduce((acc: any, r: any) => {
-                     // Check for IC
-                     if (r.totalScore === undefined || r.totalScore == null || isIncomplete(r)) { incompleteCount += 1; return acc; }
-                     // Compute Gradepoint
-                     const grades: any = r.scheme?.gradeMeta;
-                     const gv = getGradePoint(r.totalScore, grades);
-                     gradedCredit += r.credit;
-                     return acc + (gv * r.credit);
-                  }, 0);
-
-                  const cgpa = (az / (gradedCredit || 1)).toFixed(2);
+                  const ax = await tx.assessment.findMany({ where: { indexno: st.indexno }, include: { scheme: true } });
+                  const totals = academicTotals(ax);
+                  incompleteCount = totals.incomplete;
+                  const cgpa = totals.cgpa == null ? null : totals.cgpa.toFixed(2);
+                  if (totals.invalid || totals.unpublished || totals.cgpa == null) {
+                     verified = false;
+                     if (totals.invalid) verifiedRemark.push(`${totals.invalid} invalid grade(s)`);
+                     if (totals.unpublished) verifiedRemark.push(`${totals.unpublished} unpublished result(s)`);
+                     if (totals.cgpa == null) verifiedRemark.push('No published graded credits');
+                  }
                   const classes: any = ax?.length ? ax[0].scheme?.classMeta : null;
                   const graduateClass = getClass(cgpa, classes);
 

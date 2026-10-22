@@ -35,7 +35,7 @@ function fixture(rows = [mount('C1', 'scheme-A'), mount('C2', 'scheme-B')]) {
     activityRegister: { findFirst: async () => null, createMany: async ({ data }) => { writes.push({ log: data }); } },
     resit: { findMany: async () => [{ courseId: 'R1', schemeId: 'original-resit', course: { title: 'Resit', creditHour: 2 } }] },
   };
-  const mocks = { '../prisma/client': { prisma: db }, '../util/curriculumScheme': rules, '../util/paramStr': { paramStr: x => String(x) },
+  const mocks = { '../prisma/client': { prisma: db }, '../util/residence': require('../util/residence.ts'), '../util/academic': require('../util/academic.ts'), '../util/curriculumScheme': rules, '../util/paramStr': { paramStr: x => String(x) },
     '../util/helper': {}, '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {}, '../util/sheetScope': {},
     '../util/resitScope': {}, '../drizzle/schema': {}, '../util/password': {}, '../config/gsuite': {}, '../config/sms': {},
     nanoid: { customAlphabet: () => () => 'test' }, exceljs: {} };

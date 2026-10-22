@@ -53,6 +53,8 @@ function fixture(initialBill = bill(), students = [], entries = [], failInsert =
       },
       update: async ({ data }) => Object.assign(state.bill, data),
     },
+    residenceHall: { findUnique: async ({ where }) => where.name === 'Alpha' || where.id === 'h1' ? { id: 'h1', name: 'Alpha', active: true } : null },
+    hallAffiliationEvent: { create: async () => ({}) },
     student: {
       findMany: async ({ where }) => state.students.filter(s => matches(s, where)),
       findUnique: async ({ where }) => state.students.find(s => s.id === where.id),
@@ -165,7 +167,7 @@ test('revocation removes charges and restores balances, including bills without 
 
 test('students must confirm their hall even when keeping the imported value, and cannot change it again', async () => {
   const app = fixture(bill(), [student('s1', 1, { instituteAffliate: 'Alpha', affiliateEditedAt: null })]);
-  const mocks = { ...app.mocks, '../util/curriculumScheme': require('../util/curriculumScheme.ts'), '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {},
+  const mocks = { ...app.mocks, '../util/residence': require('../util/residence.ts'), '../util/academic': require('../util/academic.ts'), '../util/curriculumScheme': require('../util/curriculumScheme.ts'), '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {},
     '../util/sheetScope': {}, '../util/resitScope': {}, '../drizzle/schema': {}, '../util/password': {}, '../config/gsuite': {},
     nanoid: { customAlphabet: () => () => 'fixture' }, exceljs: {} };
   const controller = new (load('controller/aisController.ts', mocks).default)();
@@ -211,7 +213,7 @@ test('student ID card back uses College and the supplied telephone number', () =
 
 test('hall prompt persists until confirmation and then stops', () => {
   const { needsHallConfirmation, hallConfirmationPath } = load('src/utils/studentHall.ts', {}, true);
-  assert.equal(needsHallConfirmation({ id: 's1', instituteAffliate: 'Alpha' }), true);
+  assert.equal(needsHallConfirmation({ id: 's1', instituteAffliate: 'Alpha', originalHallId: 'h1' }), true);
   assert.equal(needsHallConfirmation({ id: 's1', affiliateEditedAt: '2026-10-21' }), false);
   assert.equal(hallConfirmationPath({ id: 's1' }), '/aisp/profile/s1/edit');
 });
@@ -243,4 +245,18 @@ test('a published bill cannot be edited into a different target group', async ()
   const res = response();
   await app.controller.updateBill({ params: { id: 'b1' }, body: bill({ mainGroupCode: '1111' }) }, res);
   assert.equal(res.code, 409); assert.equal(app.state().bill.mainGroupCode, '1011');
+});
+
+test('a previously recorded original hall cannot be replaced during the first profile confirmation', async () => {
+  const app = fixture(bill(), [student('s1', 1, { instituteAffliate: 'Alpha', originalHallId: 'h1', currentHallId: 'h1', affiliateEditedAt: null })]);
+  const mocks = { ...app.mocks, '../util/residence': require('../util/residence.ts'), '../util/academic': require('../util/academic.ts'), '../util/curriculumScheme': require('../util/curriculumScheme.ts'), '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {},
+    '../util/sheetScope': {}, '../util/resitScope': {}, '../drizzle/schema': {}, '../util/password': {}, '../config/gsuite': {}, nanoid: { customAlphabet: () => () => 'fixture' }, exceljs: {} };
+  const c = new (load('controller/aisController.ts', mocks).default)();
+  const bad = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 1, userId: 's1', body: { instituteAffliate: 'Beta', currentHallId: 'forged' } }, bad);
+  assert.equal(bad.code, 400); assert.equal(app.state().students[0].instituteAffliate, 'Alpha'); assert.equal(app.state().students[0].affiliateEditedAt, null);
+  const ok = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 1, userId: 's1', body: { instituteAffliate: 'Alpha', currentHallId: 'forged' } }, ok);
+  assert.equal(ok.code, 200); assert.equal(app.state().students[0].currentHallId, 'h1');
+  for (const body of [{ originalHallId: 'forged' }, { currentHall: { connect: { id: 'forged' } } }, { roomAssignments: { deleteMany: {} } }]) {
+    const forbidden = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 2, userId: 'staff', body }, forbidden); assert.equal(forbidden.code, 400);
+  }
 });

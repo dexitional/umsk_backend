@@ -243,6 +243,17 @@ class StsController {
             res.setHeader('Content-Disposition', 'attachment; filename="STS-placements.csv"');
             return res.send('\uFEFF' + [headings, ...lines].map(row => row.map(sts_1.csvCell).join(',')).join('\r\n'));
         }));
+        this.current = handler((req, res) => __awaiter(this, void 0, void 0, function* () {
+            if (Number(req.groupId) !== 1)
+                throw new sts_1.STSError('This page is for student accounts.', 403);
+            const session = yield client_1.prisma.session.findFirst({ where: { default: true, status: true },
+                select: { id: true, title: true, semester: true }, orderBy: { createdAt: 'desc' } });
+            if (!session)
+                return res.json({ session: null, placement: null });
+            const placement = yield client_1.prisma.stsAssignment.findFirst({ where: { studentId: req.userId, sessionId: session.id,
+                    status: { in: ['ACTIVE', 'COMPLETED'] } }, include });
+            return res.json({ session, placement });
+        }));
         this.mine = handler((req, res) => __awaiter(this, void 0, void 0, function* () {
             if (Number(req.groupId) !== 1)
                 throw new sts_1.STSError('This page is for student accounts.', 403);

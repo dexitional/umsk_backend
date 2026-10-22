@@ -1,0 +1,83 @@
+// Hall membership and academic-year room placements.
+model residenceHall {
+  id String @id @default(uuid())
+  code String @unique @db.VarChar(50)
+  name String @unique @db.VarChar(350)
+  active Boolean @default(true)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  rooms residenceRoom[]
+  originalStudents student[] @relation("originalHall")
+  currentStudents student[] @relation("currentHall")
+  assignments residenceAssignment[]
+  @@map("ais_hall")
+}
+model residenceRoom {
+  id String @id @default(uuid())
+  hallId String
+  code String @db.VarChar(50)
+  gender String @db.VarChar(1)
+  capacity Int
+  active Boolean @default(true)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  hall residenceHall @relation(fields: [hallId], references: [id], onDelete: Restrict)
+  assignments residenceAssignment[]
+  @@unique([hallId, code])
+  @@map("ais_hall_room")
+}
+model residenceAssignment {
+  id String @id @default(uuid())
+  studentId String
+  sessionId String
+  academicYear String @db.VarChar(50)
+  hallId String
+  roomId String
+  semesterNum Int
+  studentName String @db.VarChar(950)
+  indexno String? @db.VarChar(50)
+  originalHallName String @db.VarChar(350)
+  hallName String @db.VarChar(350)
+  roomCode String @db.VarChar(50)
+  gender String @db.VarChar(1)
+  status String @default("ACTIVE") @db.VarChar(20)
+  version Int @default(1)
+  createdBy String @db.VarChar(50)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  student student @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  session session @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  hall residenceHall @relation(fields: [hallId], references: [id], onDelete: Restrict)
+  room residenceRoom @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  events residenceAssignmentEvent[]
+  @@unique([studentId, academicYear])
+  @@index([roomId, academicYear, status])
+  @@index([academicYear, hallId])
+  @@map("ais_hall_assignment")
+}
+model residenceAssignmentEvent {
+  id String @id @default(uuid())
+  assignmentId String
+  action String @db.VarChar(30)
+  actor String @db.VarChar(50)
+  reason String? @db.VarChar(1000)
+  snapshot Json
+  createdAt DateTime @default(now())
+  assignment residenceAssignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  @@index([assignmentId, createdAt])
+  @@map("ais_hall_assignment_event")
+}
+model hallAffiliationEvent {
+  id String @id @default(uuid())
+  studentId String
+  action String @db.VarChar(30)
+  actor String @db.VarChar(50)
+  reason String? @db.VarChar(1000)
+  snapshot Json
+  createdAt DateTime @default(now())
+  student student @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  @@index([studentId, createdAt])
+  @@map("ais_hall_affiliation_event")
+}

@@ -8,6 +8,7 @@ const controller = new StsController();
 router.use(verifyToken);
 router.use((req: any, res, next) => typeof req.userId === 'string' && req.userId.trim() ? next() : res.status(401).json({ message: 'Please sign in again.' }));
 router.get('/mine', controller.mine);
+router.get('/mine/current', controller.current);
 router.use((req: any, res, next) => Number(req.groupId) === 2 ? next() : res.status(403).json({ message: 'STS management requires a staff account.' }));
 router.use(requireRole([...STS_ADMIN_ROLES, 'sts::mentor']));
 const admin = (req: any, res: any, next: any) => stsAdmin(req) ? next() : res.status(403).json({ message: 'Only an STS coordinator can manage schools and placements.' });

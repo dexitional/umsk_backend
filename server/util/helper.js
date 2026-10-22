@@ -9,39 +9,24 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.errorMessage = exports.friendlyDbError = exports.stripBlank = exports.toDate = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.getGradePoint = exports.gradePointFor = exports.gradeFor = exports.isIncomplete = exports.getGrade = void 0;
+exports.errorMessage = exports.friendlyDbError = exports.stripBlank = exports.toDate = exports.clearCache = exports.getOrSetCache = exports.apiLogger = exports.rotateImage = exports.decodeBase64Image = exports.getSemesterFromCode = exports.getBillCodePrisma = exports.getClass = exports.gradePointFor = exports.gradeFor = exports.isIncomplete = exports.getGradePoint = exports.getGrade = void 0;
+const academic_1 = require("./academic");
 const billing_1 = require("./billing");
 const redis_1 = require("../config/redis");
 const client_1 = require("../prisma/client");
 const auditLog_1 = require("./auditLog");
 const CACHE_TTL = 3600; // 1 hour
-const getGrade = (num, grades) => {
-    if (num == null)
-        return 'I';
-    num = parseFloat(num);
-    const vs = grades && grades.find((row) => parseFloat(row.min) <= parseFloat(num) && parseFloat(num) <= parseFloat(row.max));
-    console.log(num, vs);
-    return (vs && vs.grade) || 'I';
-};
+const getGrade = (num, grades) => { var _a, _b; return num == null ? 'I' : (_b = (_a = (0, academic_1.gradeBand)(num, grades)) === null || _a === void 0 ? void 0 : _a.grade) !== null && _b !== void 0 ? _b : 'Invalid'; };
 exports.getGrade = getGrade;
-// IC (Incomplete): the course's exam score hasn't been entered. A result
-// entered as a total only (no class or exam score -- e.g. a backlog upload)
-// is complete, not IC. IC results show grade "IC" and carry no grade points
-// or GPA/CGPA credits until the exam score is in.
-const isIncomplete = (r) => (r === null || r === void 0 ? void 0 : r.examScore) == null && !((r === null || r === void 0 ? void 0 : r.classScore) == null && (r === null || r === void 0 ? void 0 : r.totalScore) != null);
-exports.isIncomplete = isIncomplete;
-const gradeFor = (r, grades) => ((0, exports.isIncomplete)(r) ? 'IC' : (0, exports.getGrade)(r === null || r === void 0 ? void 0 : r.totalScore, grades));
-exports.gradeFor = gradeFor;
-const gradePointFor = (r, grades) => ((0, exports.isIncomplete)(r) ? 0 : (0, exports.getGradePoint)(r === null || r === void 0 ? void 0 : r.totalScore, grades));
-exports.gradePointFor = gradePointFor;
-const getGradePoint = (num, grades) => {
-    if (num == null)
-        return 0;
-    num = parseFloat(num);
-    const vs = grades && grades.find((row) => parseFloat(row.min) <= parseFloat(num) && parseFloat(num) <= parseFloat(row.max));
-    return (vs && vs.gradepoint) || 0;
-};
+const getGradePoint = (num, grades) => { var _a, _b; return (_b = (_a = (0, academic_1.gradeBand)(num, grades)) === null || _a === void 0 ? void 0 : _a.gradepoint) !== null && _b !== void 0 ? _b : 0; };
 exports.getGradePoint = getGradePoint;
+// Final totalScore is authoritative, including imported total-only results.
+const isIncomplete = (row) => (row === null || row === void 0 ? void 0 : row.totalScore) == null;
+exports.isIncomplete = isIncomplete;
+const gradeFor = (row, grades) => (0, exports.getGrade)(row === null || row === void 0 ? void 0 : row.totalScore, grades);
+exports.gradeFor = gradeFor;
+const gradePointFor = (row, grades) => (0, exports.getGradePoint)(row === null || row === void 0 ? void 0 : row.totalScore, grades);
+exports.gradePointFor = gradePointFor;
 const getClass = (num, classes) => {
     if (num == null || classes == null)
         return 'No Class';
