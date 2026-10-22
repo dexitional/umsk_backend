@@ -165,7 +165,7 @@ test('revocation removes charges and restores balances, including bills without 
 
 test('students must confirm their hall even when keeping the imported value, and cannot change it again', async () => {
   const app = fixture(bill(), [student('s1', 1, { instituteAffliate: 'Alpha', affiliateEditedAt: null })]);
-  const mocks = { ...app.mocks, '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {},
+  const mocks = { ...app.mocks, '../util/curriculumScheme': require('../util/curriculumScheme.ts'), '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {},
     '../util/sheetScope': {}, '../util/resitScope': {}, '../drizzle/schema': {}, '../util/password': {}, '../config/gsuite': {},
     nanoid: { customAlphabet: () => () => 'fixture' }, exceljs: {} };
   const controller = new (load('controller/aisController.ts', mocks).default)();

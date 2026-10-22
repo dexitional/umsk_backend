@@ -23,6 +23,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const curriculumScheme_1 = require("../util/curriculumScheme");
 const moment_1 = __importDefault(require("moment"));
 const client_1 = require("../prisma/client");
 const auditAssessment_1 = require("../prisma/auditAssessment");
@@ -2458,6 +2459,7 @@ class AisController {
                     ais.structure.count(Object.assign({}, (searchCondition))),
                     ais.structure.findMany(Object.assign(Object.assign({}, (searchCondition)), { skip: offset, take: Number(pageSize), include: {
                             unit: { select: { title: true } },
+                            scheme: { select: { id: true, title: true } },
                             program: { select: { longName: true } },
                             major: { select: { shortName: true, longName: true } },
                             course: { select: { title: true, creditHour: true } },
@@ -2502,6 +2504,7 @@ class AisController {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const resp = yield ais.structure.findUnique({
+                    include: { scheme: { select: { id: true, title: true } } },
                     where: {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
@@ -2522,13 +2525,17 @@ class AisController {
     postCurriculum(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
+                const schemeId = yield (0, curriculumScheme_1.curriculumSchemeId)(ais, req.body);
                 const { unitId, programId, courseId, majorId } = req.body;
+                delete req.body.schemeId;
+                delete req.body.scheme_id;
+                delete req.body.scheme;
                 delete req.body.courseId;
                 delete req.body.programId;
                 delete req.body.unitId;
                 delete req.body.majorId;
                 const resp = yield ais.structure.create({
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), courseId && ({ course: { connect: { id: courseId } } })), unitId && ({ unit: { connect: { id: unitId } } })), majorId && ({ major: { connect: { id: majorId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { scheme: { connect: { id: schemeId } } }), programId && ({ program: { connect: { id: programId } } })), courseId && ({ course: { connect: { id: courseId } } })), unitId && ({ unit: { connect: { id: unitId } } })), majorId && ({ major: { connect: { id: majorId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -2539,6 +2546,8 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
+                if (error instanceof curriculumScheme_1.CurriculumSchemeError)
+                    return res.status(400).json({ message: error.message });
                 return res.status(500).json({ message: error.message });
             }
         });
@@ -2546,14 +2555,18 @@ class AisController {
     updateCurriculum(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
+                const schemeId = yield (0, curriculumScheme_1.curriculumSchemeId)(ais, req.body);
                 const { unitId, programId, courseId, majorId } = req.body;
+                delete req.body.schemeId;
+                delete req.body.scheme_id;
+                delete req.body.scheme;
                 delete req.body.courseId;
                 delete req.body.programId;
                 delete req.body.unitId;
                 delete req.body.majorId;
                 const resp = yield ais.structure.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), courseId && ({ course: { connect: { id: courseId } } })), unitId && ({ unit: { connect: { id: unitId } } })), majorId && ({ major: { connect: { id: majorId } } }))
+                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), { scheme: { connect: { id: schemeId } } }), programId && ({ program: { connect: { id: programId } } })), courseId && ({ course: { connect: { id: courseId } } })), unitId && ({ unit: { connect: { id: unitId } } })), majorId && ({ major: { connect: { id: majorId } } }))
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -2564,6 +2577,8 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
+                if (error instanceof curriculumScheme_1.CurriculumSchemeError)
+                    return res.status(400).json({ message: error.message });
                 return res.status(500).json({ message: error.message });
             }
         });
@@ -2886,26 +2901,22 @@ class AisController {
     }
     fetchRegistrationMount(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b, _c, _d, _e, _f, _g, _h;
+            var _a, _b, _c, _d, _e, _f;
             try {
                 const courses = [];
                 const id = (0, paramStr_1.paramStr)(req.params.indexno);
                 // Get Student Info
-                const student = yield ais.student.findUnique({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id } });
+                const student = yield ais.student.findUnique({ include: { program: { select: { hasMajor: true } } }, where: { id } });
                 const indexno = student === null || student === void 0 ? void 0 : student.indexno;
                 // Get Active Session Info -- no more MAIN/January-SUB stream split,
                 // just the one default session.
                 const session = yield ais.session.findFirst({ where: { default: true } });
                 // console.log("Registration SemesterNum: ", student?.semesterNum);
                 // Get Normal Courses with/without Majors
-                const maincourses = yield ais.structure.findMany({
-                    include: { course: { select: { title: true, creditHour: true } }, major: { select: { shortName: true } } },
-                    where: {
-                        semesterNum: student === null || student === void 0 ? void 0 : student.semesterNum,
-                        programId: student === null || student === void 0 ? void 0 : student.programId,
-                    },
-                    orderBy: { type: 'asc' }
-                });
+                if (!student)
+                    return res.status(404).json({ message: 'Student not found.' });
+                const mounts = yield (0, curriculumScheme_1.curriculumRows)(ais, student, student.semesterNum);
+                const maincourses = [...new Set(mounts.map((r) => r.courseId))].map((code) => (0, curriculumScheme_1.selectCurriculum)(mounts, code, student.majorId));
                 // Meta & Instructions
                 const meta = yield ais.structmeta.findFirst({
                     where: { programId: student === null || student === void 0 ? void 0 : student.programId, majorId: student === null || student === void 0 ? void 0 : student.majorId, semesterNum: student === null || student === void 0 ? void 0 : student.semesterNum },
@@ -2923,7 +2934,7 @@ class AisController {
                     for (const course of maincourses) {
                         const isAdded = courses.find((c) => c.code == course.courseId);
                         if (!isAdded)
-                            courses.push(Object.assign({ code: course.courseId, course: (_a = course === null || course === void 0 ? void 0 : course.course) === null || _a === void 0 ? void 0 : _a.title, credit: (_b = course === null || course === void 0 ? void 0 : course.course) === null || _b === void 0 ? void 0 : _b.creditHour, type: course === null || course === void 0 ? void 0 : course.type, lock: course === null || course === void 0 ? void 0 : course.lock, sessionId: session === null || session === void 0 ? void 0 : session.id, schemeId: (_c = student === null || student === void 0 ? void 0 : student.program) === null || _c === void 0 ? void 0 : _c.schemeId, semesterNum: student === null || student === void 0 ? void 0 : student.semesterNum, indexno }, course.majorId && ({ major: (_d = course === null || course === void 0 ? void 0 : course.major) === null || _d === void 0 ? void 0 : _d.shortName })));
+                            courses.push(Object.assign({ code: course.courseId, course: (_a = course === null || course === void 0 ? void 0 : course.course) === null || _a === void 0 ? void 0 : _a.title, credit: (_b = course === null || course === void 0 ? void 0 : course.course) === null || _b === void 0 ? void 0 : _b.creditHour, type: course === null || course === void 0 ? void 0 : course.type, lock: course === null || course === void 0 ? void 0 : course.lock, sessionId: session === null || session === void 0 ? void 0 : session.id, schemeId: course.schemeId, semesterNum: student === null || student === void 0 ? void 0 : student.semesterNum, indexno }, course.majorId && ({ major: (_c = course === null || course === void 0 ? void 0 : course.major) === null || _c === void 0 ? void 0 : _c.shortName })));
                     }
                 }
                 // Get Resit Courses -- skip the query entirely when the student
@@ -2934,14 +2945,14 @@ class AisController {
                 const resitcourses = indexno ? yield ais.resit.findMany({
                     include: { course: { select: { title: true, creditHour: true } } },
                     where: {
-                        indexno, taken: false, trailSession: { semester: session === null || session === void 0 ? void 0 : session.semesterNum },
+                        indexno, taken: false, trailSession: { semester: session === null || session === void 0 ? void 0 : session.semester },
                     }
                 }) : [];
                 if (student && resitcourses.length) {
                     for (const course of resitcourses) {
                         const isAdded = courses.find((c) => c.code == course.courseId);
                         if (!isAdded)
-                            courses.push(Object.assign({ code: course.courseId, course: (_e = course === null || course === void 0 ? void 0 : course.course) === null || _e === void 0 ? void 0 : _e.title, credit: (_f = course === null || course === void 0 ? void 0 : course.course) === null || _f === void 0 ? void 0 : _f.creditHour, type: 'R', lock: false, sessionId: session.id, schemeId: (_g = student === null || student === void 0 ? void 0 : student.program) === null || _g === void 0 ? void 0 : _g.schemeId, semesterNum: student.semesterNum, indexno }, course.majorId && ({ major: (_h = course === null || course === void 0 ? void 0 : course.major) === null || _h === void 0 ? void 0 : _h.shortName })));
+                            courses.push(Object.assign({ code: course.courseId, course: (_d = course === null || course === void 0 ? void 0 : course.course) === null || _d === void 0 ? void 0 : _d.title, credit: (_e = course === null || course === void 0 ? void 0 : course.course) === null || _e === void 0 ? void 0 : _e.creditHour, type: 'R', lock: false, sessionId: session.id, schemeId: course.schemeId, semesterNum: student.semesterNum, indexno }, course.majorId && ({ major: (_f = course === null || course === void 0 ? void 0 : course.major) === null || _f === void 0 ? void 0 : _f.shortName })));
                     }
                 }
                 // Conditions
@@ -2991,6 +3002,8 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
+                if (error instanceof curriculumScheme_1.CurriculumSchemeError)
+                    return res.status(400).json({ message: error.message });
                 return res.status(202).json({ message: error.message });
             }
         });
@@ -3010,7 +3023,7 @@ class AisController {
                     return res.status(400).json({ message: "Your index number has not been issued yet, so you can't register. Please contact the Academic Affairs office (Registry) to have it generated, then try again." });
                 // Get Active Session Info -- no more MAIN/January-SUB stream split,
                 // just the one default session.
-                const st = yield ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } });
+                const st = yield ais.student.findFirst({ include: { program: { select: { hasMajor: true } } }, where: { indexno: courses[0].indexno } });
                 if (admissionLocked(st))
                     return res.status(403).json({ message: st.admissionStatus === 'ACCEPTED' ? "Please pay your fees before registering courses." : "Please accept your admission offer on the student portal before registering courses." });
                 const session = yield ais.session.findFirst({ where: { default: true } });
@@ -3022,19 +3035,11 @@ class AisController {
                     return res.status(400).json({ message: "Registration already submitted!" });
                 const resitcourses = courses.filter((row) => row.type == 'R');
                 const maincourses = courses.filter((row) => row.type != 'R');
-                if (maincourses.length) {
-                    for (const course of maincourses) {
-                        data.push({
-                            courseId: course.code,
-                            sessionId: course.sessionId,
-                            schemeId: course.schemeId,
-                            credit: course.credit,
-                            semesterNum: course.semesterNum,
-                            indexno: course.indexno,
-                            // totalScore: 0,
-                            type: 'N'
-                        });
-                    }
+                data.push(...yield (0, curriculumScheme_1.registrationCourses)(ais, st, maincourses, session.id));
+                // Canonical values are also used by the registration activity log.
+                for (const course of courses) {
+                    const canonical = data.find((r) => r.courseId === course.code);
+                    Object.assign(course, canonical || { indexno: st.indexno, sessionId: session.id, semesterNum: st.semesterNum });
                 }
                 if (resitcourses === null || resitcourses === void 0 ? void 0 : resitcourses.length) {
                     // Resit Session Info
@@ -3105,6 +3110,8 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
+                if (error instanceof curriculumScheme_1.CurriculumSchemeError)
+                    return res.status(400).json({ message: error.message });
                 // Raw Prisma/driver errors aren't meant for students — log them,
                 // return a readable message instead.
                 return res.status(500).json({ message: "We couldn't complete your registration because of a server error. Please try again, or contact the Registry if it keeps happening." });
@@ -3119,18 +3126,11 @@ class AisController {
                 const data = [], rdata = [];
                 const resitcourses = courses.filter((row) => row.type == 'R');
                 const maincourses = courses.filter((row) => row.type != 'R');
-                if (maincourses.length) {
-                    for (const course of maincourses) {
-                        data.push({
-                            courseId: course.courseId,
-                            sessionId: course.sessionId,
-                            schemeId: course.schemeId,
-                            credit: course.credit,
-                            semesterNum: course.semesterNum,
-                            indexno,
-                            // totalScore: 0
-                        });
-                    }
+                const student = yield ais.student.findUnique({ where: { indexno } });
+                for (const sessionId of [...new Set(maincourses.map((c) => c.sessionId))]) {
+                    if (typeof sessionId !== 'string' || !sessionId)
+                        throw new curriculumScheme_1.CurriculumSchemeError('Registration semester is required.');
+                    data.push(...yield (0, curriculumScheme_1.registrationCourses)(ais, student, maincourses.filter((c) => c.sessionId === sessionId), sessionId, false));
                 }
                 if (resitcourses.length) {
                     for (const course of resitcourses) {
@@ -3160,6 +3160,8 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
+                if (error instanceof curriculumScheme_1.CurriculumSchemeError)
+                    return res.status(400).json({ message: error.message });
                 return res.status(500).json({ message: error.message });
             }
         });
@@ -3305,6 +3307,8 @@ class AisController {
                                 id: true,
                                 type: true,
                                 semesterNum: true,
+                                schemeId: true,
+                                scheme: { select: { title: true } },
                                 course: { select: { title: true, creditHour: true, id: true, practicalHour: true, theoryHour: true } }
                             },
                             orderBy: [{ semesterNum: 'asc' }, { type: 'asc' },]
@@ -3438,12 +3442,13 @@ class AisController {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 // Programmes aren't linked to departments (see schema), so any
-                // unitId sent is ignored.
-                const { schemeId } = req.body;
+                // unitId sent is ignored. Grading schemes are managed on curriculum entries.
                 delete req.body.schemeId;
+                delete req.body.scheme_id;
+                delete req.body.scheme;
                 delete req.body.unitId;
                 const resp = yield ais.program.create({
-                    data: Object.assign(Object.assign({}, req.body), schemeId && ({ scheme: { connect: { id: schemeId } } }))
+                    data: Object.assign({}, req.body)
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -3461,13 +3466,14 @@ class AisController {
     updateProgram(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                // Programmes aren't linked to departments; any unitId sent is ignored.
-                const { schemeId } = req.body;
+                // Programmes aren't linked to departments. Ignore legacy programme scheme inputs.
                 delete req.body.schemeId;
+                delete req.body.scheme_id;
+                delete req.body.scheme;
                 delete req.body.unitId;
                 const resp = yield ais.program.update({
                     where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign({}, req.body), schemeId && ({ scheme: { connect: { id: schemeId } } }))
+                    data: Object.assign({}, req.body)
                 });
                 if (resp) {
                     res.status(200).json(resp);
@@ -6397,22 +6403,13 @@ class AisController {
                     let count = 0;
                     // for(let row of data){
                     yield Promise.all(data.map((row) => __awaiter(this, void 0, void 0, function* () {
-                        var _a, _b, _c, _d, _e, _f;
+                        var _a, _b, _c, _d;
                         let { certno: certNo, indexno, year, cgpa } = row;
                         // Log Record
                         logs.push({ indexno, graduateSession: `${year} GRADUATION ` });
                         // Get Student Data - Check If  student Exist
                         const st = yield ais.student.findFirst({
                             where: { indexno },
-                            include: {
-                                program: {
-                                    include: {
-                                        scheme: {
-                                            select: { classMeta: true }
-                                        }
-                                    }
-                                }
-                            }
                         });
                         //console.log("st: ", !!st)
                         if (!st)
@@ -6421,7 +6418,7 @@ class AisController {
                             console.log("st: ", !!st), st === null || st === void 0 ? void 0 : st.fname;
                             try {
                                 let graduateSessionId;
-                                const classes = ((_b = (_a = st === null || st === void 0 ? void 0 : st.program) === null || _a === void 0 ? void 0 : _a.scheme) === null || _b === void 0 ? void 0 : _b.classMeta) || null;
+                                const classes = yield (0, curriculumScheme_1.curriculumClassMeta)(ais, st);
                                 const graduateClass = (0, helper_1.getClass)(cgpa, classes);
                                 // Upsert Graduation Session, 
                                 const gs = yield ais.graduateSession.findFirst({ where: { title: `${year} GRADUATION` } });
@@ -6435,8 +6432,8 @@ class AisController {
                                 }
                                 // Update Graduation Data and Status
                                 const gst = yield ais.graduate.upsert({
-                                    where: { indexno: (_c = st === null || st === void 0 ? void 0 : st.indexno) === null || _c === void 0 ? void 0 : _c.trim() },
-                                    create: { cgpa: String(cgpa), certNo: String(certNo), class: graduateClass, certPrinted: true, certPrintedAt: new Date(`${year}-11-01`), certPrintedBy, indexno: (_d = st === null || st === void 0 ? void 0 : st.indexno) === null || _d === void 0 ? void 0 : _d.trim(), graduateSessionId },
+                                    where: { indexno: (_a = st === null || st === void 0 ? void 0 : st.indexno) === null || _a === void 0 ? void 0 : _a.trim() },
+                                    create: { cgpa: String(cgpa), certNo: String(certNo), class: graduateClass, certPrinted: true, certPrintedAt: new Date(`${year}-11-01`), certPrintedBy, indexno: (_b = st === null || st === void 0 ? void 0 : st.indexno) === null || _b === void 0 ? void 0 : _b.trim(), graduateSessionId },
                                     update: { cgpa: String(cgpa), certNo: String(certNo), class: graduateClass }
                                 });
                                 if (gst) {
@@ -6451,8 +6448,8 @@ class AisController {
                                 logs = logs === null || logs === void 0 ? void 0 : logs.filter((r) => r.indexno != indexno);
                                 const lg = yield ais.graduateLog.upsert({
                                     where: { indexno_graduateSession: { indexno, graduateSession: `${year} GRADUATION` } },
-                                    create: { indexno, graduateSession: `${year} GRADUATION`, reason: (_e = error === null || error === void 0 ? void 0 : error.code) === null || _e === void 0 ? void 0 : _e.toUpperCase() },
-                                    update: { reason: (_f = error === null || error === void 0 ? void 0 : error.code) === null || _f === void 0 ? void 0 : _f.toUpperCase() }
+                                    create: { indexno, graduateSession: `${year} GRADUATION`, reason: error instanceof curriculumScheme_1.CurriculumSchemeError ? error.message : (_c = error === null || error === void 0 ? void 0 : error.code) === null || _c === void 0 ? void 0 : _c.toUpperCase() },
+                                    update: { reason: error instanceof curriculumScheme_1.CurriculumSchemeError ? error.message : (_d = error === null || error === void 0 ? void 0 : error.code) === null || _d === void 0 ? void 0 : _d.toUpperCase() }
                                 });
                                 console.log(`LOG ${indexno}: `, lg);
                             }
@@ -9251,7 +9248,7 @@ class AisController {
             try {
                 const id = (0, paramStr_1.paramStr)(req.params.id);
                 // Get Student Info
-                const student = yield ais.student.findUnique({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id } });
+                const student = yield ais.student.findUnique({ include: { program: { select: { hasMajor: true } } }, where: { id } });
                 const indexno = student === null || student === void 0 ? void 0 : student.indexno;
                 // Get Active Session Info -- no more MAIN/January-SUB stream split,
                 // just the one default session.

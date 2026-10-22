@@ -155,6 +155,7 @@ export const hrsStaffRelations = relations(staff, ({one, many}) => ({
 }));
 
 export const aisSchemeRelations = relations(scheme, ({many}) => ({
+  aisStructures: many(structure),
 	aisActivityBacklogs: many(activityBacklog),
 	aisAssessments: many(assessment),
 	aisPrograms: many(program),
@@ -501,6 +502,7 @@ export const aisStructmetaRelations = relations(structmeta, ({one}) => ({
 }));
 
 export const aisStructureRelations = relations(structure, ({one}) => ({
+  scheme: one(scheme, { fields: [structure.schemeId], references: [scheme.id] }),
 	course: one(course, {
 		fields: [structure.courseId],
 		references: [course.id]

@@ -67,6 +67,7 @@ model scheme {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
+  structure       structure[]
   program         program[]
   assessment      assessment[]
   resit           resit[]
@@ -130,6 +131,7 @@ model major {
 model program {
   id            String          @id @default(uuid())
   tag           String?         @db.Text
+  // Legacy value retained for migration/rollback; new grading resolves through structure.
   schemeId      String?
   modeId        String?
   code          String          @db.VarChar(50)
@@ -245,6 +247,8 @@ model student {
   graduate           graduate?
   courseEvaluations  courseEvaluation[]
 
+  stsAssignments stsAssignment[]
+
   @@map("ais_student")
 }
 
@@ -296,10 +300,14 @@ model session {
   activityExam       activityExam[]
   courseEvaluations  courseEvaluation[]
 
+  stsAssignments stsAssignment[]
+
   @@map("ais_session")
 }
 
 model structure {
+  schemeId    String? @map("scheme_id")
+  scheme      scheme? @relation(fields: [schemeId], references: [id], onDelete: Restrict)
   id          String     @id @default(uuid())
   unitId      String?
   programId   String
@@ -317,6 +325,7 @@ model structure {
   major   major?   @relation(fields: [majorId], references: [id])
   course  course?  @relation(fields: [courseId], references: [id])
 
+  @@index([schemeId])
   @@map("ais_structure")
 }
 

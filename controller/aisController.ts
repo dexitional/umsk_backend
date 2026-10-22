@@ -1,3 +1,4 @@
+import { CurriculumSchemeError, curriculumRows, selectCurriculum, registrationCourses, curriculumClassMeta, curriculumSchemeId } from "../util/curriculumScheme";
 import { Request, Response } from "express";
 import moment from "moment";
 import { prisma, prismaBase } from "../prisma/client";
@@ -2406,6 +2407,7 @@ export default class AisController {
                take: Number(pageSize),
                include: {
                   unit: { select: { title: true } },
+                  scheme: { select: { id: true, title: true } },
                   program: { select: { longName: true } },
                   major: { select: { shortName: true, longName: true } },
                   course: { select: { title: true, creditHour: true } },
@@ -2447,6 +2449,7 @@ export default class AisController {
    async fetchCurriculum(req: Request, res: Response) {
       try {
          const resp = await ais.structure.findUnique({
+            include: { scheme: { select: { id: true, title: true } } },
             where: {
                id: paramStr(req.params.id)
             },
@@ -2464,12 +2467,15 @@ export default class AisController {
 
    async postCurriculum(req: Request, res: Response) {
       try {
+         const schemeId = await curriculumSchemeId(ais, req.body);
          const { unitId, programId, courseId, majorId } = req.body
+         delete req.body.schemeId; delete req.body.scheme_id; delete req.body.scheme;
          delete req.body.courseId; delete req.body.programId;
          delete req.body.unitId; delete req.body.majorId;
          const resp = await ais.structure.create({
             data: {
                ...req.body,
+               scheme: { connect: { id: schemeId } },
                ...programId && ({ program: { connect: { id: programId } } }),
                ...courseId && ({ course: { connect: { id: courseId } } }),
                ...unitId && ({ unit: { connect: { id: unitId } } }),
@@ -2484,19 +2490,23 @@ export default class AisController {
 
       } catch (error: any) {
          console.log(error)
+         if (error instanceof CurriculumSchemeError) return res.status(400).json({ message: error.message });
          return res.status(500).json({ message: error.message })
       }
    }
 
    async updateCurriculum(req: Request, res: Response) {
       try {
+         const schemeId = await curriculumSchemeId(ais, req.body);
          const { unitId, programId, courseId, majorId } = req.body
+         delete req.body.schemeId; delete req.body.scheme_id; delete req.body.scheme;
          delete req.body.courseId; delete req.body.programId;
          delete req.body.unitId; delete req.body.majorId;
          const resp = await ais.structure.update({
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
+               scheme: { connect: { id: schemeId } },
                ...programId && ({ program: { connect: { id: programId } } }),
                ...courseId && ({ course: { connect: { id: courseId } } }),
                ...unitId && ({ unit: { connect: { id: unitId } } }),
@@ -2510,6 +2520,7 @@ export default class AisController {
          }
       } catch (error: any) {
          console.log(error)
+         if (error instanceof CurriculumSchemeError) return res.status(400).json({ message: error.message });
          return res.status(500).json({ message: error.message })
       }
    }
@@ -2831,7 +2842,7 @@ export default class AisController {
          const courses: any = [];
          const id = paramStr(req.params.indexno);
          // Get Student Info
-         const student: any = await ais.student.findUnique({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id } })
+         const student: any = await ais.student.findUnique({ include: { program: { select: { hasMajor: true } } }, where: { id } })
          const indexno = student?.indexno;
          // Get Active Session Info -- no more MAIN/January-SUB stream split,
          // just the one default session.
@@ -2840,14 +2851,9 @@ export default class AisController {
          // console.log("Registration SemesterNum: ", student?.semesterNum);
 
          // Get Normal Courses with/without Majors
-         const maincourses = await ais.structure.findMany({
-            include: { course: { select: { title: true, creditHour: true } }, major: { select: { shortName: true } } },
-            where: {
-               semesterNum: student?.semesterNum,
-               programId: student?.programId,
-            },
-            orderBy: { type: 'asc' }
-         })
+         if (!student) return res.status(404).json({ message: 'Student not found.' });
+         const mounts = await curriculumRows(ais, student, student.semesterNum);
+         const maincourses = [...new Set(mounts.map((r: any) => r.courseId))].map((code: any) => selectCurriculum(mounts, code, student.majorId));
          // Meta & Instructions
          const meta = await ais.structmeta.findFirst({
             where: { programId: student?.programId, majorId: student?.majorId, semesterNum: student?.semesterNum },
@@ -2874,7 +2880,7 @@ export default class AisController {
                      type: course?.type,
                      lock: course?.lock,
                      sessionId: session?.id,
-                     schemeId: student?.program?.schemeId,
+                     schemeId: course.schemeId,
                      semesterNum: student?.semesterNum,
                      indexno,
                      ...course.majorId && ({ major: course?.major?.shortName })
@@ -2889,7 +2895,7 @@ export default class AisController {
          const resitcourses: any = indexno ? await ais.resit.findMany({
             include: { course: { select: { title: true, creditHour: true } } },
             where: {
-               indexno, taken: false, trailSession: { semester: session?.semesterNum },
+               indexno, taken: false, trailSession: { semester: session?.semester },
             }
          }) : []
          if (student && resitcourses.length) {
@@ -2903,7 +2909,7 @@ export default class AisController {
                      type: 'R',
                      lock: false,
                      sessionId: session.id,
-                     schemeId: student?.program?.schemeId,
+                     schemeId: course.schemeId,
                      semesterNum: student.semesterNum,
                      indexno,
                      ...course.majorId && ({ major: course?.major?.shortName })
@@ -2957,6 +2963,7 @@ export default class AisController {
          }
       } catch (error: any) {
          console.log(error)
+         if (error instanceof CurriculumSchemeError) return res.status(400).json({ message: error.message });
          return res.status(202).json({ message: error.message })
       }
    }
@@ -2972,7 +2979,7 @@ export default class AisController {
          if (!courses[0]?.indexno) return res.status(400).json({ message: "Your index number has not been issued yet, so you can't register. Please contact the Academic Affairs office (Registry) to have it generated, then try again." });
          // Get Active Session Info -- no more MAIN/January-SUB stream split,
          // just the one default session.
-         const st: any = await ais.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { indexno: courses[0].indexno } })
+         const st: any = await ais.student.findFirst({ include: { program: { select: { hasMajor: true } } }, where: { indexno: courses[0].indexno } })
          if (admissionLocked(st)) return res.status(403).json({ message: st.admissionStatus === 'ACCEPTED' ? "Please pay your fees before registering courses." : "Please accept your admission offer on the student portal before registering courses." });
          const session: any = await ais.session.findFirst({ where: { default: true } })
          if (!session) return res.status(400).json({ message: "No active registration session found. Please contact the registry." });
@@ -2982,19 +2989,11 @@ export default class AisController {
 
          const resitcourses = courses.filter((row: any) => row.type == 'R')
          const maincourses = courses.filter((row: any) => row.type != 'R')
-         if (maincourses.length) {
-            for (const course of maincourses) {
-               data.push({
-                  courseId: course.code,
-                  sessionId: course.sessionId,
-                  schemeId: course.schemeId,
-                  credit: course.credit,
-                  semesterNum: course.semesterNum,
-                  indexno: course.indexno,
-                  // totalScore: 0,
-                  type: 'N'
-               })
-            }
+         data.push(...await registrationCourses(ais, st, maincourses, session.id));
+         // Canonical values are also used by the registration activity log.
+         for (const course of courses) {
+            const canonical = data.find((r: any) => r.courseId === course.code);
+            Object.assign(course, canonical || { indexno: st.indexno, sessionId: session.id, semesterNum: st.semesterNum });
          }
          if (resitcourses?.length) {
             // Resit Session Info
@@ -3063,6 +3062,7 @@ export default class AisController {
          }
       } catch (error: any) {
          console.log(error)
+         if (error instanceof CurriculumSchemeError) return res.status(400).json({ message: error.message });
          // Raw Prisma/driver errors aren't meant for students — log them,
          // return a readable message instead.
          return res.status(500).json({ message: "We couldn't complete your registration because of a server error. Please try again, or contact the Registry if it keeps happening." })
@@ -3077,18 +3077,10 @@ export default class AisController {
          const data: any = [], rdata: any = [];
          const resitcourses = courses.filter((row: any) => row.type == 'R')
          const maincourses = courses.filter((row: any) => row.type != 'R')
-         if (maincourses.length) {
-            for (const course of maincourses) {
-               data.push({
-                  courseId: course.courseId,
-                  sessionId: course.sessionId,
-                  schemeId: course.schemeId,
-                  credit: course.credit,
-                  semesterNum: course.semesterNum,
-                  indexno,
-                  // totalScore: 0
-               })
-            }
+         const student = await ais.student.findUnique({ where: { indexno } });
+         for (const sessionId of [...new Set(maincourses.map((c: any) => c.sessionId))]) {
+            if (typeof sessionId !== 'string' || !sessionId) throw new CurriculumSchemeError('Registration semester is required.');
+            data.push(...await registrationCourses(ais, student, maincourses.filter((c: any) => c.sessionId === sessionId), sessionId, false));
          }
 
          if (resitcourses.length) {
@@ -3117,6 +3109,7 @@ export default class AisController {
 
       } catch (error: any) {
          console.log(error)
+         if (error instanceof CurriculumSchemeError) return res.status(400).json({ message: error.message });
          return res.status(500).json({ message: error.message })
       }
    }
@@ -3257,6 +3250,8 @@ export default class AisController {
                      id: true,
                      type: true,
                      semesterNum: true,
+                     schemeId: true,
+                     scheme: { select: { title: true } },
                      course: { select: { title: true, creditHour: true, id: true, practicalHour: true, theoryHour: true } }
                   },
                   orderBy: [{ semesterNum: 'asc' }, { type: 'asc' },]
@@ -3379,14 +3374,12 @@ export default class AisController {
    async postProgram(req: Request, res: Response) {
       try {
          // Programmes aren't linked to departments (see schema), so any
-         // unitId sent is ignored.
-         const { schemeId } = req.body
-         delete req.body.schemeId; delete req.body.unitId;
+         // unitId sent is ignored. Grading schemes are managed on curriculum entries.
+         delete req.body.schemeId; delete req.body.scheme_id; delete req.body.scheme; delete req.body.unitId;
 
          const resp = await ais.program.create({
             data: {
                ...req.body,
-               ...schemeId && ({ scheme: { connect: { id: schemeId } } }),
             }
          })
          if (resp) {
@@ -3403,15 +3396,13 @@ export default class AisController {
 
    async updateProgram(req: Request, res: Response) {
       try {
-         // Programmes aren't linked to departments; any unitId sent is ignored.
-         const { schemeId } = req.body
-         delete req.body.schemeId; delete req.body.unitId;
+         // Programmes aren't linked to departments. Ignore legacy programme scheme inputs.
+         delete req.body.schemeId; delete req.body.scheme_id; delete req.body.scheme; delete req.body.unitId;
 
          const resp = await ais.program.update({
             where: { id: paramStr(req.params.id) },
             data: {
                ...req.body,
-               ...schemeId && ({ scheme: { connect: { id: schemeId } } }),
             }
          })
          if (resp) {
@@ -6410,15 +6401,6 @@ export default class AisController {
                // Get Student Data - Check If  student Exist
                const st = await ais.student.findFirst({ 
                   where: { indexno },
-                  include: { 
-                     program: {
-                        include: { 
-                           scheme: { 
-                              select: { classMeta: true }
-                           }
-                        }
-                     }
-                  }
                });
               
                //console.log("st: ", !!st)
@@ -6428,7 +6410,7 @@ export default class AisController {
                     console.log("st: ", !!st), st?.fname
                   try {
                      let graduateSessionId;
-                     const classes: any = st?.program?.scheme?.classMeta || null;
+                     const classes: any = await curriculumClassMeta(ais, st);
                      const graduateClass = getClass(cgpa, classes);
                      // Upsert Graduation Session, 
                      const gs = await ais.graduateSession.findFirst({ where: { title: `${year} GRADUATION` }});
@@ -6458,8 +6440,8 @@ export default class AisController {
                      logs = logs?.filter((r:any) => r.indexno != indexno);
                      const lg = await ais.graduateLog.upsert({
                         where: { indexno_graduateSession: { indexno, graduateSession: `${year} GRADUATION` } },
-                        create: { indexno, graduateSession: `${year} GRADUATION`, reason: error?.code?.toUpperCase() },
-                        update: { reason: error?.code?.toUpperCase()  }
+                        create: { indexno, graduateSession: `${year} GRADUATION`, reason: error instanceof CurriculumSchemeError ? error.message : error?.code?.toUpperCase() },
+                        update: { reason: error instanceof CurriculumSchemeError ? error.message : error?.code?.toUpperCase()  }
                      })
                      console.log(`LOG ${indexno}: `,lg)
                   }
@@ -9228,7 +9210,7 @@ export default class AisController {
       try {
          const id = paramStr(req.params.id);
          // Get Student Info
-         const student: any = await ais.student.findUnique({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id } })
+         const student: any = await ais.student.findUnique({ include: { program: { select: { hasMajor: true } } }, where: { id } })
          const indexno = student?.indexno;
          // Get Active Session Info -- no more MAIN/January-SUB stream split,
          // just the one default session.

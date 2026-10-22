@@ -395,7 +395,7 @@ class EvaController {
                 // submission to fail with a foreign key violation on insert —
                 // and trusting a client-supplied indexno at all would let one
                 // student submit evaluations under another student's identity.
-                const student = yield eva.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id: req.userId } });
+                const student = yield eva.student.findFirst({ include: { program: { select: { hasMajor: true } } }, where: { id: req.userId } });
                 if (!(student === null || student === void 0 ? void 0 : student.indexno)) {
                     return res.status(400).json({ message: "Student record not found" });
                 }

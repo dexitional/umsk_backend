@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import AisController from '../controller/aisController';
+import stsRoute from './stsRoute';
 
 const { voteLimiter } = require("../middleware/rateLimitterFlexible");
 const { verifyToken } = require("../middleware/verifyToken");
@@ -61,6 +62,7 @@ class AisRoute {
     }
 
     initializeRoute(){
+      this.router.use('/sts', stsRoute);
       this.router.get('/dash', this.controller.loadDashboard);
       this.router.post('/report', [verifyToken, requireRole(REPORT_ROLES)], this.controller.loadReport);
       this.router.post('/report/statutory', [verifyToken, requireRole(REPORT_ROLES)], this.controller.exportStatutoryReport);

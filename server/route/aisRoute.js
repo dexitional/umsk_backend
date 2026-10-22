@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const aisController_1 = __importDefault(require("../controller/aisController"));
+const stsRoute_1 = __importDefault(require("./stsRoute"));
 const { voteLimiter } = require("../middleware/rateLimitterFlexible");
 const { verifyToken } = require("../middleware/verifyToken");
 const { requireRole } = require("../middleware/requireRole");
@@ -53,6 +54,7 @@ class AisRoute {
         this.initializeRoute();
     }
     initializeRoute() {
+        this.router.use('/sts', stsRoute_1.default);
         this.router.get('/dash', this.controller.loadDashboard);
         this.router.post('/report', [verifyToken, requireRole(REPORT_ROLES)], this.controller.loadReport);
         this.router.post('/report/statutory', [verifyToken, requireRole(REPORT_ROLES)], this.controller.exportStatutoryReport);

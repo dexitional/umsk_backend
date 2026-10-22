@@ -219,6 +219,7 @@ export const session = mysqlTable("ais_session", {
 });
 
 export const structure = mysqlTable("ais_structure", {
+  schemeId: varchar("scheme_id", { length: 191 }).references(() => scheme.id, { onDelete: "restrict", onUpdate: "cascade" }),
   id: varchar("id", { length: 36 }).primaryKey().default(sql`(UUID())`),
   unitId: varchar("unitId", { length: 36 }),
   programId: varchar("programId", { length: 36 }).notNull(),
@@ -437,4 +438,8 @@ export const evaluationRelations = relations(courseEvaluation, ({ one, many }) =
 
 export const responseRelations = relations(evaluationResponse, ({ one }) => ({
   evaluation: one(courseEvaluation, { fields: [evaluationResponse.evaluationId], references: [courseEvaluation.id] }),
+}));
+
+export const structureRelations = relations(structure, ({ one }) => ({
+  scheme: one(scheme, { fields: [structure.schemeId], references: [scheme.id] }),
 }));

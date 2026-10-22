@@ -368,6 +368,7 @@ export const structmeta = mysqlTable("ais_structmeta", {
 	]);
 
 export const structure = mysqlTable("ais_structure", {
+  schemeId: varchar("scheme_id", { length: 191 }).references(() => scheme.id, { onDelete: "restrict", onUpdate: "cascade" }),
 	id: varchar({ length: 191 }).notNull(),
 	unitId: varchar({ length: 191 }).references(() => unit.id, { onDelete: "set null", onUpdate: "cascade" }),
 	programId: varchar({ length: 191 }).notNull().references(() => program.id, { onDelete: "restrict", onUpdate: "cascade" }),

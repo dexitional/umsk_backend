@@ -369,7 +369,7 @@ export default class EvaController {
             // submission to fail with a foreign key violation on insert —
             // and trusting a client-supplied indexno at all would let one
             // student submit evaluations under another student's identity.
-            const student: any = await eva.student.findFirst({ include: { program: { select: { schemeId: true, hasMajor: true } } }, where: { id: req.userId } })
+            const student: any = await eva.student.findFirst({ include: { program: { select: { hasMajor: true } } }, where: { id: req.userId } })
             if (!student?.indexno) {
                 return res.status(400).json({ message: "Student record not found" });
             }

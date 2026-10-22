@@ -332,6 +332,7 @@ exports.structmeta = (0, mysql_core_1.mysqlTable)("ais_structmeta", {
     (0, mysql_core_1.primaryKey)({ columns: [table.id], name: "ais_structmeta_id" }),
 ]);
 exports.structure = (0, mysql_core_1.mysqlTable)("ais_structure", {
+    schemeId: (0, mysql_core_1.varchar)("scheme_id", { length: 191 }).references(() => exports.scheme.id, { onDelete: "restrict", onUpdate: "cascade" }),
     id: (0, mysql_core_1.varchar)({ length: 191 }).notNull(),
     unitId: (0, mysql_core_1.varchar)({ length: 191 }).references(() => exports.unit.id, { onDelete: "set null", onUpdate: "cascade" }),
     programId: (0, mysql_core_1.varchar)({ length: 191 }).notNull().references(() => exports.program.id, { onDelete: "restrict", onUpdate: "cascade" }),

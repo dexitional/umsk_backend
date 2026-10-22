@@ -1,0 +1,78 @@
+// Supported Teaching in Schools. Records are retained once used in a placement.
+model stsSchool {
+  id String @id @default(uuid())
+  code String @unique @db.VarChar(50)
+  name String @db.VarChar(255)
+  district String? @db.VarChar(255)
+  address String? @db.VarChar(500)
+  phone String? @db.VarChar(30)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  mentors stsMentor[]
+  assignments stsAssignment[]
+  @@map("ais_sts_school")
+}
+
+model stsMentor {
+  id String @id @default(uuid())
+  schoolId String
+  name String @db.VarChar(255)
+  phone String? @db.VarChar(30)
+  email String? @db.VarChar(255)
+  // Optional existing staff login tag; no credentials are created here.
+  accountTag String? @db.VarChar(50)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  school stsSchool @relation(fields: [schoolId], references: [id], onDelete: Restrict)
+  assignments stsAssignment[]
+  @@index([schoolId])
+  @@index([accountTag])
+  @@map("ais_sts_mentor")
+}
+
+model stsAssignment {
+  id String @id @default(uuid())
+  studentId String
+  sessionId String
+  schoolId String
+  mentorId String
+  semesterNum Int
+  yearGroup Int
+  // Historical snapshots remain stable after student progression or renaming.
+  programId String
+  programName String @db.VarChar(450)
+  studentName String @db.VarChar(950)
+  indexno String? @db.VarChar(50)
+  schoolName String @db.VarChar(255)
+  mentorName String @db.VarChar(255)
+  status String @default("ACTIVE") @db.VarChar(20)
+  notes String? @db.Text
+  version Int @default(1)
+  createdBy String @db.VarChar(50)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  student student @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  session session @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  school stsSchool @relation(fields: [schoolId], references: [id], onDelete: Restrict)
+  mentor stsMentor @relation(fields: [mentorId], references: [id], onDelete: Restrict)
+  events stsAssignmentEvent[]
+  @@unique([studentId, sessionId])
+  @@index([sessionId, schoolId, yearGroup])
+  @@index([mentorId])
+  @@map("ais_sts_assignment")
+}
+
+model stsAssignmentEvent {
+  id String @id @default(uuid())
+  assignmentId String
+  action String @db.VarChar(30)
+  actor String @db.VarChar(50)
+  reason String? @db.VarChar(1000)
+  snapshot Json
+  createdAt DateTime @default(now())
+  assignment stsAssignment @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  @@index([assignmentId, createdAt])
+  @@map("ais_sts_assignment_event")
+}

@@ -154,6 +154,7 @@ exports.hrsStaffRelations = (0, relations_1.relations)(schema_1.staff, ({ one, m
     }),
 }));
 exports.aisSchemeRelations = (0, relations_1.relations)(schema_1.scheme, ({ many }) => ({
+    aisStructures: many(schema_1.structure),
     aisActivityBacklogs: many(schema_1.activityBacklog),
     aisAssessments: many(schema_1.assessment),
     aisPrograms: many(schema_1.program),
@@ -481,6 +482,7 @@ exports.aisStructmetaRelations = (0, relations_1.relations)(schema_1.structmeta,
     }),
 }));
 exports.aisStructureRelations = (0, relations_1.relations)(schema_1.structure, ({ one }) => ({
+    scheme: one(schema_1.scheme, { fields: [schema_1.structure.schemeId], references: [schema_1.scheme.id] }),
     course: one(schema_1.course, {
         fields: [schema_1.structure.courseId],
         references: [schema_1.course.id]

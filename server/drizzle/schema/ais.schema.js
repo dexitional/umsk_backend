@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.responseRelations = exports.evaluationRelations = exports.resitRelations = exports.courseRelations = exports.programRelations = exports.studentRelations = exports.sessionRelations = exports.letter = exports.informer = exports.evaluationResponse = exports.courseEvaluation = exports.resit = exports.sheet = exports.assessment = exports.activityRegister = exports.structmeta = exports.structure = exports.session = exports.student = exports.program = exports.major = exports.course = exports.mode = exports.scheme = exports.broadsheet = exports.transwiftStatusEnum = exports.transwiftTypeEnum = exports.pickModeEnum = exports.receiverEnum = exports.actionTypeEnum = exports.scoreTypeEnum = exports.backlogTypeEnum = exports.deferStatusEnum = exports.courseTypeEnum = exports.completeTypeEnum = exports.studyModeEnum = exports.residentialStatusEnum = exports.entryGroupEnum = exports.programCategoryEnum = exports.courseRemarkEnum = exports.semesterNumbersEnum = void 0;
+exports.structureRelations = exports.responseRelations = exports.evaluationRelations = exports.resitRelations = exports.courseRelations = exports.programRelations = exports.studentRelations = exports.sessionRelations = exports.letter = exports.informer = exports.evaluationResponse = exports.courseEvaluation = exports.resit = exports.sheet = exports.assessment = exports.activityRegister = exports.structmeta = exports.structure = exports.session = exports.student = exports.program = exports.major = exports.course = exports.mode = exports.scheme = exports.broadsheet = exports.transwiftStatusEnum = exports.transwiftTypeEnum = exports.pickModeEnum = exports.receiverEnum = exports.actionTypeEnum = exports.scoreTypeEnum = exports.backlogTypeEnum = exports.deferStatusEnum = exports.courseTypeEnum = exports.completeTypeEnum = exports.studyModeEnum = exports.residentialStatusEnum = exports.entryGroupEnum = exports.programCategoryEnum = exports.courseRemarkEnum = exports.semesterNumbersEnum = void 0;
 const mysql_core_1 = require("drizzle-orm/mysql-core");
 const drizzle_orm_1 = require("drizzle-orm");
 // ==========================================
@@ -196,6 +196,7 @@ exports.session = (0, mysql_core_1.mysqlTable)("ais_session", {
     updatedAt: (0, mysql_core_1.timestamp)("updatedAt").onUpdateNow(),
 });
 exports.structure = (0, mysql_core_1.mysqlTable)("ais_structure", {
+    schemeId: (0, mysql_core_1.varchar)("scheme_id", { length: 191 }).references(() => exports.scheme.id, { onDelete: "restrict", onUpdate: "cascade" }),
     id: (0, mysql_core_1.varchar)("id", { length: 36 }).primaryKey().default((0, drizzle_orm_1.sql) `(UUID())`),
     unitId: (0, mysql_core_1.varchar)("unitId", { length: 36 }),
     programId: (0, mysql_core_1.varchar)("programId", { length: 36 }).notNull(),
@@ -397,4 +398,7 @@ exports.evaluationRelations = (0, drizzle_orm_1.relations)(exports.courseEvaluat
 }));
 exports.responseRelations = (0, drizzle_orm_1.relations)(exports.evaluationResponse, ({ one }) => ({
     evaluation: one(exports.courseEvaluation, { fields: [exports.evaluationResponse.evaluationId], references: [exports.courseEvaluation.id] }),
+}));
+exports.structureRelations = (0, drizzle_orm_1.relations)(exports.structure, ({ one }) => ({
+    scheme: one(exports.scheme, { fields: [exports.structure.schemeId], references: [exports.scheme.id] }),
 }));
