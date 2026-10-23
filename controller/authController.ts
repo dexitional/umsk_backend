@@ -321,18 +321,18 @@ export default class AuthController {
     try {
       let { tag, phone } = req.body;
       const password = generateStrongPassword();
-      phone = phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+      phone = sms.normalizePhone(phone);
 
       const user = await sso.user.findFirst({ where: { OR: [{ tag }, { username: tag }] } });
       if (user) {
         let st;
         if (user?.groupId == 1) {
-          st = await sso.student.findFirst({ where: { OR: [{ id: user.tag }, { indexno: user.tag }], phone } });
+          st = await sso.student.findFirst({ where: { OR: [{ id: user.tag }, { indexno: user.tag }] } });
         } else if (user?.groupId == 2) {
-          st = await sso.staff.findFirst({ where: { staffNo: user.tag, phone } });
+          st = await sso.staff.findFirst({ where: { staffNo: user.tag } });
         }
 
-        if(!st) return res.status(202).json({ message: `No Record found for Phone No!` })
+        if (!st?.phone || sms.normalizePhone(st.phone) !== phone) return res.status(202).json({ message: `No Record found for Phone No!` })
         
         // Return Response
         const ups = await sso.user.updateMany({
@@ -355,13 +355,14 @@ export default class AuthController {
         }
         // Send Password By SMS -- quote the account's login username (login
         // matches on sso_user.username); instituteEmail is null for most staff.
-        if (st?.phone) await sms(st?.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`)
+        const smsResult = await sms.safe(st.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`);
         // Log Login Response
         // Self-service: the matched account is both actor and subject (`tag`
         // may be a username/email, so log the resolved account tag).
-        await sso.log.create({ data: { action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: !!st?.phone }, ...user?.groupId == 1 && ({ student: user.tag }) } })
+        await sso.log.create({ data: { action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: smsResult.accepted, sms: smsResult }, ...user?.groupId == 1 && ({ student: user.tag }) } })
         // Response  
-        res.status(200).json({ success: true, data: ups });
+        if (!smsResult.accepted) return res.status(502).json({ success: false, message: 'Your password was reset, but the SMS could not be confirmed. Contact the registry for help recovering access.', sms: smsResult });
+        res.status(200).json({ success: true, data: ups, sms: smsResult });
       } else {
         res.status(202).json({ message: `Wrong password provided!` })
       }
@@ -384,9 +385,9 @@ export default class AuthController {
         const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${user.username}, PIN: ${user.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`
         let resp;
         if (st && st?.phone) {
-          resp = await sms(st?.phone, msg);
+          resp = await sms.safe(st?.phone, msg);
         } else {
-          resp = { code: 1002 }
+          resp = { status: 'error', accepted: false, code: 'INVALID_PHONE', message: 'No recipient phone number was recorded.' }
         }
         res.status(200).json(resp)
 
@@ -409,17 +410,12 @@ export default class AuthController {
         const ev = await sso.elector.findMany({ select: {tag: true }, where: { electionId: Number(id)} });
         let users: any = en?.voterData?.filter((r:any) => !ev.find(m => m.tag?.toLowerCase() == r.tag?.toLowerCase()));
         if (users?.length) {
-          const resp: any = await Promise.all(users?.map(async (row: any, i: number) => {
-            // if(i == 0){
-              const fname = row?.name?.split(' ')[0]?.toLowerCase();
+          const resp: any = await sms.map(users, async (row: any) => {
+              const fname = row?.name?.split(' ')[0]?.toLowerCase() || 'student';
               const msg = `Hi ${fname?.charAt(0)?.toUpperCase() + fname.slice(1)}! ${en?.title?.toLowerCase()?.split(' ').map((word:any) => word?.charAt(0)?.toUpperCase() + word?.slice(1))?.join(' ')} is currently on-going. Please log into https://portal.akatsico.edu.gh to cast vote under the [Elections Portal], Election closes in ${moment(en?.endAt).fromNow() }. Thank you!!`
-              if (row?.phone) return await sms(row?.phone, msg);
-              // if (row?.phone) return await sms('0277675089', msg);
-              //console.log(`${row?.tag} : ${row?.phone} \n\n${msg}`)
-              return { code: 1002 }
-            // }
-          }))
-          console.log(resp);
+              return await sms.safe(row?.phone, msg);
+          })
+
           return res.status(200).json(resp)
         } else {
           return res.status(202).json({ message: `Invalid request!` })
@@ -441,11 +437,10 @@ export default class AuthController {
       if (en) {
         const users: any = en?.voterData;
         if (users?.length) {
-          const resp: any = await Promise.all(users?.map(async (row: any) => {
+          const resp: any = await sms.map(users, async (row: any) => {
             const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${row.username}, PIN: ${row.pin}. Note that you can use 4-digit PIN as PASSWORD`
-            if (row?.phone) return await sms(row?.phone, msg);
-            return { code: 1002 }
-          }))
+            return await sms.safe(row?.phone, msg);
+          })
           return res.status(200).json(resp)
         } else {
           return res.status(202).json({ message: `Invalid request!` })
@@ -465,12 +460,11 @@ export default class AuthController {
     try {
       const users = await sso.user.findMany({ where: { groupId: 1, status: true } })
       if (users?.length) {
-        const resp: any = await Promise.all(users?.map(async (row: any) => {
+        const resp: any = await sms.map(users, async (row: any) => {
           const st = await sso.student.findUnique({ where: { id: row?.tag } });
           const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${row.username}, PIN: ${row.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`
-          if (st && st?.phone) return await sms(st.phone, msg);
-          return { code: 1002 }
-        }))
+          return await sms.safe(st?.phone, msg);
+        })
         res.status(200).json(resp)
       } else {
         res.status(202).json({ message: `Invalid request!` })

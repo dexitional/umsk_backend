@@ -31,20 +31,26 @@ function filters(query: any) {
 }
 export default class ResidenceController {
   options = handler(async (_req, res) => {
-    const [halls, rooms, sessions] = await Promise.all([
+    const [halls, rooms, sessions, affiliations] = await Promise.all([
       prisma.residenceHall.findMany({ orderBy: { name: 'asc' }, include: { _count: { select: { rooms: true, originalStudents: true, currentStudents: true } } } }),
       prisma.residenceRoom.findMany({ orderBy: [{ hallId: 'asc' }, { code: 'asc' }] }),
       prisma.session.findMany({ select: { id: true, title: true, year: true, semester: true, default: true, status: true }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }] }),
+      prisma.student.groupBy({ by: ['currentHallId', 'gender'], where: { currentHallId: { not: null } }, _count: { _all: true } }),
     ]);
-    return res.json({ halls, rooms, sessions });
+    return res.json({ halls: halls.map(h => ({ ...h, genderConflicts: h.gender ? affiliations.filter(a => a.currentHallId === h.id && genderOf(a.gender) !== h.gender).reduce((sum, a) => sum + a._count._all, 0) : 0, roomGenderConflicts: h.gender ? rooms.filter(r => r.hallId === h.id && r.gender !== h.gender).length : 0 })), rooms, sessions });
   });
   saveHall = handler(async (req, res) => {
     const id = req.params.id ? idOf(req) : null;
     if (req.body.active !== undefined && typeof req.body.active !== 'boolean') throw new ResidenceError('Active must be true or false.');
-    const data = { code: text(req.body.code, 'Hall code', 50)!.toUpperCase(), name: text(req.body.name, 'Hall name', 350)!, active: req.body.active ?? true };
+    const gender = genderOf(req.body.gender);
+    if (!gender) throw new ResidenceError('Choose Male or Female for the hall.');
+    const data = { gender, code: text(req.body.code, 'Hall code', 50)!.toUpperCase(), name: text(req.body.name, 'Hall name', 350)!, active: req.body.active ?? true };
     const result = await transaction(async tx => {
       if (id) {
         await tx.$queryRaw`SELECT id FROM ais_hall WHERE id = ${id} FOR UPDATE`;
+        const before = await tx.residenceHall.findUnique({ where: { id }, include: { _count: { select: { rooms: true, originalStudents: true, currentStudents: true, assignments: true } } } });
+        if (!before) throw new ResidenceError('Hall not found.', 404);
+        if (before.gender && before.gender !== gender && Object.values(before._count).some((count: any) => count > 0)) throw new ResidenceError('The gender of a hall with affiliations, rooms or placement history cannot be changed.');
         const changed = await tx.residenceHall.updateMany({ where: { id, version: positive(req.body.version, 'Version') }, data: { ...data, version: { increment: 1 } } });
         if (!changed.count) throw new ResidenceError('The hall changed. Refresh before saving.', 409);
       }
@@ -66,6 +72,8 @@ export default class ResidenceController {
       await tx.$queryRaw`SELECT id FROM ais_hall WHERE id = ${hallId} FOR UPDATE`;
       const hall = await tx.residenceHall.findUnique({ where: { id: hallId } });
       if (!hall) throw new ResidenceError('Hall not found.', 404);
+      if (!hall.gender) throw new ResidenceError('Set the hall gender before adding or editing rooms.');
+      if (hall.gender !== gender) throw new ResidenceError('The room gender must match its hall.');
       if (id) {
         await tx.$queryRaw`SELECT id FROM ais_hall_room WHERE id = ${id} FOR UPDATE`;
         const before = await tx.residenceRoom.findUnique({ where: { id } });

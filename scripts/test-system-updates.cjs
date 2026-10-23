@@ -33,7 +33,7 @@ function load(file, mocks = {}, frontend = false) {
 const bill = (extra = {}) => ({ id: 'b1', narrative: 'Tuition', programId: 'p1', sessionId: 's1', bankaccId: 'bank',
   type: 'GH', currency: 'GHC', amount: 1000, discount: 100, quota: 50, mainGroupCode: '1011', discountGroupCode: '0010',
   posted: false, status: true, includeStudentIds: [], excludeStudentIds: [], ...extra });
-const student = (id, semesterNum, extra = {}) => ({ id, indexno: `IDX-${id}`, semesterNum, programId: 'p1', entryGroup: 'GH',
+const student = (id, semesterNum, extra = {}) => ({ id, gender: 'M', indexno: `IDX-${id}`, semesterNum, programId: 'p1', entryGroup: 'GH',
   deferStatus: false, completeStatus: false, entryDate: new Date('2024-01-01'), accountNet: 0, ...extra });
 const response = () => ({ code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } });
 
@@ -44,7 +44,7 @@ function fixture(initialBill = bill(), students = [], entries = [], failInsert =
     typeof value === 'object' ? value.in.includes(s[key]) : s[key] === value);
   const ledgerMatches = (entry, where) => Object.entries(where).every(([key, value]) => entry[key] === value);
   const tx = {
-    $queryRaw: async () => [],
+    $queryRaw: async (parts) => parts.join('').includes('FROM ais_hall ') ? [{ id: 'h1', name: 'Alpha', gender: 'M', active: true }] : [],
     bill: {
       findUnique: async () => state.bill,
       updateMany: async ({ where, data }) => {
@@ -53,7 +53,7 @@ function fixture(initialBill = bill(), students = [], entries = [], failInsert =
       },
       update: async ({ data }) => Object.assign(state.bill, data),
     },
-    residenceHall: { findUnique: async ({ where }) => where.name === 'Alpha' || where.id === 'h1' ? { id: 'h1', name: 'Alpha', active: true } : null },
+    residenceHall: { findUnique: async ({ where }) => where.name === 'Alpha' || where.id === 'h1' ? { id: 'h1', name: 'Alpha', gender: 'M', active: true } : null },
     hallAffiliationEvent: { create: async () => ({}) },
     student: {
       findMany: async ({ where }) => state.students.filter(s => matches(s, where)),
@@ -254,9 +254,25 @@ test('a previously recorded original hall cannot be replaced during the first pr
   const c = new (load('controller/aisController.ts', mocks).default)();
   const bad = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 1, userId: 's1', body: { instituteAffliate: 'Beta', currentHallId: 'forged' } }, bad);
   assert.equal(bad.code, 400); assert.equal(app.state().students[0].instituteAffliate, 'Alpha'); assert.equal(app.state().students[0].affiliateEditedAt, null);
-  const ok = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 1, userId: 's1', body: { instituteAffliate: 'Alpha', currentHallId: 'forged' } }, ok);
+  const ok = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 1, userId: 's1', body: { instituteAffliate: 'Alpha', currentHallId: 'forged', roomId: 'forged', roomAssignments: { create: { roomId: 'forged' } } } }, ok);
   assert.equal(ok.code, 200); assert.equal(app.state().students[0].currentHallId, 'h1');
+  assert.equal(app.state().students[0].roomId, undefined); assert.equal(app.state().students[0].roomAssignments, undefined);
   for (const body of [{ originalHallId: 'forged' }, { currentHall: { connect: { id: 'forged' } } }, { roomAssignments: { deleteMany: {} } }]) {
     const forbidden = response(); await c.updateStudent({ params: { id: 's1' }, groupId: 2, userId: 'staff', body }, forbidden); assert.equal(forbidden.code, 400);
   }
+});
+
+test('student hall options use the signed-in student gender, ignoring supplied gender filters', async () => {
+  const app = fixture();
+  let gender = 'Female', selected;
+  app.db.student = { findUnique: async ({ where }) => { assert.equal(where.id, 's1'); return { gender }; } };
+  app.db.residenceHall = { findMany: async ({ where }) => { selected = where; return [{ name: 'Female Hall' }]; } };
+  const mocks = { ...app.mocks, '../util/residence': require('../util/residence.ts'), '../util/academic': require('../util/academic.ts'), '../util/curriculumScheme': require('../util/curriculumScheme.ts'), '../prisma/auditAssessment': {}, '../util/pushBroadcast': {}, '../util/statutoryReport': {},
+    '../util/sheetScope': {}, '../util/resitScope': {}, '../drizzle/schema': {}, '../util/password': {}, '../config/gsuite': {}, nanoid: { customAlphabet: () => () => 'fixture' }, exceljs: {} };
+  const c = new (load('controller/aisController.ts', mocks).default)();
+  const result = response(); await c.fetchHalls({ userId: 's1', groupId: 1, query: { gender: 'M', studentId: 's2' } }, result);
+  assert.equal(result.code, 200); assert.equal(selected.gender, 'F'); assert.equal(selected.active, true); assert.equal(result.body[0], 'Female Hall');
+  gender = null; selected = null;
+  const unknown = response(); await c.fetchHalls({ userId: 's1', groupId: 1 }, unknown);
+  assert.equal(unknown.body.length, 0); assert.equal(selected, null);
 });

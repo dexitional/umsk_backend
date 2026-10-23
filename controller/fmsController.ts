@@ -1481,6 +1481,8 @@ export default class FmsController {
                })
 
                if (ins) {
+                  let documentInstructions = '';
+                  let generatedIndex: string | null = null;
                   await logRecords(req, 'PAYMENT_CREATED', 'fms_transaction', [pick(ins, PAYMENT_FIELDS)], { student: studentId, user: 'BANK_API', source: 'BANK_API', collector: cl?.name });
                   if ([2, 3, 4, 8].includes(serviceId)) {
                      const bal: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
@@ -1508,9 +1510,7 @@ export default class FmsController {
                         create: { studentId, transactId: ins?.id, quantity: count },
                         update: {}
                      })
-                     // Send Follow-up SMS to Student
-                     const msg = `Hi! Your document request has been processed, Please go into your portal [https://portal.akatsico.edu.gh] to update receipient and required information. Thank you.`;
-                     const send = await sms(st?.phone, msg);
+                     documentInstructions = ' Log in to https://portal.akatsico.edu.gh to update your document recipient and required information.';
                   }
 
                   /* Index Number Generation For Freshers  */
@@ -1519,7 +1519,9 @@ export default class FmsController {
                      const cx: any = await fms.studentAccount.findFirst({ where: { studentId, type: 'BILL' }, include: { bill: { select: { quota: true } } } });
                      const px: any = await fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId, type: 'PAYMENT' } })
                      // Compare All Payments to Bill Quota
-                     const isPassedIndex = (px?._sum?.amount >= (cx?.bill?.quota || 0) * cx?.amount);
+                     // Payments are negative ledger entries; the bill stores quota as a percentage.
+                     const paid = -(Number(px?._sum?.amount) || 0);
+                     const isPassedIndex = !!cx && paid >= ((cx.bill?.quota || 0) / 100) * cx.amount;
                      // Generate Index 
                      if (!st?.indexno && isPassedIndex) {
                         let indexno;
@@ -1542,15 +1544,15 @@ export default class FmsController {
                         }
 
                         await fms.student.update({ where: { id: studentId }, data: { indexno } });
-                        // Send Notfication
-                        const msg = `Hi ${st.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
-                        await sms(st?.phone, msg);
+                        generatedIndex = indexno ?? null;
                      }
                   }
-                  // Retire Account
-
-                  // Return Response
-                  return res.status(200).json({ success: true, data: { transId: ins?.id, studentId, serviceId } });
+                  // One receipt per new payment. Duplicate callbacks return above/below without resending.
+                  const message = `AKATSICO: Payment received: ${currency} ${amountPaid.toFixed(2)}. Student ID: ${studentId}. Reference: ${transRef}.` +
+                     (generatedIndex ? ` Your index number is ${generatedIndex}.` : '') + documentInstructions;
+                  const smsResult = await sms.safe(st.phone, message);
+                  await logRecords(req, 'SMS_PAYMENT_RECEIPT', 'fms_transaction', [{ id: ins.id, sms: smsResult }], { student: studentId, user: 'BANK_API', collector: cl.name });
+                  return res.status(200).json({ success: true, data: { transId: ins?.id, studentId, serviceId }, sms: smsResult });
                } else {
                   return res.status(200).json({ success: false, data: null, msg: `Transaction failed` });
                }

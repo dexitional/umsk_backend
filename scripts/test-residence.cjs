@@ -39,9 +39,9 @@ test('all student years can be assigned in semester one, with invalid and inacti
 });
 test('admission/import affiliation sets both halls once and rejects unregistered hall names', async () => {
   const writes = [], events = [];
-  const tx = { residenceHall: { findUnique: async ({ where }) => where.name === 'Alpha' ? { id: 'alpha', name: 'Alpha', active: true } : null },
+  const tx = { $queryRaw: async () => [{ id: 'alpha', name: 'Alpha', gender: 'M', active: true }], residenceHall: { findUnique: async ({ where }) => where.name === 'Alpha' ? { id: 'alpha', name: 'Alpha', gender: 'M', active: true } : null },
     student: { update: async args => { writes.push(args); return args.data; } }, hallAffiliationEvent: { create: async args => events.push(args.data) } };
-  const original = { id: 'fresher', semesterNum: 1, instituteAffliate: 'Alpha' };
+  const original = { id: 'fresher', gender: 'M', semesterNum: 1, instituteAffliate: 'Alpha' };
   const result = await rules.recordAdmissionHall(tx, original, 'admissions');
   assert.equal(result.originalHallId, 'alpha'); assert.equal(result.currentHallId, 'alpha'); assert.equal(result.originalHallSource, 'ADMISSION');
   assert.equal(events[0].action, 'ORIGINAL_RECORDED');
@@ -70,9 +70,9 @@ test('room routes enforce staff roles and authenticated identity before writes',
   for (const role of rules.HALL_ROLES) assert.equal(simulate({ groupId: 2, userId: 'staff', roles: [{ role }] }).body.reached, true);
 });
 test('hall forms expose capacity/gender requirements and permanent original affiliation guidance', () => {
-  const forms = load(path.join(front,'src/components/residence/HallForms.tsx'), { '../../utils/residenceService': {}, '../../utils/requestError': {} });
+  const forms = load(path.join(front,'src/components/residence/HallForms.tsx'), { '../../utils/residenceService': { hallMatchesStudent: () => false }, '../../utils/requestError': {} });
   const html = renderToStaticMarkup(React.createElement(forms.RecordForm, { type: 'rooms', options: { halls: [] }, save() {}, cancel() {} }));
-  assert.match(html, /name="capacity" min="1" max="10000" step="1" required/); assert.match(html, /name="gender" required/); assert.match(html, /name="hallId" required/);
+  assert.match(html, /name="capacity" min="1" max="10000" step="1" required/); assert.match(html, /Gender \(from hall\)/); assert.match(html, /readonly=""/); assert.match(html, /name="hallId" required/);
   const original = renderToStaticMarkup(React.createElement(forms.OriginalForm, { student: { id: 's1' }, halls: [], save() {} }));
   assert.match(original, /later transfers change only the current hall/); assert.match(original, /name="reason" maxLength="1000" required/);
 });
@@ -90,4 +90,58 @@ test('residence service turns server errors into readable Error instances', asyn
   const errors = load(path.join(front,'src/utils/requestError.ts'));
   const service = load(path.join(front,'src/utils/residenceService.ts'), { './axios': { request: async () => { throw { response: { data: { message: 'Room is full.' } } }; } }, './requestError': errors }).residenceService;
   await assert.rejects(service.save('assignments', {}), /Room is full/);
+});
+
+test('student profile loads and renders read-only annual room and current-semester STS school', async () => {
+  const residence = { student: { instituteAffliate: 'Original Hall', currentHall: { name: 'Current Hall' } }, session: { title: 'Second Semester' }, academicYear: '2026/2027', placement: { status: 'ACTIVE', hallName: 'Current Hall', roomCode: 'B12' } };
+  const sts = { session: { id: 'semester-two', title: 'Second Semester' }, placement: { schoolName: 'Assigned Practice School', mentorName: 'Mentor Ama', status: 'ACTIVE' } };
+  let loaderData;
+  const router = { useRevalidator: () => ({ state: 'idle', revalidate() {} }), useLoaderData: () => loaderData,
+    Link: ({ children, to }) => React.createElement('a', { href: to }, children) };
+  const HallCard = load(path.join(front, 'src/components/aisp/AISPHallCard.tsx'), { 'react-router-dom': router }).default;
+  const STSCard = load(path.join(front, 'src/components/aisp/AISPSTSCard.tsx'), { 'react-router-dom': router }).default;
+  let failHall = false, failSTS = false;
+  const view = load(path.join(front, 'src/pages/aisp/PgAISPProfile.tsx'), {
+    'react-router-dom': router, 'react-icons/hi2': frontendRequire('react-icons/hi2'),
+    '../../components/aisp/AISPHallCard': HallCard, '../../components/aisp/AISPSTSCard': STSCard,
+    '../../components/aisp/AISPPanel': ({ children }) => React.createElement('section', null, children),
+    '../../components/aisp/AISPInfoTile': ({ label, value }) => React.createElement('div', null, label, ': ', value),
+    '../../components/aisp/AISPPhotoBlend': { AISPCrest: () => null, AISPPhotoBlend: () => null },
+    '../../utils/authService': { useUserStore: { getState: () => ({ user: { user: { tag: 'own-student' } } }) } },
+    '../../utils/aisService': { fetchStudent: async id => { assert.equal(id, 'own-student'); return { id, fname: 'Student', semesterNum: 2 }; } },
+    '../../utils/residenceService': { residenceService: { mine: async () => { if (failHall) throw new Error('Hall unavailable'); return residence; } } },
+    '../../utils/stsService': { stsService: { current: async () => { if (failSTS) throw new Error('STS unavailable'); return sts; } } },
+  });
+  loaderData = await view.loader({ params: { studentId: 'another-student' } });
+  const html = renderToStaticMarkup(React.createElement(view.default));
+  for (const phrase of ['Original Hall', 'Current Hall', 'Room B12', '2026/2027', 'Assigned Practice School', 'Second Semester', 'Mentor Ama']) assert.ok(html.includes(phrase));
+  assert.doesNotMatch(html, /<(input|select|textarea|form)\b/);
+  failHall = true;
+  loaderData = await view.loader({ params: {} });
+  assert.equal(loaderData.residence, null); assert.equal(loaderData.sts, sts);
+  const partial = renderToStaticMarkup(React.createElement(view.default));
+  assert.match(partial, /hall and room details could not be loaded/); assert.match(partial, /Assigned Practice School/);
+  failHall = false; failSTS = true;
+  loaderData = await view.loader({ params: {} });
+  assert.equal(loaderData.residence, residence); assert.equal(loaderData.sts, null);
+  const other = renderToStaticMarkup(React.createElement(view.default));
+  assert.match(other, /Room B12/); assert.match(other, /STS placement could not be loaded/);
+});
+
+
+test('hall gender is mandatory and must match the student before affiliation', () => {
+  for (const gender of ['M', 'F']) assert.doesNotThrow(() => rules.assertHallGender({ gender }, { gender }));
+  assert.doesNotThrow(() => rules.assertHallGender({ gender: ' Female ' }, { gender: 'F' }));
+  assert.throws(() => rules.assertHallGender({ gender: 'F' }, { gender: 'M' }), /does not match this hall/);
+  assert.throws(() => rules.assertHallGender({ gender: 'M' }, { gender: null }), /Set the hall gender/);
+  assert.throws(() => rules.assertHallGender({ gender: null }, { gender: 'M' }), /Record the student/);
+});
+test('hall forms require a gender and affiliation selectors hide incompatible halls', () => {
+  const service = load(path.join(front, 'src/utils/residenceService.ts'), { './axios': {}, './requestError': {} });
+  const forms = load(path.join(front, 'src/components/residence/HallForms.tsx'), { '../../utils/residenceService': service, '../../utils/requestError': {} });
+  const halls = [{ id: 'm', name: 'Male Hall', gender: 'M', active: true }, { id: 'f', name: 'Female Hall', gender: 'F', active: true }, { id: 'legacy', name: 'Unconfigured Hall', gender: null, active: true }];
+  const hallHtml = renderToStaticMarkup(React.createElement(forms.RecordForm, { type: 'halls', options: { halls }, save() {}, cancel() {} }));
+  assert.match(hallHtml, /name="gender" required/);
+  const affiliation = renderToStaticMarkup(React.createElement(forms.OriginalForm, { student: { id: 's', gender: 'F' }, halls, save() {} }));
+  assert.match(affiliation, /Female Hall/); assert.doesNotMatch(affiliation, /Male Hall|Unconfigured Hall/);
 });

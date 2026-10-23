@@ -7,6 +7,12 @@ const express_1 = require("express");
 const authController_1 = __importDefault(require("../controller/authController"));
 const { verifyToken } = require("../middleware/verifyToken");
 const { loginLimiter } = require("../middleware/rateLimitterFlexible");
+const pinSendAccess = (req, res, next) => {
+    const roles = ['student::admin', 'student::registry', 'access::admin'];
+    if (Number(req.groupId) !== 2 || !(req.roles || []).some((r) => r.app === 'ais' && roles.includes(r.role)))
+        return res.status(403).json({ message: 'You do not have permission to send student PINs.' });
+    next();
+};
 class AuthRoute {
     constructor() {
         this.router = (0, express_1.Router)();
@@ -38,8 +44,8 @@ class AuthRoute {
         // reset every student's PIN).
         this.router.post('/pins/generate', [verifyToken], this.controller.resetStudentPins);
         this.router.post('/pins/generate/:tag', [verifyToken], this.controller.resetStudentPin);
-        this.router.get('/pins/send', this.controller.sendStudentPins);
-        this.router.get('/pins/send/:tag', this.controller.sendStudentPin);
+        this.router.post('/pins/send', [verifyToken, pinSendAccess], this.controller.sendStudentPins);
+        this.router.post('/pins/send/:tag', [verifyToken, pinSendAccess], this.controller.sendStudentPin);
     }
 }
 exports.default = new AuthRoute().router;

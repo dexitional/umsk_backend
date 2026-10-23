@@ -346,17 +346,17 @@ class AuthController {
             try {
                 let { tag, phone } = req.body;
                 const password = (0, password_1.generateStrongPassword)();
-                phone = phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
+                phone = sms.normalizePhone(phone);
                 const user = yield sso.user.findFirst({ where: { OR: [{ tag }, { username: tag }] } });
                 if (user) {
                     let st;
                     if ((user === null || user === void 0 ? void 0 : user.groupId) == 1) {
-                        st = yield sso.student.findFirst({ where: { OR: [{ id: user.tag }, { indexno: user.tag }], phone } });
+                        st = yield sso.student.findFirst({ where: { OR: [{ id: user.tag }, { indexno: user.tag }] } });
                     }
                     else if ((user === null || user === void 0 ? void 0 : user.groupId) == 2) {
-                        st = yield sso.staff.findFirst({ where: { staffNo: user.tag, phone } });
+                        st = yield sso.staff.findFirst({ where: { staffNo: user.tag } });
                     }
-                    if (!st)
+                    if (!(st === null || st === void 0 ? void 0 : st.phone) || sms.normalizePhone(st.phone) !== phone)
                         return res.status(202).json({ message: `No Record found for Phone No!` });
                     // Return Response
                     const ups = yield sso.user.updateMany({
@@ -381,14 +381,15 @@ class AuthController {
                     }
                     // Send Password By SMS -- quote the account's login username (login
                     // matches on sso_user.username); instituteEmail is null for most staff.
-                    if (st === null || st === void 0 ? void 0 : st.phone)
-                        yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`);
+                    const smsResult = yield sms.safe(st.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`);
                     // Log Login Response
                     // Self-service: the matched account is both actor and subject (`tag`
                     // may be a username/email, so log the resolved account tag).
-                    yield sso.log.create({ data: Object.assign({ action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } }, (user === null || user === void 0 ? void 0 : user.groupId) == 1 && ({ student: user.tag })) });
+                    yield sso.log.create({ data: Object.assign({ action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: smsResult.accepted, sms: smsResult } }, (user === null || user === void 0 ? void 0 : user.groupId) == 1 && ({ student: user.tag })) });
                     // Response  
-                    res.status(200).json({ success: true, data: ups });
+                    if (!smsResult.accepted)
+                        return res.status(502).json({ success: false, message: 'Your password was reset, but the SMS could not be confirmed. Contact the registry for help recovering access.', sms: smsResult });
+                    res.status(200).json({ success: true, data: ups, sms: smsResult });
                 }
                 else {
                     res.status(202).json({ message: `Wrong password provided!` });
@@ -412,10 +413,10 @@ class AuthController {
                     const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${user.username}, PIN: ${user.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`;
                     let resp;
                     if (st && (st === null || st === void 0 ? void 0 : st.phone)) {
-                        resp = yield sms(st === null || st === void 0 ? void 0 : st.phone, msg);
+                        resp = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, msg);
                     }
                     else {
-                        resp = { code: 1002 };
+                        resp = { status: 'error', accepted: false, code: 'INVALID_PHONE', message: 'No recipient phone number was recorded.' };
                     }
                     res.status(200).json(resp);
                 }
@@ -440,19 +441,12 @@ class AuthController {
                     const ev = yield sso.elector.findMany({ select: { tag: true }, where: { electionId: Number(id) } });
                     let users = (_a = en === null || en === void 0 ? void 0 : en.voterData) === null || _a === void 0 ? void 0 : _a.filter((r) => !ev.find(m => { var _a, _b; return ((_a = m.tag) === null || _a === void 0 ? void 0 : _a.toLowerCase()) == ((_b = r.tag) === null || _b === void 0 ? void 0 : _b.toLowerCase()); }));
                     if (users === null || users === void 0 ? void 0 : users.length) {
-                        const resp = yield Promise.all(users === null || users === void 0 ? void 0 : users.map((row, i) => __awaiter(this, void 0, void 0, function* () {
+                        const resp = yield sms.map(users, (row) => __awaiter(this, void 0, void 0, function* () {
                             var _a, _b, _c, _d, _e, _f;
-                            // if(i == 0){
-                            const fname = (_b = (_a = row === null || row === void 0 ? void 0 : row.name) === null || _a === void 0 ? void 0 : _a.split(' ')[0]) === null || _b === void 0 ? void 0 : _b.toLowerCase();
+                            const fname = ((_b = (_a = row === null || row === void 0 ? void 0 : row.name) === null || _a === void 0 ? void 0 : _a.split(' ')[0]) === null || _b === void 0 ? void 0 : _b.toLowerCase()) || 'student';
                             const msg = `Hi ${((_c = fname === null || fname === void 0 ? void 0 : fname.charAt(0)) === null || _c === void 0 ? void 0 : _c.toUpperCase()) + fname.slice(1)}! ${(_f = (_e = (_d = en === null || en === void 0 ? void 0 : en.title) === null || _d === void 0 ? void 0 : _d.toLowerCase()) === null || _e === void 0 ? void 0 : _e.split(' ').map((word) => { var _a; return ((_a = word === null || word === void 0 ? void 0 : word.charAt(0)) === null || _a === void 0 ? void 0 : _a.toUpperCase()) + (word === null || word === void 0 ? void 0 : word.slice(1)); })) === null || _f === void 0 ? void 0 : _f.join(' ')} is currently on-going. Please log into https://portal.akatsico.edu.gh to cast vote under the [Elections Portal], Election closes in ${(0, moment_1.default)(en === null || en === void 0 ? void 0 : en.endAt).fromNow()}. Thank you!!`;
-                            if (row === null || row === void 0 ? void 0 : row.phone)
-                                return yield sms(row === null || row === void 0 ? void 0 : row.phone, msg);
-                            // if (row?.phone) return await sms('0277675089', msg);
-                            //console.log(`${row?.tag} : ${row?.phone} \n\n${msg}`)
-                            return { code: 1002 };
-                            // }
-                        })));
-                        console.log(resp);
+                            return yield sms.safe(row === null || row === void 0 ? void 0 : row.phone, msg);
+                        }));
                         return res.status(200).json(resp);
                     }
                     else {
@@ -476,12 +470,10 @@ class AuthController {
                 if (en) {
                     const users = en === null || en === void 0 ? void 0 : en.voterData;
                     if (users === null || users === void 0 ? void 0 : users.length) {
-                        const resp = yield Promise.all(users === null || users === void 0 ? void 0 : users.map((row) => __awaiter(this, void 0, void 0, function* () {
+                        const resp = yield sms.map(users, (row) => __awaiter(this, void 0, void 0, function* () {
                             const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${row.username}, PIN: ${row.pin}. Note that you can use 4-digit PIN as PASSWORD`;
-                            if (row === null || row === void 0 ? void 0 : row.phone)
-                                return yield sms(row === null || row === void 0 ? void 0 : row.phone, msg);
-                            return { code: 1002 };
-                        })));
+                            return yield sms.safe(row === null || row === void 0 ? void 0 : row.phone, msg);
+                        }));
                         return res.status(200).json(resp);
                     }
                     else {
@@ -502,13 +494,11 @@ class AuthController {
             try {
                 const users = yield sso.user.findMany({ where: { groupId: 1, status: true } });
                 if (users === null || users === void 0 ? void 0 : users.length) {
-                    const resp = yield Promise.all(users === null || users === void 0 ? void 0 : users.map((row) => __awaiter(this, void 0, void 0, function* () {
+                    const resp = yield sms.map(users, (row) => __awaiter(this, void 0, void 0, function* () {
                         const st = yield sso.student.findUnique({ where: { id: row === null || row === void 0 ? void 0 : row.tag } });
                         const msg = `Please Access https://portal.akatsico.edu.gh with USERNAME: ${row.username}, PIN: ${row.unlockPin}. Note that you can use 4-digit PIN as PASSWORD`;
-                        if (st && (st === null || st === void 0 ? void 0 : st.phone))
-                            return yield sms(st.phone, msg);
-                        return { code: 1002 };
-                    })));
+                        return yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, msg);
+                    }));
                     res.status(200).json(resp);
                 }
                 else {

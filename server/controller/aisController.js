@@ -23,6 +23,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const residence_1 = require("../util/residence");
 const academic_1 = require("../util/academic");
 const curriculumScheme_1 = require("../util/curriculumScheme");
 const moment_1 = __importDefault(require("moment"));
@@ -147,6 +148,12 @@ function unresolvedResitStudentsForSession(trailSessionId) {
 // later, misleading the student.
 function stageStudentAccess(studentId_1, userId_1) {
     return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true, smsText) {
+        if (typeof studentId !== 'string' || !studentId.trim())
+            throw new Error('Student ID is required.');
+        studentId = studentId.trim();
+        const st = yield ais.student.findFirst({ where: { id: studentId } });
+        if (!st)
+            throw new Error('Student record not found.');
         const password = (0, password_1.generateStrongPassword)();
         const isUser = yield ais.user.findFirst({ where: { tag: studentId } });
         if (isUser)
@@ -156,22 +163,15 @@ function stageStudentAccess(studentId_1, userId_1) {
         const resp = yield ais.user.create({
             data: Object.assign(Object.assign({}, ssoData), { group: { connect: { id: 1 } } }),
         });
+        let smsResult = null;
         if (sendSms) {
-            const st = yield ais.student.findFirst({ where: { id: studentId } });
-            if (st === null || st === void 0 ? void 0 : st.phone) {
-                try {
-                    // Quote the username just stored (login matches on it), not instituteEmail.
-                    yield sms(st.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
-                }
-                catch (smsError) {
-                    console.log('stageStudentAccess SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                }
-            }
+            smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
         }
         // Log Login Response
         // Never log credentials (ssoData carries the hash + unlock PIN).
-        yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, student: studentId, meta: { studentId, username: studentId } } });
-        return resp;
+        yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, student: studentId, meta: { studentId, username: studentId, sms: smsResult } } });
+        const { password: _hash, unlockPin: _pin } = resp, account = __rest(resp, ["password", "unlockPin"]);
+        return Object.assign(Object.assign({}, account), { sms: smsResult });
     });
 }
 // Core of the generateEmail route handler below -- see stageStudentAccess
@@ -181,6 +181,7 @@ function stageStudentAccess(studentId_1, userId_1) {
 function generateStudentEmail(studentId_1, userId_1) {
     return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true, smsText) {
         var _a, _b;
+        let smsResult = null;
         let count = 1;
         let isNew = true;
         const st = yield ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
@@ -241,19 +242,12 @@ function generateStudentEmail(studentId_1, userId_1) {
             catch (gsError) {
                 console.log('generateStudentEmail GSuite provisioning threw:', gsError === null || gsError === void 0 ? void 0 : gsError.message);
             }
-            // Send Credentials By SMS — isolated in its own try/catch (matching
-            // stageStudentAccess/resetStudent): a gateway hiccup shouldn't turn
-            // an already-successful email generation into a 500.
-            if (sendSms && (st === null || st === void 0 ? void 0 : st.phone)) {
-                try {
-                    yield sms(st.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`);
-                }
-                catch (smsError) {
-                    console.log('generateStudentEmail SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                }
+            if (sendSms) {
+                smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`);
+                yield ais.log.create({ data: { action: 'SMS_STUDENT_EMAIL_CREDENTIALS', user: userId, student: studentId, meta: smsResult } });
             }
         }
-        return resp;
+        return Object.assign(Object.assign({}, resp), { sms: smsResult });
     });
 }
 // A student editing their own record (student portal web form, Akatsico
@@ -332,22 +326,25 @@ function updateOwnStudentProfile(studentId, body) {
                     changed.push('dob');
                 }
             }
-            // Every student confirms a hall once, including a pre-filled/imported hall.
-            const hall = typeof body.instituteAffliate === 'string' ? body.instituteAffliate.trim() : '';
-            const currentHall = (st.instituteAffliate || '').trim();
-            if (!st.affiliateEditedAt) {
-                if (!hall)
-                    throw new StudentSelfEditError('Select and confirm your Hall of Affiliation before saving your profile.');
-                const halls = yield tx.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } } });
-                const known = halls.map((row) => { var _a; return (_a = row.instituteAffliate) === null || _a === void 0 ? void 0 : _a.trim(); }).find((value) => (value === null || value === void 0 ? void 0 : value.toUpperCase()) === hall.toUpperCase());
-                if (!known)
-                    throw new StudentSelfEditError('Choose a Hall of Affiliation from the list. Contact the College Registry if your hall is missing.');
-                data.instituteAffliate = known;
+            // Existing affiliation is confirmed, never replaced through a profile save.
+            const hallName = typeof body.instituteAffliate === 'string' ? body.instituteAffliate.trim() : '';
+            if (!st.affiliateEditedAt && (st.originalHallId || st.semesterNum === 1)) {
+                if (!hallName)
+                    throw new StudentSelfEditError('Confirm your original Hall of Affiliation before saving your profile.');
+                if (st.originalHallId) {
+                    const original = yield tx.residenceHall.findUnique({ where: { id: st.originalHallId } });
+                    if (![st.instituteAffliate, original === null || original === void 0 ? void 0 : original.name].some(n => (n === null || n === void 0 ? void 0 : n.trim().toUpperCase()) === hallName.toUpperCase()))
+                        throw new StudentSelfEditError('Your original hall is already recorded. Room transfers are managed in the Hall Module.');
+                }
+                else {
+                    const hall = yield tx.residenceHall.findUnique({ where: { name: hallName } });
+                    yield (0, residence_1.initialAffiliation)(tx, st, hall, studentId, 'SELF', 'Fresher profile confirmation');
+                    changed.push('instituteAffliate');
+                }
                 data.affiliateEditedAt = new Date();
-                changed.push('instituteAffliate');
             }
-            else if (body.instituteAffliate !== undefined && hall.toUpperCase() !== currentHall.toUpperCase()) {
-                throw new StudentSelfEditError('Your Hall of Affiliation has already been confirmed. Contact the College Registry for further corrections.');
+            else if (body.instituteAffliate !== undefined && hallName.toUpperCase() !== (st.instituteAffliate || '').trim().toUpperCase()) {
+                throw new StudentSelfEditError('Your original hall cannot be changed here. Contact the College Registry.');
             }
             const resp = yield tx.student.update({ where: { id: studentId }, data });
             yield tx.log.create({
@@ -532,7 +529,7 @@ function createStudentBatch(allStudents_1, createdBy_1, action_1) {
                         const row = yield tx.student.create({
                             data: Object.assign(Object.assign(Object.assign({}, rest), programId && ({ program: { connect: { id: programId } } })), majorId && ({ major: { connect: { id: majorId } } })),
                         });
-                        created.push(row);
+                        created.push(yield (0, residence_1.recordAdmissionHall)(tx, row, createdBy));
                     }
                     catch (rowError) {
                         rowError.studentId = s.id;
@@ -1155,20 +1152,9 @@ class AisController {
                     return res.status(202).json({ message: `no record found` });
                 const eligible = yield unregisteredStudentsForSession(session.id);
                 const message = `Hi! Reminder: You have not yet registered for the ${session.title} semester. As a GTEC requirement, all students must register each semester or risk automatic deferment of their programme. Please register promptly.`;
-                const sent = yield Promise.all(eligible.map((st) => __awaiter(this, void 0, void 0, function* () {
-                    try {
-                        const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-                        yield sms(phone, message);
-                        return true;
-                    }
-                    catch (smsError) {
-                        console.log('sendRegistrationReminder SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                        return false;
-                    }
-                })));
-                const count = sent.filter(Boolean).length;
-                yield ais.log.create({ data: { action: `SEND_REGISTRATION_REMINDER`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { sessionId: session.id, count } } });
-                res.status(200).json({ count: eligible.length, sent: count });
+                const result = yield sms.sendMany(eligible.map((st) => st.phone), message);
+                yield ais.log.create({ data: { action: `SEND_REGISTRATION_REMINDER`, user: req === null || req === void 0 ? void 0 : req.userId, meta: Object.assign({ sessionId: session.id }, result) } });
+                res.status(200).json(result);
             }
             catch (error) {
                 console.log(error);
@@ -1194,20 +1180,9 @@ class AisController {
                 const sessionId = (0, paramStr_1.paramStr)(req.params.id);
                 const uniqueStudents = yield unresolvedResitStudentsForSession(sessionId);
                 const message = `Hi! Reminder: You have an outstanding resit course that has not been registered or paid for. As a GTEC requirement, please complete your resit registration and payment promptly to avoid automatic deferment of your programme.`;
-                const sent = yield Promise.all(Array.from(uniqueStudents.values()).map((rawPhone) => __awaiter(this, void 0, void 0, function* () {
-                    try {
-                        const phone = rawPhone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-                        yield sms(phone, message);
-                        return true;
-                    }
-                    catch (smsError) {
-                        console.log('sendResitReminder SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                        return false;
-                    }
-                })));
-                const count = sent.filter(Boolean).length;
-                yield ais.log.create({ data: { action: `SEND_RESIT_REMINDER`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { sessionId, count } } });
-                res.status(200).json({ count: uniqueStudents.size, sent: count });
+                const result = yield sms.sendMany(Array.from(uniqueStudents.values()), message);
+                yield ais.log.create({ data: { action: `SEND_RESIT_REMINDER`, user: req === null || req === void 0 ? void 0 : req.userId, meta: Object.assign({ sessionId }, result) } });
+                res.status(200).json(result);
             }
             catch (error) {
                 console.log(error);
@@ -1345,6 +1320,7 @@ class AisController {
                         id: (0, paramStr_1.paramStr)(req.params.id)
                     },
                     include: {
+                        originalHall: true, currentHall: true,
                         title: { select: { label: true } },
                         country: { select: { longName: true, nationality: true } },
                         region: { select: { title: true } },
@@ -1628,10 +1604,15 @@ class AisController {
     }
     resetStudent(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             try {
-                const { studentId } = req.body;
+                const studentId = typeof ((_a = req.body) === null || _a === void 0 ? void 0 : _a.studentId) === 'string' ? req.body.studentId.trim() : '';
+                if (!studentId)
+                    return res.status(400).json({ message: 'Student ID is required.' });
                 const password = (0, password_1.generateStrongPassword)();
                 const st = yield ais.student.findFirst({ where: { id: studentId } });
+                if (!st)
+                    return res.status(404).json({ message: 'Student record not found.' });
                 // Some students have an instituteEmail (and even a synced GSuite
                 // account) without ever getting a portal login row -- e.g. Generate
                 // Student Email was clicked without Stage Student Access first, or
@@ -1668,24 +1649,12 @@ class AisController {
                         console.log('resetStudent GSuite password sync threw:', gsError === null || gsError === void 0 ? void 0 : gsError.message);
                     }
                 }
-                // Send Password By SMS — normalized the same way forgetPassword
-                // does (authController.ts), and isolated in its own try/catch:
-                // a gateway hiccup shouldn't turn an already-successful password
-                // change into a 500 with no visibility into what actually failed.
-                if (st === null || st === void 0 ? void 0 : st.phone) {
-                    const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-                    try {
-                        yield sms(phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
-                    }
-                    catch (smsError) {
-                        console.log('resetStudent SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                    }
-                }
+                const smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
                 // Log Login Response
                 // Audit: who reset whose account (no credentials logged).
-                yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, student: studentId, meta: { studentId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
+                yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, student: studentId, meta: { studentId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } });
                 // Return Password
-                res.status(200).json({ password });
+                res.status(200).json({ username: account.username, password, sms: smsResult });
             }
             catch (error) {
                 console.log(error);
@@ -1749,11 +1718,11 @@ class AisController {
                 if (resp) {
                     // Send Notfication
                     const msg = `Hi ${student.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
-                    yield sms(student === null || student === void 0 ? void 0 : student.phone, msg);
+                    const smsResult = yield sms.safe(student === null || student === void 0 ? void 0 : student.phone, msg);
                     // Log Login Response
                     yield ais.log.create({ data: { action: `INDEX_NUMBER_GENERATED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { indexno } } });
                     // Return Password
-                    res.status(200).json({ indexno });
+                    res.status(200).json({ indexno, sms: smsResult });
                 }
                 else {
                     res.status(202).json({ message: `no records found` });
@@ -1815,16 +1784,9 @@ class AisController {
                 }
                 if (gs.ok) {
                     yield ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
-                    if (st === null || st === void 0 ? void 0 : st.phone) {
-                        try {
-                            yield sms(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`);
-                        }
-                        catch (smsError) {
-                            console.log('retryGsuiteSync SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                        }
-                    }
-                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail: st.instituteEmail } } });
-                    return res.status(200).json({ success: true });
+                    const smsResult = yield sms.safe(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`);
+                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail: st.instituteEmail, sms: smsResult } } });
+                    return res.status(200).json({ success: true, sms: smsResult });
                 }
                 else if (gs.skipped) {
                     return res.status(202).json({ message: `GSuite integration is not configured yet.` });
@@ -1885,9 +1847,14 @@ class AisController {
                 req.body.entryDate = (0, helper_1.toDate)(req.body.entryDate);
                 req.body.dob = (0, helper_1.toDate)(req.body.dob);
                 normaliseAdmissionFields(req.body);
-                const resp = yield ais.student.create({
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
-                });
+                for (const key of ['originalHallId', 'currentHallId', 'originalHall', 'currentHall', 'originalHallSource', 'roomAssignments', 'hallAffiliationEvents', 'affiliateEditedAt'])
+                    delete req.body[key];
+                const resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    const created = yield tx.student.create({
+                        data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
+                    });
+                    return (0, residence_1.recordAdmissionHall)(tx, created, req.userId);
+                }));
                 if (resp) {
                     // Log Login Response
                     yield ais.log.create({
@@ -1904,7 +1871,7 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: error.message });
+                return res.status(error instanceof residence_1.ResidenceError ? error.status : 500).json({ message: error.message });
             }
         });
     }
@@ -2128,6 +2095,15 @@ class AisController {
                     const resp = yield updateOwnStudentProfile(req.userId, req.body);
                     return res.status(200).json(resp);
                 }
+                const protectedHallFields = ['originalHallId', 'currentHallId', 'originalHall', 'currentHall', 'originalHallSource', 'roomAssignments', 'hallAffiliationEvents', 'affiliateEditedAt'];
+                if (protectedHallFields.some(key => req.body[key] !== undefined))
+                    return res.status(400).json({ message: 'Manage hall affiliation and room placements in the Hall Module.' });
+                if (req.body.instituteAffliate !== undefined) {
+                    const existing = yield ais.student.findUnique({ where: { id: (0, paramStr_1.paramStr)(req.params.id) }, select: { instituteAffliate: true } });
+                    if ((req.body.instituteAffliate || '').trim() !== ((existing === null || existing === void 0 ? void 0 : existing.instituteAffliate) || '').trim())
+                        return res.status(400).json({ message: 'Original hall affiliation is preserved. Use the Hall Module to record affiliation or reassign a room.' });
+                    delete req.body.instituteAffliate;
+                }
                 const { titleId, programId, countryId, regionId, religionId, disabilityId, majorId, instituteEmail, indexno } = req.body;
                 delete req.body.titleId;
                 delete req.body.programId;
@@ -2144,10 +2120,26 @@ class AisController {
                 req.body.entryDate = (0, helper_1.toDate)(req.body.entryDate);
                 req.body.dob = (0, helper_1.toDate)(req.body.dob);
                 normaliseAdmissionFields(req.body);
-                const resp = yield ais.student.update({
-                    where: { id: (0, paramStr_1.paramStr)(req.params.id) },
-                    data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
-                });
+                const resp = yield ais.$transaction((tx) => __awaiter(this, void 0, void 0, function* () {
+                    const existingStudent = yield (0, residence_1.lockStudent)(tx, (0, paramStr_1.paramStr)(req.params.id));
+                    if (req.body.gender !== undefined && (0, residence_1.genderOf)(req.body.gender) !== (0, residence_1.genderOf)(existingStudent.gender) && existingStudent.currentHallId) {
+                        yield tx.$queryRaw `SELECT id FROM ais_hall WHERE id = ${existingStudent.currentHallId} FOR UPDATE`;
+                        const hall = yield tx.residenceHall.findUnique({ where: { id: existingStudent.currentHallId } });
+                        (0, residence_1.assertHallGender)({ gender: req.body.gender }, hall);
+                    }
+                    if (req.body.gender !== undefined) {
+                        const session = yield tx.session.findFirst({ where: { default: true, status: true }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }] });
+                        if (session) {
+                            const placement = yield tx.residenceAssignment.findFirst({ where: { studentId: (0, paramStr_1.paramStr)(req.params.id), academicYear: (0, residence_1.academicYear)(session), status: 'ACTIVE' } });
+                            if (placement && (0, residence_1.genderOf)(req.body.gender) !== placement.gender)
+                                throw new residence_1.ResidenceError('Release the current room in the Hall Module before changing the student gender.');
+                        }
+                    }
+                    return tx.student.update({
+                        where: { id: (0, paramStr_1.paramStr)(req.params.id) },
+                        data: Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign(Object.assign({}, req.body), programId && ({ program: { connect: { id: programId } } })), titleId && ({ title: { connect: { id: titleId } } })), countryId && ({ country: { connect: { id: countryId } } })), regionId && ({ region: { connect: { id: regionId } } })), religionId && ({ religion: { connect: { id: religionId } } })), disabilityId && ({ disability: { connect: { id: disabilityId } } })), majorId && majorId == 'NONE' && ({ major: { disconnect: true } })), majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }))
+                    });
+                }), residence_1.transactionOptions);
                 if (resp) {
                     // Update Email as tag in sso_user
                     if (instituteEmail)
@@ -2167,17 +2159,23 @@ class AisController {
             }
             catch (error) {
                 console.log(error);
-                return res.status(error instanceof StudentSelfEditError ? 400 : 500).json({ message: error.message });
+                return res.status(error instanceof StudentSelfEditError ? 400 : error instanceof residence_1.ResidenceError ? error.status : 500).json({ message: error.message });
             }
         });
     }
-    // Halls of Affiliation in use -- options for the student portal's
-    // one-time Hall of Affiliation edit (see updateOwnStudentProfile).
+    // Managed active halls for a fresher's original affiliation selection.
     fetchHalls(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
             try {
-                const rows = yield ais.student.groupBy({ by: ['instituteAffliate'], where: { instituteAffliate: { not: null } }, orderBy: { instituteAffliate: 'asc' } });
-                res.status(200).json(rows.map((r) => { var _a; return (_a = r.instituteAffliate) === null || _a === void 0 ? void 0 : _a.trim(); }).filter(Boolean));
+                let gender = null;
+                if (Number(req.groupId) === 1) {
+                    const student = yield ais.student.findUnique({ where: { id: req.userId }, select: { gender: true } });
+                    gender = (0, residence_1.genderOf)(student === null || student === void 0 ? void 0 : student.gender);
+                    if (!gender)
+                        return res.status(200).json([]);
+                }
+                const rows = yield ais.residenceHall.findMany({ where: { active: true, gender: gender || { in: ['M', 'F'] } }, select: { name: true }, orderBy: { name: 'asc' } });
+                res.status(200).json(rows.map((r) => r.name));
             }
             catch (error) {
                 console.log(error);
@@ -4770,7 +4768,7 @@ class AisController {
                     if (assignStaffId && (assignStaffId != sheet.assignStaffId)) {
                         const st = yield ais.staff.findFirst({ where: { staffNo: assignStaffId } });
                         if (st === null || st === void 0 ? void 0 : st.phone)
-                            yield sms(st === null || st === void 0 ? void 0 : st.phone, `Hi! You have been assigned a course with course code: ${sheet === null || sheet === void 0 ? void 0 : sheet.courseId} for Year ${Math.ceil((sheet === null || sheet === void 0 ? void 0 : sheet.semesterNum) / 2)}. Please login to assess your students.`);
+                            yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! You have been assigned a course with course code: ${sheet === null || sheet === void 0 ? void 0 : sheet.courseId} for Year ${Math.ceil((sheet === null || sheet === void 0 ? void 0 : sheet.semesterNum) / 2)}. Please login to assess your students.`);
                     }
                     // Return Response
                     res.status(200).json(resp);
@@ -6770,11 +6768,14 @@ class AisController {
     }
     sendNotice(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
+            var _a;
             try {
                 const resp = yield ais.informer.findUnique({
                     where: { id: req.body.noticeId }
                 });
                 if (resp) {
+                    if (!((_a = resp.smsContent) === null || _a === void 0 ? void 0 : _a.trim()))
+                        return res.status(400).json({ message: 'Add SMS content to this circular before sending it.' });
                     let receivers = [];
                     if (resp.receiver == 'FRESHER') {
                         const rs = yield ais.student.findMany({
@@ -6788,7 +6789,7 @@ class AisController {
                             where: { completeStatus: false, deferStatus: false, phone: { not: null } },
                             select: { semesterNum: true, phone: true, program: { select: { semesterTotal: true } } },
                         });
-                        receivers = rs === null || rs === void 0 ? void 0 : rs.filter((r) => ((r.semesterNum == r.program.semesterTotal) || (r.semesterNum == r.program.semesterTotal - 1))).map((r) => r === null || r === void 0 ? void 0 : r.phone);
+                        receivers = rs === null || rs === void 0 ? void 0 : rs.filter((r) => { var _a, _b; return ((r.semesterNum == ((_a = r.program) === null || _a === void 0 ? void 0 : _a.semesterTotal)) || (r.semesterNum == ((_b = r.program) === null || _b === void 0 ? void 0 : _b.semesterTotal) - 1)); }).map((r) => r === null || r === void 0 ? void 0 : r.phone);
                     }
                     else if (resp.receiver == 'STUDENT') {
                         const rs = yield ais.student.findMany({
@@ -6831,7 +6832,9 @@ class AisController {
                             select: { phone: true, headStaffNo: true },
                         });
                         receivers = yield Promise.all(rs === null || rs === void 0 ? void 0 : rs.map((r) => __awaiter(this, void 0, void 0, function* () {
-                            const st = yield ais.staff.findFirst({ where: { staffNo: r === null || r === void 0 ? void 0 : r.headStaffNo, phone: { not: null } } });
+                            if (!r.headStaffNo)
+                                return null;
+                            const st = yield ais.staff.findFirst({ where: { staffNo: r.headStaffNo, phone: { not: null } } });
                             return st === null || st === void 0 ? void 0 : st.phone;
                         })));
                     }
@@ -6841,42 +6844,34 @@ class AisController {
                             select: { phone: true, headStaffNo: true },
                         });
                         receivers = yield Promise.all(rs === null || rs === void 0 ? void 0 : rs.map((r) => __awaiter(this, void 0, void 0, function* () {
-                            const st = yield ais.staff.findFirst({ where: { staffNo: r === null || r === void 0 ? void 0 : r.headStaffNo, phone: { not: null } } });
+                            if (!r.headStaffNo)
+                                return null;
+                            const st = yield ais.staff.findFirst({ where: { staffNo: r.headStaffNo, phone: { not: null } } });
                             return st === null || st === void 0 ? void 0 : st.phone;
                         })));
                     }
                     else if (resp.receiver == 'ASSESSOR') {
-                        const rs = yield ais.unit.findMany({
-                            where: { type: 'ACADEMIC', levelNum: 1 },
-                            select: { phone: true, headStaffNo: true },
-                        });
-                        receivers = yield Promise.all(rs === null || rs === void 0 ? void 0 : rs.map((r) => __awaiter(this, void 0, void 0, function* () {
-                            const st = yield ais.staff.findFirst({ where: { staffNo: r === null || r === void 0 ? void 0 : r.headStaffNo, phone: { not: null } } });
-                            return st === null || st === void 0 ? void 0 : st.phone;
-                        })));
+                        const session = yield ais.session.findFirst({ where: { default: true, status: true } });
+                        if (!session)
+                            return res.status(400).json({ message: 'Set the active academic session before sending to assessors.' });
+                        const sheets = yield ais.sheet.findMany({ where: { sessionId: session.id, assignStaffId: { not: null } }, select: { assignee: { select: { phone: true } } } });
+                        receivers = sheets.map((sheet) => { var _a; return (_a = sheet.assignee) === null || _a === void 0 ? void 0 : _a.phone; });
                     }
                     else if (resp.receiver == 'DEBTOR') {
                         const rs = yield ais.student.findMany({
-                            where: { completeStatus: true, deferStatus: true, accountNet: { gt: 0 }, phone: { not: null } },
+                            where: { completeStatus: false, deferStatus: false, accountNet: { gt: 0 }, phone: { not: null } },
                             select: { phone: true },
                         });
                         receivers = rs === null || rs === void 0 ? void 0 : rs.map((r) => r === null || r === void 0 ? void 0 : r.phone);
                     }
                     // Also push it to the student app (via akaweb) for student audiences.
                     void (0, pushBroadcast_1.broadcastCircular)(resp).catch(() => undefined);
-                    // Clean Receivers phone numbers
-                    const send = receivers === null || receivers === void 0 ? void 0 : receivers.map((phone) => __awaiter(this, void 0, void 0, function* () {
-                        const mobile = phone.replace('-', '').replace(' ', '').replace('+233', '0').replace('.', '').replace('_', '');
-                        console.log(mobile);
-                        if ((mobile === null || mobile === void 0 ? void 0 : mobile.length) == 10 || (mobile === null || mobile === void 0 ? void 0 : mobile.length) == 11)
-                            return yield sms(mobile, resp.smsContent);
-                        return;
-                    }));
-                    // Return Response
-                    res.status(200).json(send);
+                    const result = yield sms.sendMany(receivers, resp.smsContent);
+                    yield ais.log.create({ data: { action: 'SEND_CIRCULAR_SMS', user: req.userId, meta: Object.assign({ noticeId: resp.id }, result) } });
+                    res.status(200).json(result);
                 }
                 else {
-                    res.status(202).json({ message: `no record found` });
+                    res.status(404).json({ message: `Circular not found.` });
                 }
             }
             catch (error) {
@@ -8140,24 +8135,22 @@ class AisController {
                 const credentials = (s) => (username, password) => notice(s, `Username: ${username}, Password: ${password}`);
                 const userId = req.userId;
                 const activated = [];
+                const smsFailures = [];
+                let smsAccepted = 0;
                 const errors = [];
                 for (const s of freshers) {
                     try {
-                        // Exactly one SMS per fresher: whichever step issues the
-                        // password texts it inside the admission notice.
+                        let notification = null;
                         if (!hasAccount.has(s.id))
-                            yield stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s));
-                        if (!s.instituteEmail) {
-                            yield generateStudentEmail(s.id, userId, true, credentials(s));
-                        }
-                        else if (hasAccount.has(s.id) && s.phone) {
-                            try {
-                                yield sms(s.phone, notice(s, 'Use your existing portal login.'));
-                            }
-                            catch (smsError) {
-                                console.log('activateAdmission SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                            }
-                        }
+                            notification = (yield stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s))).sms;
+                        if (!s.instituteEmail)
+                            notification = (yield generateStudentEmail(s.id, userId, true, credentials(s))).sms;
+                        else if (hasAccount.has(s.id))
+                            notification = yield sms.safe(s.phone, notice(s, 'Use your existing portal login.'));
+                        if (notification === null || notification === void 0 ? void 0 : notification.accepted)
+                            smsAccepted++;
+                        else
+                            smsFailures.push({ id: s.id, reason: (notification === null || notification === void 0 ? void 0 : notification.message) || 'SMS was not submitted.' });
                         // Set last: a fresher whose provisioning failed stays NULL and
                         // is retried by the next activation.
                         yield ais.student.update({ where: { id: s.id }, data: { admissionStatus: 'PENDING' } });
@@ -8168,8 +8161,8 @@ class AisController {
                         errors.push({ id: s.id, reason: (0, helper_1.errorMessage)(activateError, 'Failed to activate admission') });
                     }
                 }
-                yield ais.log.create({ data: { action: 'ADMISSION_ACTIVATED', user: userId, meta: { letterId: letter.id, programId: letter.programId, count: activated.length, ids: activated, errors } } });
-                res.status(200).json({ total: freshers.length, activated: activated.length, errors });
+                yield ais.log.create({ data: { action: 'ADMISSION_ACTIVATED', user: userId, meta: { letterId: letter.id, programId: letter.programId, count: activated.length, ids: activated, errors, smsAccepted, smsFailures } } });
+                res.status(200).json({ total: freshers.length, activated: activated.length, errors, smsAccepted, smsFailures });
             }
             catch (error) {
                 console.log(error);
@@ -8344,22 +8337,11 @@ class AisController {
                     data: Object.assign(Object.assign({}, ssoData), { group: { connect: { id: 2 } } }),
                 });
                 if (resp) {
-                    // Send Password By SMS -- quote the username actually stored on the
-                    // account (login matches on sso_user.username), not instituteEmail.
-                    if (st === null || st === void 0 ? void 0 : st.phone) {
-                        const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-                        try {
-                            yield sms(phone, `Hi! Your new credentials are Username: ${resp.username}, Password: ${password}`);
-                        }
-                        catch (smsError) {
-                            console.log('stageStaff SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                        }
-                    }
-                    // Audit: who staged which staff account (no credentials logged).
-                    yield ais.log.create({ data: { action: `STAFF_ACCOUNT_STAGED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId, username: resp.username, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
+                    const smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials are Username: ${resp.username}, Password: ${password}`);
+                    yield ais.log.create({ data: { action: `STAFF_ACCOUNT_STAGED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId, username: resp.username, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } });
                     // Never return the password hash to the client.
                     const { password: _hash, unlockPin: _pin } = resp, account = __rest(resp, ["password", "unlockPin"]);
-                    res.status(200).json(Object.assign(Object.assign({}, account), { password }));
+                    res.status(200).json(Object.assign(Object.assign({}, account), { password, sms: smsResult }));
                 }
                 else {
                     res.status(202).json({ message: `no records found` });
@@ -8380,25 +8362,15 @@ class AisController {
                     throw new Error("No staff number provided!");
                 const password = pwdgen();
                 const st = yield ais.staff.findFirst({ where: { staffNo: staffId } });
+                if (!st)
+                    return res.status(404).json({ message: 'Staff record not found.' });
                 const user = yield ais.user.findFirst({ where: { tag: staffId, groupId: 2 } });
                 if (!user)
                     return res.status(202).json({ message: `No staff user account found. Stage the account first.` });
                 yield ais.user.update({ where: { id: user.id }, data: { password: (0, password_1.hashPassword)(password) } });
-                // Audit: who reset which staff account (no credentials logged).
-                yield ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: !!(st === null || st === void 0 ? void 0 : st.phone) } } });
-                // Send Password By SMS -- quote the account's real login username
-                // (login matches on sso_user.username), which can differ from
-                // staff.instituteEmail or be set when that column is null/empty.
-                if (st === null || st === void 0 ? void 0 : st.phone) {
-                    const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-                    try {
-                        yield sms(phone, `Hi! Your credentials are Username: ${user.username}, Password: ${password}`);
-                    }
-                    catch (smsError) {
-                        console.log('resetStaff SMS send failed:', smsError === null || smsError === void 0 ? void 0 : smsError.message);
-                    }
-                }
-                res.status(200).json({ username: user.username, password });
+                const smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your credentials are Username: ${user.username}, Password: ${password}`);
+                yield ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { staffId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } });
+                res.status(200).json({ username: user.username, password, sms: smsResult });
             }
             catch (error) {
                 console.log(error);

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import AisController from '../controller/aisController';
 import stsRoute from './stsRoute';
 import residenceRoute from './residenceRoute';
+import utilitiesRoute from './utilitiesRoute';
 
 const { voteLimiter } = require("../middleware/rateLimitterFlexible");
 const { verifyToken } = require("../middleware/verifyToken");
@@ -65,6 +66,7 @@ class AisRoute {
     initializeRoute(){
       this.router.use('/sts', stsRoute);
       this.router.use('/residence', residenceRoute);
+      this.router.use('/utilities', utilitiesRoute);
       this.router.get('/dash', this.controller.loadDashboard);
       this.router.post('/report', [verifyToken, requireRole(REPORT_ROLES)], this.controller.loadReport);
       this.router.post('/report/statutory', [verifyToken, requireRole(REPORT_ROLES)], this.controller.exportStatutoryReport);
@@ -325,7 +327,7 @@ class AisRoute {
        /* Circulars */
       this.router.get('/notices', [verifyToken], this.controller.fetchNotices);
       this.router.get('/notices/:id', [verifyToken], this.controller.fetchNotice);
-      this.router.post('/notices/send', [verifyToken], this.controller.sendNotice);
+      this.router.post('/notices/send', [verifyToken, requireRole(['circular::admin'])], this.controller.sendNotice);
       this.router.post('/notices', [verifyToken], this.controller.postNotice);
       this.router.patch('/notices/:id', [verifyToken], this.controller.updateNotice);
       this.router.delete('/notices/:id', [verifyToken], this.controller.deleteNotice);

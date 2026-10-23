@@ -1,0 +1,23 @@
+import { Router } from 'express';
+import UtilitiesController from '../controller/utilitiesController';
+import { UTILITY_ROLES } from '../util/utilities';
+const { verifyToken } = require('../middleware/verifyToken');
+const router = Router(), c = new UtilitiesController();
+router.use(verifyToken);
+router.use((req: any, res, next) => {
+  if (typeof req.userId !== 'string' || !req.userId.trim()) return res.status(401).json({ message: 'Please sign in again.' });
+  if (Number(req.groupId) !== 2 || !(req.roles || []).some((r: any) => r?.app?.toLowerCase() === 'ais' && UTILITY_ROLES.includes(r.role))) return res.status(403).json({ message: 'You do not have permission to manage utilities.' });
+  return next();
+});
+router.get('/options', c.options);
+router.get('/students', c.students);
+router.get('/change-of-program', c.changes);
+router.post('/change-of-program', c.saveChange);
+router.patch('/change-of-program/:id', c.saveChange);
+router.delete('/change-of-program/:id', c.deleteChange);
+router.post('/change-of-program/:id/approve', c.approveChange);
+router.get('/:module', c.list);
+router.post('/:module', c.save);
+router.patch('/:module/:id', c.save);
+router.delete('/:module/:id', c.remove);
+export default router;

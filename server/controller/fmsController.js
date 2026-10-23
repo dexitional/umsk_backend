@@ -1508,6 +1508,8 @@ class FmsController {
                             data: Object.assign(Object.assign({}, data), serviceId && [2, 3, 4, 8].includes(serviceId) && ({ studentAccount: { createMany: { data: { studentId, narrative, currency, amount: (-1 * amountPaid), type: 'PAYMENT' } } } }))
                         });
                         if (ins) {
+                            let documentInstructions = '';
+                            let generatedIndex = null;
                             yield (0, auditLog_1.logRecords)(req, 'PAYMENT_CREATED', 'fms_transaction', [(0, auditLog_1.pick)(ins, auditLog_1.PAYMENT_FIELDS)], { student: studentId, user: 'BANK_API', source: 'BANK_API', collector: cl === null || cl === void 0 ? void 0 : cl.name });
                             if ([2, 3, 4, 8].includes(serviceId)) {
                                 const bal = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId } });
@@ -1534,9 +1536,7 @@ class FmsController {
                                     create: { studentId, transactId: ins === null || ins === void 0 ? void 0 : ins.id, quantity: count },
                                     update: {}
                                 });
-                                // Send Follow-up SMS to Student
-                                const msg = `Hi! Your document request has been processed, Please go into your portal [https://portal.akatsico.edu.gh] to update receipient and required information. Thank you.`;
-                                const send = yield sms(st === null || st === void 0 ? void 0 : st.phone, msg);
+                                documentInstructions = ' Log in to https://portal.akatsico.edu.gh to update your document recipient and required information.';
                             }
                             /* Index Number Generation For Freshers  */
                             if (serviceId == 2 && (st.semesterNum == st.entrySemesterNum)) {
@@ -1544,7 +1544,9 @@ class FmsController {
                                 const cx = yield fms.studentAccount.findFirst({ where: { studentId, type: 'BILL' }, include: { bill: { select: { quota: true } } } });
                                 const px = yield fms.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId, type: 'PAYMENT' } });
                                 // Compare All Payments to Bill Quota
-                                const isPassedIndex = (((_d = px === null || px === void 0 ? void 0 : px._sum) === null || _d === void 0 ? void 0 : _d.amount) >= (((_e = cx === null || cx === void 0 ? void 0 : cx.bill) === null || _e === void 0 ? void 0 : _e.quota) || 0) * (cx === null || cx === void 0 ? void 0 : cx.amount));
+                                // Payments are negative ledger entries; the bill stores quota as a percentage.
+                                const paid = -(Number((_d = px === null || px === void 0 ? void 0 : px._sum) === null || _d === void 0 ? void 0 : _d.amount) || 0);
+                                const isPassedIndex = !!cx && paid >= ((((_e = cx.bill) === null || _e === void 0 ? void 0 : _e.quota) || 0) / 100) * cx.amount;
                                 // Generate Index 
                                 if (!(st === null || st === void 0 ? void 0 : st.indexno) && isPassedIndex) {
                                     let indexno;
@@ -1566,14 +1568,15 @@ class FmsController {
                                         }
                                     }
                                     yield fms.student.update({ where: { id: studentId }, data: { indexno } });
-                                    // Send Notfication
-                                    const msg = `Hi ${st.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
-                                    yield sms(st === null || st === void 0 ? void 0 : st.phone, msg);
+                                    generatedIndex = indexno !== null && indexno !== void 0 ? indexno : null;
                                 }
                             }
-                            // Retire Account
-                            // Return Response
-                            return res.status(200).json({ success: true, data: { transId: ins === null || ins === void 0 ? void 0 : ins.id, studentId, serviceId } });
+                            // One receipt per new payment. Duplicate callbacks return above/below without resending.
+                            const message = `AKATSICO: Payment received: ${currency} ${amountPaid.toFixed(2)}. Student ID: ${studentId}. Reference: ${transRef}.` +
+                                (generatedIndex ? ` Your index number is ${generatedIndex}.` : '') + documentInstructions;
+                            const smsResult = yield sms.safe(st.phone, message);
+                            yield (0, auditLog_1.logRecords)(req, 'SMS_PAYMENT_RECEIPT', 'fms_transaction', [{ id: ins.id, sms: smsResult }], { student: studentId, user: 'BANK_API', collector: cl.name });
+                            return res.status(200).json({ success: true, data: { transId: ins === null || ins === void 0 ? void 0 : ins.id, studentId, serviceId }, sms: smsResult });
                         }
                         else {
                             return res.status(200).json({ success: false, data: null, msg: `Transaction failed` });

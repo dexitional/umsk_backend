@@ -1,4 +1,4 @@
-import { ResidenceError, initialAffiliation, recordAdmissionHall, lockStudent, genderOf, academicYear, transactionOptions } from "../util/residence";
+import { ResidenceError, initialAffiliation, recordAdmissionHall, lockStudent, genderOf, assertHallGender, academicYear, transactionOptions } from "../util/residence";
 import { academicTotals, assessmentGrade, transcriptGroups } from "../util/academic";
 import { CurriculumSchemeError, curriculumRows, selectCurriculum, registrationCourses, curriculumClassMeta, curriculumSchemeId } from "../util/curriculumScheme";
 import { Request, Response } from "express";
@@ -123,6 +123,10 @@ async function unresolvedResitStudentsForSession(trailSessionId: string) {
 // would text a username (the bare studentId) that's overwritten a moment
 // later, misleading the student.
 async function stageStudentAccess(studentId: string, userId?: string, sendSms: boolean = true, smsText?: (username: string, password: string) => string) {
+   if (typeof studentId !== 'string' || !studentId.trim()) throw new Error('Student ID is required.');
+   studentId = studentId.trim();
+   const st = await ais.student.findFirst({ where: { id: studentId } });
+   if (!st) throw new Error('Student record not found.');
    const password = generateStrongPassword();
    const isUser = await ais.user.findFirst({ where: { tag: studentId } })
    if (isUser) throw new Error("Student Portal Account Exists!")
@@ -134,21 +138,15 @@ async function stageStudentAccess(studentId: string, userId?: string, sendSms: b
          group: { connect: { id: 1 } },
       },
    })
+   let smsResult: any = null;
    if (sendSms) {
-      const st = await ais.student.findFirst({ where: { id: studentId } });
-      if (st?.phone) {
-         try {
-            // Quote the username just stored (login matches on it), not instituteEmail.
-            await sms(st.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`)
-         } catch (smsError: any) {
-            console.log('stageStudentAccess SMS send failed:', smsError?.message)
-         }
-      }
+      smsResult = await sms.safe(st?.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
    }
    // Log Login Response
    // Never log credentials (ssoData carries the hash + unlock PIN).
-   await ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, student: studentId, meta: { studentId, username: studentId } } })
-   return resp;
+   await ais.log.create({ data: { action: `STUDENT_ACCOUNT_STAGED`, user: userId, student: studentId, meta: { studentId, username: studentId, sms: smsResult } } })
+   const { password: _hash, unlockPin: _pin, ...account } = resp;
+   return { ...account, sms: smsResult };
 }
 
 // Core of the generateEmail route handler below -- see stageStudentAccess
@@ -156,6 +154,7 @@ async function stageStudentAccess(studentId: string, userId?: string, sendSms: b
 // default credentials SMS (Activate Admission folds the admission notice
 // into it, so a fresher gets one text instead of two).
 async function generateStudentEmail(studentId: string, userId?: string, sendSms: boolean = true, smsText?: (instituteEmail: string, password: string) => string) {
+   let smsResult: any = null;
    let count = 1;
    let isNew = true;
    const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
@@ -215,18 +214,12 @@ async function generateStudentEmail(studentId: string, userId?: string, sendSms:
          console.log('generateStudentEmail GSuite provisioning threw:', gsError?.message)
       }
 
-      // Send Credentials By SMS — isolated in its own try/catch (matching
-      // stageStudentAccess/resetStudent): a gateway hiccup shouldn't turn
-      // an already-successful email generation into a 500.
-      if (sendSms && st?.phone) {
-         try {
-            await sms(st.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`)
-         } catch (smsError: any) {
-            console.log('generateStudentEmail SMS send failed:', smsError?.message)
-         }
+      if (sendSms) {
+         smsResult = await sms.safe(st?.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`);
+         await ais.log.create({ data: { action: 'SMS_STUDENT_EMAIL_CREDENTIALS', user: userId, student: studentId, meta: smsResult } });
       }
    }
-   return resp;
+   return { ...resp, sms: smsResult };
 }
 
 // A student editing their own record (student portal web form, Akatsico
@@ -1122,19 +1115,9 @@ export default class AisController {
          if (!session) return res.status(202).json({ message: `no record found` });
          const eligible = await unregisteredStudentsForSession(session.id);
          const message = `Hi! Reminder: You have not yet registered for the ${session.title} semester. As a GTEC requirement, all students must register each semester or risk automatic deferment of their programme. Please register promptly.`;
-         const sent = await Promise.all(eligible.map(async (st: any) => {
-            try {
-               const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-               await sms(phone, message);
-               return true;
-            } catch (smsError: any) {
-               console.log('sendRegistrationReminder SMS send failed:', smsError?.message)
-               return false;
-            }
-         }));
-         const count = sent.filter(Boolean).length;
-         await ais.log.create({ data: { action: `SEND_REGISTRATION_REMINDER`, user: req?.userId, meta: { sessionId: session.id, count } } });
-         res.status(200).json({ count: eligible.length, sent: count });
+         const result = await sms.sendMany(eligible.map((st: any) => st.phone), message);
+         await ais.log.create({ data: { action: `SEND_REGISTRATION_REMINDER`, user: req?.userId, meta: { sessionId: session.id, ...result } } });
+         res.status(200).json(result);
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
@@ -1156,19 +1139,9 @@ export default class AisController {
          const sessionId = paramStr(req.params.id);
          const uniqueStudents = await unresolvedResitStudentsForSession(sessionId);
          const message = `Hi! Reminder: You have an outstanding resit course that has not been registered or paid for. As a GTEC requirement, please complete your resit registration and payment promptly to avoid automatic deferment of your programme.`;
-         const sent = await Promise.all(Array.from(uniqueStudents.values()).map(async (rawPhone: any) => {
-            try {
-               const phone = rawPhone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-               await sms(phone, message);
-               return true;
-            } catch (smsError: any) {
-               console.log('sendResitReminder SMS send failed:', smsError?.message)
-               return false;
-            }
-         }));
-         const count = sent.filter(Boolean).length;
-         await ais.log.create({ data: { action: `SEND_RESIT_REMINDER`, user: req?.userId, meta: { sessionId, count } } });
-         res.status(200).json({ count: uniqueStudents.size, sent: count });
+         const result = await sms.sendMany(Array.from(uniqueStudents.values()), message);
+         await ais.log.create({ data: { action: `SEND_RESIT_REMINDER`, user: req?.userId, meta: { sessionId, ...result } } });
+         res.status(200).json(result);
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: error.message })
@@ -1579,9 +1552,11 @@ export default class AisController {
 
    async resetStudent(req: Request & any, res: Response) {
       try {
-         const { studentId } = req.body;
+         const studentId = typeof req.body?.studentId === 'string' ? req.body.studentId.trim() : '';
+         if (!studentId) return res.status(400).json({ message: 'Student ID is required.' });
          const password = generateStrongPassword();
          const st = await ais.student.findFirst({ where: { id: studentId } });
+         if (!st) return res.status(404).json({ message: 'Student record not found.' });
 
          // Some students have an instituteEmail (and even a synced GSuite
          // account) without ever getting a portal login row -- e.g. Generate
@@ -1618,23 +1593,12 @@ export default class AisController {
             }
          }
 
-         // Send Password By SMS — normalized the same way forgetPassword
-         // does (authController.ts), and isolated in its own try/catch:
-         // a gateway hiccup shouldn't turn an already-successful password
-         // change into a 500 with no visibility into what actually failed.
-         if (st?.phone) {
-            const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-            try {
-               await sms(phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`)
-            } catch (smsError: any) {
-               console.log('resetStudent SMS send failed:', smsError?.message)
-            }
-         }
+         const smsResult = await sms.safe(st?.phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
          // Log Login Response
          // Audit: who reset whose account (no credentials logged).
-         await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, student: studentId, meta: { studentId, via: req?.originalUrl, smsSent: !!st?.phone } } })
+         await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, student: studentId, meta: { studentId, via: req?.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } })
          // Return Password
-         res.status(200).json({ password })
+         res.status(200).json({ username: account.username, password, sms: smsResult })
 
       } catch (error: any) {
          console.log(error)
@@ -1698,11 +1662,11 @@ export default class AisController {
          if (resp) {
             // Send Notfication
             const msg = `Hi ${student.fname}! Your AKATSICO Index number has been generated: ${indexno}, Thank you!`;
-            await sms(student?.phone, msg);
+            const smsResult = await sms.safe(student?.phone, msg);
             // Log Login Response
             await ais.log.create({ data: { action: `INDEX_NUMBER_GENERATED`, user: req?.userId, meta: { indexno } } })
             // Return Password
-            res.status(200).json({ indexno })
+            res.status(200).json({ indexno, sms: smsResult })
          } else {
             res.status(202).json({ message: `no records found` })
          }
@@ -1760,15 +1724,9 @@ export default class AisController {
 
          if (gs.ok) {
             await ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
-            if (st?.phone) {
-               try {
-                  await sms(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`)
-               } catch (smsError: any) {
-                  console.log('retryGsuiteSync SMS send failed:', smsError?.message)
-               }
-            }
-            await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail } } });
-            return res.status(200).json({ success: true });
+            const smsResult = await sms.safe(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`);
+            await ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: req?.userId, meta: { instituteEmail: st.instituteEmail, sms: smsResult } } });
+            return res.status(200).json({ success: true, sms: smsResult });
          } else if (gs.skipped) {
             return res.status(202).json({ message: `GSuite integration is not configured yet.` });
          } else {
@@ -1826,22 +1784,22 @@ export default class AisController {
 
          for (const key of ['originalHallId', 'currentHallId', 'originalHall', 'currentHall', 'originalHallSource', 'roomAssignments', 'hallAffiliationEvents', 'affiliateEditedAt']) delete req.body[key];
          const resp = await ais.$transaction(async (tx: any) => {
-         const created = await tx.student.create({
-            data: {
-               ...req.body,
-               ...programId && ({ program: { connect: { id: programId } } }),
-               ...titleId && ({ title: { connect: { id: titleId } } }),
-               ...countryId && ({ country: { connect: { id: countryId } } }),
-               ...regionId && ({ region: { connect: { id: regionId } } }),
-               ...religionId && ({ religion: { connect: { id: religionId } } }),
-               ...disabilityId && ({ disability: { connect: { id: disabilityId } } }),
-               // A new student has no prior major to disconnect -- `disconnect`
-               // is only valid on update(), not create(). "No major selected"
-               // just means the relation is left unset here.
-               ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
-            }
-         })
-         return recordAdmissionHall(tx, created, req.userId);
+            const created = await tx.student.create({
+               data: {
+                  ...req.body,
+                  ...programId && ({ program: { connect: { id: programId } } }),
+                  ...titleId && ({ title: { connect: { id: titleId } } }),
+                  ...countryId && ({ country: { connect: { id: countryId } } }),
+                  ...regionId && ({ region: { connect: { id: regionId } } }),
+                  ...religionId && ({ religion: { connect: { id: religionId } } }),
+                  ...disabilityId && ({ disability: { connect: { id: disabilityId } } }),
+                  // A new student has no prior major to disconnect -- `disconnect`
+                  // is only valid on update(), not create(). "No major selected"
+                  // just means the relation is left unset here.
+                  ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
+               }
+            })
+            return recordAdmissionHall(tx, created, req.userId);
          });
          if (resp) {
             // Log Login Response
@@ -2101,29 +2059,34 @@ export default class AisController {
          req.body.dob = toDate(req.body.dob);
          normaliseAdmissionFields(req.body);
          const resp = await ais.$transaction(async (tx: any) => {
-         await lockStudent(tx, paramStr(req.params.id));
-         if (req.body.gender !== undefined) {
-            const session = await tx.session.findFirst({ where: { default: true, status: true }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }] });
-            if (session) {
-               const placement = await tx.residenceAssignment.findFirst({ where: { studentId: paramStr(req.params.id), academicYear: academicYear(session), status: 'ACTIVE' } });
-               if (placement && genderOf(req.body.gender) !== placement.gender) throw new ResidenceError('Release the current room in the Hall Module before changing the student gender.');
+            const existingStudent = await lockStudent(tx, paramStr(req.params.id));
+            if (req.body.gender !== undefined && genderOf(req.body.gender) !== genderOf(existingStudent.gender) && existingStudent.currentHallId) {
+               await tx.$queryRaw`SELECT id FROM ais_hall WHERE id = ${existingStudent.currentHallId} FOR UPDATE`;
+               const hall = await tx.residenceHall.findUnique({ where: { id: existingStudent.currentHallId } });
+               assertHallGender({ gender: req.body.gender }, hall);
             }
-         }
-         return tx.student.update({
-            where: { id: paramStr(req.params.id) },
-            data: {
-               ...req.body,
-               //...indexno && ({ indexno }),
-               ...programId && ({ program: { connect: { id: programId } } }),
-               ...titleId && ({ title: { connect: { id: titleId } } }),
-               ...countryId && ({ country: { connect: { id: countryId } } }),
-               ...regionId && ({ region: { connect: { id: regionId } } }),
-               ...religionId && ({ religion: { connect: { id: religionId } } }),
-               ...disabilityId && ({ disability: { connect: { id: disabilityId } } }),
-               ...majorId && majorId == 'NONE' && ({ major: { disconnect: true } }),
-               ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
+            if (req.body.gender !== undefined) {
+               const session = await tx.session.findFirst({ where: { default: true, status: true }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }] });
+               if (session) {
+                  const placement = await tx.residenceAssignment.findFirst({ where: { studentId: paramStr(req.params.id), academicYear: academicYear(session), status: 'ACTIVE' } });
+                  if (placement && genderOf(req.body.gender) !== placement.gender) throw new ResidenceError('Release the current room in the Hall Module before changing the student gender.');
+               }
             }
-         })
+            return tx.student.update({
+               where: { id: paramStr(req.params.id) },
+               data: {
+                  ...req.body,
+                  //...indexno && ({ indexno }),
+                  ...programId && ({ program: { connect: { id: programId } } }),
+                  ...titleId && ({ title: { connect: { id: titleId } } }),
+                  ...countryId && ({ country: { connect: { id: countryId } } }),
+                  ...regionId && ({ region: { connect: { id: regionId } } }),
+                  ...religionId && ({ religion: { connect: { id: religionId } } }),
+                  ...disabilityId && ({ disability: { connect: { id: disabilityId } } }),
+                  ...majorId && majorId == 'NONE' && ({ major: { disconnect: true } }),
+                  ...majorId && majorId != 'NONE' && ({ major: { connect: { id: majorId } } }),
+               }
+            })
          }, transactionOptions);
          if (resp) {
             // Update Email as tag in sso_user
@@ -2155,11 +2118,16 @@ export default class AisController {
       }
    }
 
-   // Halls of Affiliation in use -- options for the student portal's
-   // one-time Hall of Affiliation edit (see updateOwnStudentProfile).
-   async fetchHalls(req: Request, res: Response) {
+   // Managed active halls for a fresher's original affiliation selection.
+   async fetchHalls(req: Request & any, res: Response) {
       try {
-         const rows = await ais.residenceHall.findMany({ where: { active: true }, select: { name: true }, orderBy: { name: 'asc' } });
+         let gender: string | null = null;
+         if (Number(req.groupId) === 1) {
+            const student = await ais.student.findUnique({ where: { id: req.userId }, select: { gender: true } });
+            gender = genderOf(student?.gender);
+            if (!gender) return res.status(200).json([]);
+         }
+         const rows = await ais.residenceHall.findMany({ where: { active: true, gender: gender || { in: ['M', 'F'] } }, select: { name: true }, orderBy: { name: 'asc' } });
          res.status(200).json(rows.map((r: any) => r.name))
       } catch (error: any) {
          console.log(error)
@@ -4765,7 +4733,7 @@ export default class AisController {
             // Send SMS
             if (assignStaffId && (assignStaffId != sheet.assignStaffId)) {
                const st = await ais.staff.findFirst({ where: { staffNo: assignStaffId } })
-               if (st?.phone) await sms(st?.phone, `Hi! You have been assigned a course with course code: ${sheet?.courseId} for Year ${Math.ceil(sheet?.semesterNum / 2)}. Please login to assess your students.`)
+               if (st?.phone) await sms.safe(st?.phone, `Hi! You have been assigned a course with course code: ${sheet?.courseId} for Year ${Math.ceil(sheet?.semesterNum / 2)}. Please login to assess your students.`)
             }
 
             // Return Response
@@ -6796,12 +6764,13 @@ export default class AisController {
       }
    }
 
-   async sendNotice(req: Request, res: Response) {
+   async sendNotice(req: Request & any, res: Response) {
       try {
          const resp = await ais.informer.findUnique({
             where: { id: req.body.noticeId }
          })
          if (resp) {
+            if (!resp.smsContent?.trim()) return res.status(400).json({ message: 'Add SMS content to this circular before sending it.' });
             let receivers: any = [];
 
             if (resp.receiver == 'FRESHER') {
@@ -6816,7 +6785,7 @@ export default class AisController {
                   where: { completeStatus: false, deferStatus: false, phone: { not: null } },
                   select: { semesterNum: true, phone: true, program: { select: { semesterTotal: true } } },
                })
-               receivers = rs?.filter((r: any) => ((r.semesterNum == r.program.semesterTotal) || (r.semesterNum == r.program.semesterTotal - 1))).map((r: any) => r?.phone);
+               receivers = rs?.filter((r: any) => ((r.semesterNum == r.program?.semesterTotal) || (r.semesterNum == r.program?.semesterTotal - 1))).map((r: any) => r?.phone);
 
             } else if (resp.receiver == 'STUDENT') {
                const rs = await ais.student.findMany({
@@ -6859,7 +6828,8 @@ export default class AisController {
                   select: { phone: true, headStaffNo: true },
                })
                receivers = await Promise.all(rs?.map(async (r: any) => {
-                  const st = await ais.staff.findFirst({ where: { staffNo: r?.headStaffNo, phone: { not: null } } });
+                  if (!r.headStaffNo) return null;
+                  const st = await ais.staff.findFirst({ where: { staffNo: r.headStaffNo, phone: { not: null } } });
                   return st?.phone
                }));
 
@@ -6869,23 +6839,20 @@ export default class AisController {
                   select: { phone: true, headStaffNo: true },
                })
                receivers = await Promise.all(rs?.map(async (r: any) => {
-                  const st = await ais.staff.findFirst({ where: { staffNo: r?.headStaffNo, phone: { not: null } } });
+                  if (!r.headStaffNo) return null;
+                  const st = await ais.staff.findFirst({ where: { staffNo: r.headStaffNo, phone: { not: null } } });
                   return st?.phone
                }));
 
             } else if (resp.receiver == 'ASSESSOR') {
-               const rs = await ais.unit.findMany({
-                  where: { type: 'ACADEMIC', levelNum: 1 },
-                  select: { phone: true, headStaffNo: true },
-               })
-               receivers = await Promise.all(rs?.map(async (r: any) => {
-                  const st = await ais.staff.findFirst({ where: { staffNo: r?.headStaffNo, phone: { not: null } } });
-                  return st?.phone
-               }));
+               const session = await ais.session.findFirst({ where: { default: true, status: true } });
+               if (!session) return res.status(400).json({ message: 'Set the active academic session before sending to assessors.' });
+               const sheets = await ais.sheet.findMany({ where: { sessionId: session.id, assignStaffId: { not: null } }, select: { assignee: { select: { phone: true } } } });
+               receivers = sheets.map((sheet: any) => sheet.assignee?.phone);
 
             } else if (resp.receiver == 'DEBTOR') {
                const rs = await ais.student.findMany({
-                  where: { completeStatus: true, deferStatus: true, accountNet: { gt: 0 }, phone: { not: null } },
+                  where: { completeStatus: false, deferStatus: false, accountNet: { gt: 0 }, phone: { not: null } },
                   select: { phone: true },
                })
                receivers = rs?.map((r: any) => r?.phone);
@@ -6894,18 +6861,11 @@ export default class AisController {
             // Also push it to the student app (via akaweb) for student audiences.
             void broadcastCircular(resp).catch(() => undefined);
 
-            // Clean Receivers phone numbers
-            const send = receivers?.map(async (phone: string) => {
-               const mobile: any = phone.replace('-', '').replace(' ', '').replace('+233', '0').replace('.', '').replace('_', '');
-               console.log(mobile);
-               if (mobile?.length == 10 || mobile?.length == 11)
-                  return await sms(mobile, resp.smsContent);
-               return;
-            })
-            // Return Response
-            res.status(200).json(send)
+            const result = await sms.sendMany(receivers, resp.smsContent);
+            await ais.log.create({ data: { action: 'SEND_CIRCULAR_SMS', user: req.userId, meta: { noticeId: resp.id, ...result } } });
+            res.status(200).json(result)
          } else {
-            res.status(202).json({ message: `no record found` })
+            res.status(404).json({ message: `Circular not found.` })
          }
       } catch (error: any) {
          console.log(error)
@@ -8144,21 +8104,17 @@ export default class AisController {
 
          const userId = req.userId;
          const activated: string[] = [];
+         const smsFailures: { id: string; reason: string }[] = [];
+         let smsAccepted = 0;
          const errors: { id: string; reason: string }[] = [];
          for (const s of freshers) {
             try {
-               // Exactly one SMS per fresher: whichever step issues the
-               // password texts it inside the admission notice.
-               if (!hasAccount.has(s.id)) await stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s));
-               if (!s.instituteEmail) {
-                  await generateStudentEmail(s.id, userId, true, credentials(s));
-               } else if (hasAccount.has(s.id) && s.phone) {
-                  try {
-                     await sms(s.phone, notice(s, 'Use your existing portal login.'));
-                  } catch (smsError: any) {
-                     console.log('activateAdmission SMS send failed:', smsError?.message);
-                  }
-               }
+               let notification: any = null;
+               if (!hasAccount.has(s.id)) notification = (await stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s))).sms;
+               if (!s.instituteEmail) notification = (await generateStudentEmail(s.id, userId, true, credentials(s))).sms;
+               else if (hasAccount.has(s.id)) notification = await sms.safe(s.phone, notice(s, 'Use your existing portal login.'));
+               if (notification?.accepted) smsAccepted++;
+               else smsFailures.push({ id: s.id, reason: notification?.message || 'SMS was not submitted.' });
                // Set last: a fresher whose provisioning failed stays NULL and
                // is retried by the next activation.
                await ais.student.update({ where: { id: s.id }, data: { admissionStatus: 'PENDING' } });
@@ -8168,8 +8124,8 @@ export default class AisController {
                errors.push({ id: s.id, reason: errorMessage(activateError, 'Failed to activate admission') });
             }
          }
-         await ais.log.create({ data: { action: 'ADMISSION_ACTIVATED', user: userId, meta: { letterId: letter.id, programId: letter.programId, count: activated.length, ids: activated, errors } as any } });
-         res.status(200).json({ total: freshers.length, activated: activated.length, errors });
+         await ais.log.create({ data: { action: 'ADMISSION_ACTIVATED', user: userId, meta: { letterId: letter.id, programId: letter.programId, count: activated.length, ids: activated, errors, smsAccepted, smsFailures } as any } });
+         res.status(200).json({ total: freshers.length, activated: activated.length, errors, smsAccepted, smsFailures });
       } catch (error: any) {
          console.log(error)
          return res.status(500).json({ message: errorMessage(error) })
@@ -8331,21 +8287,11 @@ export default class AisController {
             },
          })
          if (resp) {
-            // Send Password By SMS -- quote the username actually stored on the
-            // account (login matches on sso_user.username), not instituteEmail.
-            if (st?.phone) {
-               const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-               try {
-                  await sms(phone, `Hi! Your new credentials are Username: ${resp.username}, Password: ${password}`)
-               } catch (smsError: any) {
-                  console.log('stageStaff SMS send failed:', smsError?.message)
-               }
-            }
-            // Audit: who staged which staff account (no credentials logged).
-            await ais.log.create({ data: { action: `STAFF_ACCOUNT_STAGED`, user: req?.userId, meta: { staffId, username: resp.username, via: req?.originalUrl, smsSent: !!st?.phone } } })
+            const smsResult = await sms.safe(st?.phone, `Hi! Your new credentials are Username: ${resp.username}, Password: ${password}`);
+            await ais.log.create({ data: { action: `STAFF_ACCOUNT_STAGED`, user: req?.userId, meta: { staffId, username: resp.username, via: req?.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } })
             // Never return the password hash to the client.
             const { password: _hash, unlockPin: _pin, ...account } = resp;
-            res.status(200).json({ ...account, password })
+            res.status(200).json({ ...account, password, sms: smsResult })
          } else {
             res.status(202).json({ message: `no records found` })
          }
@@ -8362,23 +8308,13 @@ export default class AisController {
          if (!staffId) throw new Error("No staff number provided!")
          const password = pwdgen();
          const st = await ais.staff.findFirst({ where: { staffNo: staffId } })
+         if (!st) return res.status(404).json({ message: 'Staff record not found.' });
          const user = await ais.user.findFirst({ where: { tag: staffId, groupId: 2 } })
          if (!user) return res.status(202).json({ message: `No staff user account found. Stage the account first.` })
          await ais.user.update({ where: { id: user.id }, data: { password: hashPassword(password) } })
-         // Audit: who reset which staff account (no credentials logged).
-         await ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req?.userId, meta: { staffId, via: req?.originalUrl, smsSent: !!st?.phone } } })
-         // Send Password By SMS -- quote the account's real login username
-         // (login matches on sso_user.username), which can differ from
-         // staff.instituteEmail or be set when that column is null/empty.
-         if (st?.phone) {
-            const phone = st.phone.replaceAll("+233", "0").replaceAll(" ", "").replaceAll("-", "").replaceAll("(", "").replaceAll(")", "").split("/")[0].trim();
-            try {
-               await sms(phone, `Hi! Your credentials are Username: ${user.username}, Password: ${password}`)
-            } catch (smsError: any) {
-               console.log('resetStaff SMS send failed:', smsError?.message)
-            }
-         }
-         res.status(200).json({ username: user.username, password })
+         const smsResult = await sms.safe(st?.phone, `Hi! Your credentials are Username: ${user.username}, Password: ${password}`);
+         await ais.log.create({ data: { action: `STAFF_ACCOUNT_RESET`, user: req?.userId, meta: { staffId, via: req?.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } })
+         res.status(200).json({ username: user.username, password, sms: smsResult })
 
       } catch (error: any) {
          console.log(error)

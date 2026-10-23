@@ -40,11 +40,12 @@ function loadController() {
   await connection.query(`INSERT INTO sso_app SELECT * FROM ${mysql.escapeId(cfg.database)}.sso_app WHERE tag = 'ais'`);
   await connection.query("INSERT INTO ais_student (id, fname, gender, semesterNum, instituteAffliate) VALUES ('legacy', 'Legacy', 'M', 3, 'Legacy Hall')");
   await connection.query(fs.readFileSync(path.resolve(__dirname, '../prisma/sql/2026-10-22_hall_management.sql'), 'utf8'));
+  await connection.query(fs.readFileSync(path.resolve(__dirname, '../prisma/sql/2026-10-22_hall_gender.sql'), 'utf8'));
   db = new PrismaClient({ adapter: new PrismaMariaDb({ ...cfg, database: temp, connectionLimit: 10 }) });
   const tx = work => db.$transaction(work, rules.transactionOptions);
   const c = loadController();
   const call = async (method, body = {}, params = {}, query = {}, identity = {}) => { const response = res(); await c[method]({ userId: 'registry', groupId: 2, body, params, query, ...identity }, response); return response; };
-  let hallA, hallB, roomA, roomB, female, session, first;
+  let hallA, hallB, hallF, roomA, roomB, female, session, first;
   await check('migration preserves legacy original/current hall and records provenance', async () => {
     const s = await db.student.findUnique({ where: { id: 'legacy' } });
     assert.ok(s.originalHallId); assert.equal(s.currentHallId, s.originalHallId); assert.equal(s.originalHallSource, 'LEGACY');
@@ -52,12 +53,13 @@ function loadController() {
     const [roles] = await connection.query("SELECT r.id FROM sso_arole r JOIN sso_amodule m ON m.id=r.appModuleId WHERE m.tag='hall' AND r.title='admin'"); assert.equal(roles.length, 1);
   });
   await check('hall and room CRUD validate gender, capacity and stale edits', async () => {
-    hallA = (await call('saveHall', { code: 'A', name: 'Hall A' })).body;
-    hallB = (await call('saveHall', { code: 'B', name: 'Hall B' })).body;
+    hallA = (await call('saveHall', { code: 'A', name: 'Hall A', gender: 'M' })).body;
+    hallB = (await call('saveHall', { code: 'B', name: 'Hall B', gender: 'M' })).body;
+    hallF = (await call('saveHall', { code: 'F', name: 'Hall F', gender: 'F' })).body;
     const make = data => call('saveRoom', data);
     roomA = (await make({ hallId: hallA.id, code: 'A1', gender: 'M', capacity: 1 })).body;
     roomB = (await make({ hallId: hallB.id, code: 'B1', gender: 'M', capacity: 2 })).body;
-    female = (await make({ hallId: hallA.id, code: 'F1', gender: 'F', capacity: 2 })).body;
+    female = (await make({ hallId: hallF.id, code: 'F1', gender: 'F', capacity: 2 })).body;
     assert.ok(roomA.id); assert.equal((await make({ hallId: hallA.id, code: 'BAD', gender: 'X', capacity: 1 })).code, 400);
     assert.equal((await make({ hallId: hallA.id, code: 'BAD', gender: 'M', capacity: 0 })).code, 400);
     assert.equal((await call('saveRoom', { ...roomA, version: 99 }, { id: roomA.id })).code, 409);
@@ -65,6 +67,23 @@ function loadController() {
     for (const [id, gender] of [['s1','M'],['s2','M'],['s3','F'],['s4','M']]) await db.student.create({ data: { id, fname: id, gender, semesterNum: 1 } });
   });
   const body = (id, room = roomA, extra = {}) => ({ studentId: id, sessionId: session.id, roomId: room.id, ...extra });
+  await check('hall gender controls rooms and initial affiliations, with safe legacy configuration', async () => {
+    assert.equal((await call('saveHall', { code: 'BAD', name: 'No gender' })).code, 400);
+    assert.equal((await call('saveRoom', { hallId: hallA.id, code: 'WRONG', gender: 'F', capacity: 2 })).code, 400);
+    assert.equal((await call('recordOriginal', { hallId: hallA.id, reason: 'Wrong gender' }, { id: 's3' })).code, 400);
+    assert.equal((await call('saveHall', { ...hallA, gender: 'F' }, { id: hallA.id })).code, 400);
+    const legacy = await db.residenceHall.findFirst({ where: { name: 'Legacy Hall' } });
+    assert.equal(legacy.gender, null);
+    assert.equal((await call('recordOriginal', { hallId: legacy.id, reason: 'Unconfigured hall' }, { id: 's3' })).code, 400);
+    assert.equal((await call('saveHall', { ...legacy, gender: 'F' }, { id: legacy.id })).code, 200);
+    const opts = await call('options');
+    assert.equal(opts.body.halls.find(h => h.id === legacy.id).genderConflicts, 1);
+    assert.equal((await db.student.findUnique({ where: { id: 'legacy' } })).instituteAffliate, 'Legacy Hall');
+    // Even a legacy room whose own gender was set wrongly cannot bypass its hall.
+    await db.residenceRoom.update({ where: { id: roomA.id }, data: { gender: 'F' } });
+    await assert.rejects(tx(t => rules.assignRoom(t, body('s3'), 'registry')), /does not match this hall/);
+    await db.residenceRoom.update({ where: { id: roomA.id }, data: { gender: 'M' } });
+  });
   await check('concurrent attempts at the last bed admit exactly one student', async () => {
     const results = await Promise.allSettled(['s1','s2'].map(id => tx(t => rules.assignRoom(t, body(id), 'registry'))));
     assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);

@@ -16,6 +16,12 @@ export function genderOf(value: unknown): string | null {
   const gender = String(value || '').trim().toUpperCase();
   return ['M', 'MALE'].includes(gender) ? 'M' : ['F', 'FEMALE'].includes(gender) ? 'F' : null;
 }
+export function assertHallGender(student: any, hall: any) {
+  if (!hall || !['M', 'F'].includes(hall.gender)) throw new ResidenceError('Set the hall gender in Hall Module before affiliating or assigning students.');
+  const gender = genderOf(student?.gender);
+  if (!gender) throw new ResidenceError('Record the student’s gender before selecting a hall.');
+  if (gender !== hall.gender) throw new ResidenceError('The student’s gender does not match this hall.');
+}
 export function academicYear(session: any): string {
   const year = text(session?.year, 'Academic year', 50)!;
   // Formatting variations must not create a second allocation for the same year.
@@ -42,7 +48,11 @@ export async function lockStudent(tx: any, id: string) {
 }
 export async function initialAffiliation(tx: any, student: any, hall: any, actor: string, source: string, reason?: string | null) {
   if (student.originalHallId) throw new ResidenceError('The original hall has already been recorded and cannot be replaced.', 409);
+  if (!hall?.id) throw new ResidenceError('Choose an active hall.');
+  const lockedHalls = await tx.$queryRaw`SELECT id, name, gender, active FROM ais_hall WHERE id = ${hall.id} FOR UPDATE`;
+  hall = lockedHalls[0];
   if (!hall?.active) throw new ResidenceError('Choose an active hall.');
+  assertHallGender(student, hall);
   const result = await tx.student.update({ where: { id: student.id }, data: {
     originalHallId: hall.id, currentHallId: hall.id, instituteAffliate: hall.name, originalHallSource: source,
   }, include: studentInclude });
@@ -87,6 +97,8 @@ export async function assignRoom(tx: any, body: any, actor: string, id?: string)
   }
   const room = await tx.residenceRoom.findUnique({ where: { id: roomId }, include: { hall: true } });
   if (!room?.active || !room.hall.active || room.hallId !== roomRef.hallId) throw new ResidenceError('Choose an active room in an active hall.');
+  assertHallGender(student, room.hall);
+  if (room.gender !== room.hall.gender) throw new ResidenceError('This room’s gender does not match its hall. Contact the hall administrator.');
   if (genderOf(student.gender) !== room.gender) throw new ResidenceError('The student’s gender does not match this room.');
   const occupied = await tx.residenceAssignment.count({ where: { roomId, academicYear: year, status: 'ACTIVE', ...(previous ? { id: { not: previous.id } } : {}) } });
   if (occupied >= room.capacity) throw new ResidenceError('This room is full for the academic year. Choose another room.', 409);
