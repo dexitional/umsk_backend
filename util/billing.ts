@@ -57,6 +57,30 @@ export function studentBillAmount(bill: any, semesterNum: number | null) {
   return Math.round((Number(bill.amount) - discount) * 100) / 100;
 }
 
+// Course registration fee quota: of the bills posted to the student for
+// this session, each bill's quota percentage must be paid before they can
+// register. Measured against the live ledger balance (positive = owing),
+// so arrears from earlier sessions must be cleared too and an existing
+// credit counts towards the quota: the student may owe at most the unpaid
+// remainder, sum(amount x (1 - quota%)). A bill without a quota requires
+// nothing up front; no posted bills for the session, or a finance pardon,
+// means no check.
+export async function feeQuotaStatus(db: any, student: { id: string; flagPardon?: boolean | null }, sessionId: string) {
+  const round = (n: number) => Math.round(n * 100) / 100;
+  if (student.flagPardon) return { ok: true, pardoned: true };
+  const bills = await db.studentAccount.findMany({ where: { studentId: student.id, billId: { not: null }, bill: { sessionId } }, select: { amount: true, bill: { select: { quota: true } } } });
+  if (!bills.length) return { ok: true, billed: 0 };
+  const billed = round(bills.reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0));
+  const required = round(bills.reduce((sum: number, r: any) => sum + Number(r.amount || 0) * Math.min(Math.max(Number(r.bill?.quota) || 0, 0), 100) / 100, 0));
+  const ledger = await db.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId: student.id } });
+  const balance = round(Number(ledger?._sum?.amount) || 0);
+  const shortfall = round(Math.max(0, balance - (billed - required)));
+  return { ok: shortfall <= 0, billed, required, balance, shortfall };
+}
+
+export const feeQuotaMessage = (q: any) =>
+  `Fees quota not met: pay at least GHC ${Number(q.shortfall).toFixed(2)} more towards your fees to register courses this semester (required: GHC ${Number(q.required).toFixed(2)} of GHC ${Number(q.billed).toFixed(2)} billed, plus any arrears).`;
+
 export function studentTags(value: unknown): string[] {
   if (value == null) return [];
   if (!Array.isArray(value) || value.some(tag => typeof tag !== 'string' || !tag.trim())) throw new BillingError('The bill contains an invalid student inclusion or exclusion list.');

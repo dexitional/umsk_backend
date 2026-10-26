@@ -19,6 +19,8 @@ function load(file, mocks = {}) {
   vm.runInNewContext(code, { module, exports: module.exports, console: { error() {} }, require: name => {
     if (Object.hasOwn(mocks, name)) return mocks[name];
     if (name === 'react') return React;
+    if (name.startsWith('react-icons/')) return frontRequire(name);
+    if (name === '../management/ManagementUI') return load(path.join(front, 'src/components/management/ManagementUI.tsx'));
     if (name.startsWith('.')) throw new Error(`Unmocked dependency ${name}`);
     return require(name);
   } }, { filename: file });

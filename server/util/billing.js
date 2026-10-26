@@ -1,12 +1,22 @@
 "use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BillingError = void 0;
+exports.feeQuotaMessage = exports.BillingError = void 0;
 exports.groupCode = groupCode;
 exports.targetSemesters = targetSemesters;
 exports.codesForSemester = codesForSemester;
 exports.billStudentWhere = billStudentWhere;
 exports.validateBill = validateBill;
 exports.studentBillAmount = studentBillAmount;
+exports.feeQuotaStatus = feeQuotaStatus;
 exports.studentTags = studentTags;
 class BillingError extends Error {
     constructor(message, status = 400) { super(message); this.status = status; }
@@ -69,6 +79,33 @@ function studentBillAmount(bill, semesterNum) {
     const discount = year >= 0 && year < 4 && ((_a = bill.discountGroupCode) === null || _a === void 0 ? void 0 : _a[year]) === '1' ? Number(bill.discount || 0) : 0;
     return Math.round((Number(bill.amount) - discount) * 100) / 100;
 }
+// Course registration fee quota: of the bills posted to the student for
+// this session, each bill's quota percentage must be paid before they can
+// register. Measured against the live ledger balance (positive = owing),
+// so arrears from earlier sessions must be cleared too and an existing
+// credit counts towards the quota: the student may owe at most the unpaid
+// remainder, sum(amount x (1 - quota%)). A bill without a quota requires
+// nothing up front; no posted bills for the session, or a finance pardon,
+// means no check.
+function feeQuotaStatus(db, student, sessionId) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a;
+        const round = (n) => Math.round(n * 100) / 100;
+        if (student.flagPardon)
+            return { ok: true, pardoned: true };
+        const bills = yield db.studentAccount.findMany({ where: { studentId: student.id, billId: { not: null }, bill: { sessionId } }, select: { amount: true, bill: { select: { quota: true } } } });
+        if (!bills.length)
+            return { ok: true, billed: 0 };
+        const billed = round(bills.reduce((sum, r) => sum + Number(r.amount || 0), 0));
+        const required = round(bills.reduce((sum, r) => { var _a; return sum + Number(r.amount || 0) * Math.min(Math.max(Number((_a = r.bill) === null || _a === void 0 ? void 0 : _a.quota) || 0, 0), 100) / 100; }, 0));
+        const ledger = yield db.studentAccount.aggregate({ _sum: { amount: true }, where: { studentId: student.id } });
+        const balance = round(Number((_a = ledger === null || ledger === void 0 ? void 0 : ledger._sum) === null || _a === void 0 ? void 0 : _a.amount) || 0);
+        const shortfall = round(Math.max(0, balance - (billed - required)));
+        return { ok: shortfall <= 0, billed, required, balance, shortfall };
+    });
+}
+const feeQuotaMessage = (q) => `Fees quota not met: pay at least GHC ${Number(q.shortfall).toFixed(2)} more towards your fees to register courses this semester (required: GHC ${Number(q.required).toFixed(2)} of GHC ${Number(q.billed).toFixed(2)} billed, plus any arrears).`;
+exports.feeQuotaMessage = feeQuotaMessage;
 function studentTags(value) {
     if (value == null)
         return [];

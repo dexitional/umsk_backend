@@ -100,6 +100,8 @@ const pin = customAlphabet("1234567890", 4);
 const sms = require('../config/sms');
 const ExcelJS = require('exceljs');
 const gsuite_1 = require("../config/gsuite");
+const credentialVault_1 = require("../util/credentialVault");
+const billing_1 = require("../util/billing");
 // Students who have no ais_activity_register row for this session — the
 // same "unregistered" semantics as the loadDashboard stats block below,
 // scoped to a single session instead of branching by MAIN/sub-stream tag.
@@ -141,16 +143,17 @@ function unresolvedResitStudentsForSession(trailSessionId) {
 // Core of the stageStudent route handler below -- module-level like the
 // helpers above, since it's also called directly from uploadStudent and
 // `this.` inside a detached route handler is undefined.
-// `sendSms` is skipped when called from the bulk upload pipeline (see
-// uploadStudent) since generateStudentEmail runs right after and sends
-// its own SMS with the real institute email -- sending this one first
-// would text a username (the bare studentId) that's overwritten a moment
-// later, misleading the student.
+// Creates the portal account only; the institutional email and Google
+// account are a separate, manual step (generateStudentEmail). The issued
+// password goes into the credential vault so it can be texted later (bulk
+// "Send Credentials") and reused for the Google account. `sendSms` is off
+// for bulk uploads -- staff send credentials in bulk when ready.
 function stageStudentAccess(studentId_1, userId_1) {
     return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true, smsText) {
         if (typeof studentId !== 'string' || !studentId.trim())
             throw new Error('Student ID is required.');
         studentId = studentId.trim();
+        (0, credentialVault_1.assertVaultConfigured)();
         const st = yield ais.student.findFirst({ where: { id: studentId } });
         if (!st)
             throw new Error('Student record not found.');
@@ -163,9 +166,12 @@ function stageStudentAccess(studentId_1, userId_1) {
         const resp = yield ais.user.create({
             data: Object.assign(Object.assign({}, ssoData), { group: { connect: { id: 1 } } }),
         });
+        yield (0, credentialVault_1.storeCredential)(ais, studentId, password);
         let smsResult = null;
         if (sendSms) {
             smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, smsText ? smsText(resp.username, password) : `Hi! Your new credentials is username: ${resp.username}, password: ${password}`);
+            if (smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted)
+                yield (0, credentialVault_1.markCredentialSent)(ais, studentId);
         }
         // Log Login Response
         // Never log credentials (ssoData carries the hash + unlock PIN).
@@ -174,80 +180,159 @@ function stageStudentAccess(studentId_1, userId_1) {
         return Object.assign(Object.assign({}, account), { sms: smsResult });
     });
 }
-// Core of the generateEmail route handler below -- see stageStudentAccess
-// above for why this is a module-level function. `smsText` replaces the
-// default credentials SMS (Activate Admission folds the admission notice
-// into it, so a fresher gets one text instead of two).
+// The student's current portal password from the credential vault, so the
+// Google account gets the same one. With nothing stored (the student set
+// their own password, or was staged before the vault existed) a new one
+// is issued: vault and portal hash are both updated.
+function studentPassword(studentId) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const stored = yield (0, credentialVault_1.readCredential)(ais, studentId);
+        if (stored)
+            return { password: stored, issued: false };
+        const password = (0, password_1.generateStrongPassword)();
+        yield (0, credentialVault_1.storeCredential)(ais, studentId, password);
+        yield ais.user.updateMany({ where: { tag: studentId }, data: { password: (0, password_1.hashPassword)(password) } });
+        return { password, issued: true };
+    });
+}
+// Creates the student's Google Workspace account with `password` and
+// records gsuiteSynced. `resyncExisting` (only for an address already
+// assigned to this student) falls back to a password update when Google
+// already has the account -- never for a freshly generated address, which
+// could collide with someone else's account. Never throws.
+function pushStudentToGsuite(st_1, instituteEmail_1, password_2, userId_1) {
+    return __awaiter(this, arguments, void 0, function* (st, instituteEmail, password, userId, resyncExisting = false) {
+        var _a;
+        try {
+            const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
+            let gs = yield (0, gsuite_1.createGsuiteUser)({
+                email: instituteEmail, password, year: admissionYear,
+                firstName: st === null || st === void 0 ? void 0 : st.fname, middleName: st === null || st === void 0 ? void 0 : st.mname, lastName: st === null || st === void 0 ? void 0 : st.lname,
+                phone: st === null || st === void 0 ? void 0 : st.phone, personalEmail: st === null || st === void 0 ? void 0 : st.email,
+                studentId: st === null || st === void 0 ? void 0 : st.id, indexno: st === null || st === void 0 ? void 0 : st.indexno,
+                program: (_a = st === null || st === void 0 ? void 0 : st.program) === null || _a === void 0 ? void 0 : _a.longName,
+            });
+            if (resyncExisting && !gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
+                gs = yield (0, gsuite_1.updateGsuitePassword)({ email: instituteEmail, password });
+            }
+            if (gs.ok) {
+                yield ais.student.update({ where: { id: st.id }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
+                yield ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: userId, student: st.id, meta: { instituteEmail } } });
+            }
+            else if (!gs.skipped) {
+                yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: userId, student: st.id, meta: { instituteEmail, error: gs.error } } });
+                console.log('GSuite provisioning failed:', gs.error);
+            }
+            return gs;
+        }
+        catch (gsError) {
+            console.log('GSuite provisioning threw:', gsError === null || gsError === void 0 ? void 0 : gsError.message);
+            return { ok: false, error: (gsError === null || gsError === void 0 ? void 0 : gsError.message) || 'Unknown GSuite error' };
+        }
+    });
+}
+// Retry for a student whose institutional email exists but whose Google
+// account never synced (e.g. a Google API outage): pushes their stored
+// portal password, texting the Google login on success.
+function resyncStudentGsuite(st_1, userId_1) {
+    return __awaiter(this, arguments, void 0, function* (st, userId, sendSms = true) {
+        const { password } = yield studentPassword(st.id);
+        const gs = yield pushStudentToGsuite(st, st.instituteEmail, password, userId, true);
+        let smsResult = null;
+        if (gs.ok && sendSms) {
+            smsResult = yield sms.safe(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`);
+            if (smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted)
+                yield (0, credentialVault_1.markCredentialSent)(ais, st.id);
+        }
+        if (gs.ok)
+            yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: userId, student: st.id, meta: { instituteEmail: st.instituteEmail, sms: smsResult } } });
+        return { gsuite: gs, sms: smsResult };
+    });
+}
+// Core of the generateEmail route handler below (single student and the
+// bulk action) -- see stageStudentAccess above for why this is a
+// module-level function. Requires the portal account: the institutional
+// email becomes its username, and the Google account is created with the
+// student's stored portal password so both logins match.
 function generateStudentEmail(studentId_1, userId_1) {
-    return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true, smsText) {
-        var _a, _b;
+    return __awaiter(this, arguments, void 0, function* (studentId, userId, sendSms = true) {
+        var _a;
         let smsResult = null;
         let count = 1;
         let isNew = true;
+        (0, credentialVault_1.assertVaultConfigured)();
         const st = yield ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
+        if (!st)
+            throw new Error('Student record not found.');
         if (st === null || st === void 0 ? void 0 : st.instituteEmail) {
             yield ais.user.updateMany({ where: { tag: studentId }, data: { username: st === null || st === void 0 ? void 0 : st.instituteEmail } });
             throw new Error("mail already exists !");
         }
+        const account = yield ais.user.findFirst({ where: { tag: studentId } });
+        if (!account)
+            throw new Error('Student has no portal account yet -- stage student access first.');
         // Username = initials of fname + initials of every word in mname +
         // full lname -- e.g. fname "Ebenezer", mname "Kwabena Blay", lname
         // "Ackah" -> "ekbackah".
         const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('');
         let username = `${initials(st === null || st === void 0 ? void 0 : st.fname)}${initials(st === null || st === void 0 ? void 0 : st.mname)}${(_a = st === null || st === void 0 ? void 0 : st.lname) === null || _a === void 0 ? void 0 : _a.replaceAll(' ', '')}`.toLowerCase();
-        while (isNew) {
-            const ck = yield ais.student.findFirst({ where: { instituteEmail: { startsWith: `${username}${count > 1 ? count : ''}` } } });
-            if (ck)
-                count = count + 1;
-            else
-                isNew = false;
+        const nextFree = () => __awaiter(this, void 0, void 0, function* () {
+            isNew = true;
+            while (isNew) {
+                const ck = yield ais.student.findFirst({ where: { instituteEmail: { startsWith: `${username}${count > 1 ? count : ''}` } } });
+                if (ck)
+                    count = count + 1;
+                else
+                    isNew = false;
+            }
+            return `${username}${count > 1 ? count : ''}@${process.env.UMS_MAIL}`;
+        });
+        let instituteEmail = yield nextFree();
+        const { password } = yield studentPassword(studentId);
+        // Google first, so an address Workspace already holds (e.g. a staff
+        // account the database doesn't know) moves on to the next number instead
+        // of being assigned -- a later resync would otherwise reset that
+        // account's password. Any other Google failure is best-effort: the email
+        // is still assigned and gsuiteSynced stays false for a retry (Retry
+        // Google Sync, or the bulk action picks it up again).
+        let gsuite = yield pushStudentToGsuite(st, instituteEmail, password, userId);
+        for (let tries = 0; !gsuite.ok && /already exists/i.test(gsuite.error || '') && tries < 5; tries++) {
+            count = count + 1;
+            instituteEmail = yield nextFree();
+            gsuite = yield pushStudentToGsuite(st, instituteEmail, password, userId);
         }
-        // Update Student Email -- append the collision-avoidance count from
-        // the loop above (previously computed but never actually used,
-        // silently letting two students land on the exact same email).
-        const instituteEmail = `${username}${count > 1 ? count : ''}@${process.env.UMS_MAIL}`;
-        // A fresh password is issued here (rather than leaving the portal
-        // password untouched, as this endpoint previously did) because it's
-        // the only point where we have a plaintext password to hand to the
-        // new Google Workspace account below -- the portal only ever stores
-        // a hash, so there's nothing to "pipe in" otherwise.
-        const password = (0, password_1.generateStrongPassword)();
+        if (!gsuite.ok && /already exists/i.test(gsuite.error || ''))
+            throw new Error(`Could not find a free address for ${username} in Google Workspace -- assign one manually.`);
         const resp = yield ais.student.update({ where: { id: studentId }, data: { instituteEmail } });
-        if (resp) {
-            // Update SSO User
-            yield ais.user.updateMany({ where: { tag: studentId }, data: { username: instituteEmail, password: (0, password_1.hashPassword)(password) } });
-            // Log Login Response
-            yield ais.log.create({ data: { action: `STUDENT_EMAIL_GENERATED`, user: userId, meta: { instituteEmail } } });
-            // Provision the Google Workspace account -- best-effort: this
-            // never blocks or fails the email-generation response itself.
-            // gsuiteSynced/gsuiteSyncedAt let staff see (and retry, via
-            // retryGsuiteSync) accounts that failed to provision.
-            try {
-                const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
-                const gs = yield (0, gsuite_1.createGsuiteUser)({
-                    email: instituteEmail, password, year: admissionYear,
-                    firstName: st === null || st === void 0 ? void 0 : st.fname, middleName: st === null || st === void 0 ? void 0 : st.mname, lastName: st === null || st === void 0 ? void 0 : st.lname,
-                    phone: st === null || st === void 0 ? void 0 : st.phone, personalEmail: st === null || st === void 0 ? void 0 : st.email,
-                    studentId: st === null || st === void 0 ? void 0 : st.id, indexno: st === null || st === void 0 ? void 0 : st.indexno,
-                    program: (_b = st === null || st === void 0 ? void 0 : st.program) === null || _b === void 0 ? void 0 : _b.longName,
-                });
-                if (gs.ok) {
-                    yield ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
-                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_ACCOUNT_CREATED`, user: userId, meta: { instituteEmail } } });
-                }
-                else if (!gs.skipped) {
-                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: userId, meta: { instituteEmail, error: gs.error } } });
-                    console.log('generateStudentEmail GSuite provisioning failed:', gs.error);
-                }
-            }
-            catch (gsError) {
-                console.log('generateStudentEmail GSuite provisioning threw:', gsError === null || gsError === void 0 ? void 0 : gsError.message);
-            }
-            if (sendSms) {
-                smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, smsText ? smsText(instituteEmail, password) : `Hi! Your institutional email has been created: ${instituteEmail}, password: ${password}`);
-                yield ais.log.create({ data: { action: 'SMS_STUDENT_EMAIL_CREDENTIALS', user: userId, student: studentId, meta: smsResult } });
-            }
+        // The institutional email becomes the portal username.
+        yield ais.user.update({ where: { id: account.id }, data: { username: instituteEmail } });
+        yield ais.log.create({ data: { action: `STUDENT_EMAIL_GENERATED`, user: userId, student: studentId, meta: { instituteEmail } } });
+        if (sendSms) {
+            smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your institutional email has been created: ${instituteEmail}. Use it as your portal username, password: ${password}`);
+            if (smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted)
+                yield (0, credentialVault_1.markCredentialSent)(ais, studentId);
+            yield ais.log.create({ data: { action: 'SMS_STUDENT_EMAIL_CREDENTIALS', user: userId, student: studentId, meta: smsResult } });
         }
-        return Object.assign(Object.assign({}, resp), { sms: smsResult });
+        return Object.assign(Object.assign({}, resp), { gsuite, sms: smsResult });
+    });
+}
+// Students targeted by the bulk credential / email actions: active (not
+// completed, graduated or deferred), optionally one programme and/or year
+// group. Worked through a page per request in id order (`after` = the last
+// id of the previous page), so a whole school never runs in one HTTP call.
+function bulkStudentWhere(body) {
+    const programId = typeof (body === null || body === void 0 ? void 0 : body.programId) === 'string' ? body.programId.trim() : '';
+    const year = Number(body === null || body === void 0 ? void 0 : body.yearGroup);
+    return Object.assign(Object.assign({ completeStatus: false, graduateStatus: false, deferStatus: false }, programId && { programId }), Number.isInteger(year) && year >= 1 && year <= 6 && { semesterNum: { in: [year * 2 - 1, year * 2] } });
+}
+function bulkStudentPage(where, body, defaultLimit, select) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const after = typeof (body === null || body === void 0 ? void 0 : body.after) === 'string' && body.after ? body.after : null;
+        const limit = Math.min(Math.max(parseInt(body === null || body === void 0 ? void 0 : body.limit, 10) || defaultLimit, 1), 100);
+        const total = after ? undefined : yield ais.student.count({ where });
+        const students = yield ais.student.findMany({ where: after ? { AND: [where, { id: { gt: after } }] } : where, orderBy: { id: 'asc' }, take: limit, select });
+        const next = students.length === limit ? students[students.length - 1].id : null;
+        return { total, students, next };
     });
 }
 // A student editing their own record (student portal web form, Akatsico
@@ -297,8 +382,20 @@ function updateOwnStudentProfile(studentId, body) {
                 if (body[k])
                     data[rel] = { connect: { id: body[k] } };
             }
-            if (body.majorId)
-                data.major = body.majorId == 'NONE' ? { disconnect: true } : { connect: { id: body.majorId } };
+            // Major: students choose it themselves only in Year 2 Semester 1
+            // (semesterNum 3); outside that, re-posting the current value is
+            // fine but any change goes through the Registry.
+            if (body.majorId) {
+                const majorId = body.majorId == 'NONE' ? null : String(body.majorId);
+                if (majorId !== (st.majorId || null)) {
+                    if (st.semesterNum !== 3)
+                        throw new StudentSelfEditError('Majors can only be chosen in Year 2, Semester 1. Contact the College Registry to change your major.');
+                    if (majorId && !(yield tx.major.findFirst({ where: { id: majorId, programId: st.programId } })))
+                        throw new StudentSelfEditError('Choose a major offered by your programme.');
+                    data.major = majorId ? { connect: { id: majorId } } : { disconnect: true };
+                    changed.push('major');
+                }
+            }
             // Disability: "NONE" (or empty) clears it.
             if (body.disabilityId !== undefined) {
                 data.disability = !body.disabilityId || body.disabilityId == 'NONE' ? { disconnect: true } : { connect: { id: body.disabilityId } };
@@ -349,7 +446,7 @@ function updateOwnStudentProfile(studentId, body) {
             const resp = yield tx.student.update({ where: { id: studentId }, data });
             yield tx.log.create({
                 data: {
-                    action: `STUDENT_PROFILE_SELF_UPDATED`, user: studentId, student: studentId, meta: Object.assign(Object.assign({ fields: Object.keys(data) }, changed.includes('dob') && ({ dob: { from: st.dob, to: data.dob } })), changed.includes('instituteAffliate') && ({ instituteAffliate: { from: st.instituteAffliate, to: data.instituteAffliate } }))
+                    action: `STUDENT_PROFILE_SELF_UPDATED`, user: studentId, student: studentId, meta: Object.assign(Object.assign(Object.assign({ fields: Object.keys(data) }, changed.includes('dob') && ({ dob: { from: st.dob, to: data.dob } })), changed.includes('instituteAffliate') && ({ instituteAffliate: { from: st.instituteAffliate, to: data.instituteAffliate } })), changed.includes('major') && ({ majorId: { from: st.majorId, to: body.majorId == 'NONE' ? null : body.majorId } }))
                 }
             });
             return resp;
@@ -557,26 +654,22 @@ function createStudentBatch(allStudents_1, createdBy_1, action_1) {
                 }
             };
         }
-        // Auto-provision portal access + institute email (and, through it,
-        // the Google Workspace account) for every newly created student --
-        // mirrors the "Stage Account" then "Generate Email" buttons on
-        // AISAccountCard, so an uploaded student is immediately usable
-        // instead of needing 2 manual clicks each. Run outside the DB
-        // transaction above (these calls touch SMS/Google APIs, not just
-        // the database) and per-student, so one student's failure here
-        // can't undo another's already-committed account -- staff can
-        // finish provisioning any listed failures manually via that
-        // student's Account tab.
+        // Auto-stage portal access for every newly created student (the "Stage
+        // Student Access" button on AISAccountCard), silently: staff text the
+        // credentials with the bulk "Send Credentials" action, and generate
+        // institutional emails / Google accounts separately (per student or in
+        // bulk). Run outside the DB transaction above and per-student, so one
+        // student's failure can't undo another's already-committed account --
+        // staff can finish any listed failures via that student's Account tab.
         const provisioned = [];
         const provisionErrors = [];
         for (const s of (provision ? resp : [])) {
             try {
                 yield stageStudentAccess(s.id, createdBy, false);
-                yield generateStudentEmail(s.id, createdBy);
                 provisioned.push(s.id);
             }
             catch (provisionError) {
-                provisionErrors.push({ id: s.id, reason: (provisionError === null || provisionError === void 0 ? void 0 : provisionError.message) || 'Failed to stage account / generate email' });
+                provisionErrors.push({ id: s.id, reason: (provisionError === null || provisionError === void 0 ? void 0 : provisionError.message) || 'Failed to stage portal access' });
             }
         }
         return { status: 200, body: { success: true, count: resp.length, totalCount: allStudents.length, data: resp, provisioned: provisioned.length, provisionErrors, skipped } };
@@ -1650,6 +1743,7 @@ class AisController {
                     }
                 }
                 const smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
+                yield (0, credentialVault_1.rememberCredential)(ais, studentId, password, !!(smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted));
                 // Log Login Response
                 // Audit: who reset whose account (no credentials logged).
                 yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, student: studentId, meta: { studentId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } });
@@ -1756,49 +1850,153 @@ class AisController {
     }
     // Manual retry for a student whose Google Workspace account failed to
     // provision or fell out of sync (gsuiteSynced: false with an
-    // instituteEmail already set) -- e.g. after a Google API outage. Issues
-    // a fresh password (same reasoning as generateEmail: only plaintext we
-    // have to give Google is one minted right now) and tries to create the
-    // account; if Google reports it already exists, falls back to just
-    // resyncing its password instead.
+    // instituteEmail already set) -- e.g. after a Google API outage. Pushes
+    // the stored portal password (a fresh one only if none is stored); if
+    // Google already has the account, resyncs its password instead.
     retryGsuiteSync(req, res) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a;
             try {
                 const { studentId } = req.body;
                 const st = yield ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
                 if (!(st === null || st === void 0 ? void 0 : st.instituteEmail))
                     return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
-                const password = (0, password_1.generateStrongPassword)();
-                yield ais.user.updateMany({ where: { tag: studentId }, data: { password: (0, password_1.hashPassword)(password) } });
-                const admissionYear = ((st === null || st === void 0 ? void 0 : st.entryDate) ? (0, moment_1.default)(st.entryDate) : (0, moment_1.default)()).format('YYYY');
-                let gs = yield (0, gsuite_1.createGsuiteUser)({
-                    email: st.instituteEmail, password, year: admissionYear,
-                    firstName: st.fname, middleName: st.mname, lastName: st.lname,
-                    phone: st.phone, personalEmail: st.email,
-                    studentId: st.id, indexno: st.indexno,
-                    program: (_a = st === null || st === void 0 ? void 0 : st.program) === null || _a === void 0 ? void 0 : _a.longName,
-                });
-                if (!gs.ok && !gs.skipped && /already exists/i.test(gs.error || '')) {
-                    gs = yield (0, gsuite_1.updateGsuitePassword)({ email: st.instituteEmail, password });
-                }
-                if (gs.ok) {
-                    yield ais.student.update({ where: { id: studentId }, data: { gsuiteSynced: true, gsuiteSyncedAt: new Date() } });
-                    const smsResult = yield sms.safe(st.phone, `Hi! Your Google account credentials: ${st.instituteEmail}, password: ${password}`);
-                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_RETRIED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail: st.instituteEmail, sms: smsResult } } });
-                    return res.status(200).json({ success: true, sms: smsResult });
-                }
-                else if (gs.skipped) {
+                if (!(0, gsuite_1.isConfigured)())
                     return res.status(202).json({ message: `GSuite integration is not configured yet.` });
-                }
-                else {
-                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req === null || req === void 0 ? void 0 : req.userId, meta: { instituteEmail: st.instituteEmail, error: gs.error } } });
-                    return res.status(500).json({ message: gs.error || 'GSuite sync failed' });
-                }
+                (0, credentialVault_1.assertVaultConfigured)();
+                const { gsuite, sms: smsResult } = yield resyncStudentGsuite(st, req === null || req === void 0 ? void 0 : req.userId);
+                if (gsuite.ok)
+                    return res.status(200).json({ success: true, sms: smsResult });
+                return res.status(500).json({ message: gsuite.error || 'GSuite sync failed' });
             }
             catch (error) {
                 console.log(error);
-                return res.status(500).json({ message: 'Internal server error' });
+                return res.status(500).json({ message: error.message || 'Internal server error' });
+            }
+        });
+    }
+    // Texts each student their portal username + stored password -- one
+    // student (studentIds) or a bulk scope (see bulkStudentWhere), a page per
+    // request. Without a stored password (the student chose their own, or was
+    // staged before credentials were stored) a student is skipped unless
+    // `issueMissing`, which issues a new password (and a portal account if
+    // missing) and syncs it to their Google account.
+    sendStudentCredentials(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            try {
+                (0, credentialVault_1.assertVaultConfigured)();
+                const body = req.body || {};
+                const ids = Array.isArray(body.studentIds) ? body.studentIds.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim()) : [];
+                const where = ids.length ? { id: { in: ids } } : bulkStudentWhere(body);
+                if (body.unsentOnly)
+                    where.OR = [{ credential: { is: null } }, { credential: { is: { sentAt: null } } }];
+                const issueMissing = !!body.issueMissing;
+                const { total, students, next } = yield bulkStudentPage(where, body, 50, { id: true, fname: true, phone: true, instituteEmail: true, gsuiteSynced: true });
+                const accounts = yield ais.user.findMany({ where: { tag: { in: students.map((s) => s.id) } }, select: { tag: true, username: true } });
+                const usernames = new Map(accounts.map((a) => [a.tag, a.username]));
+                const sent = [];
+                const skipped = [];
+                const failed = [];
+                for (const s of students) {
+                    try {
+                        if (!s.phone) {
+                            skipped.push({ id: s.id, reason: 'No phone number on record.' });
+                            continue;
+                        }
+                        let username = usernames.get(s.id);
+                        if (!username) {
+                            if (!issueMissing) {
+                                skipped.push({ id: s.id, reason: 'No portal account -- stage student access first.' });
+                                continue;
+                            }
+                            username = (yield stageStudentAccess(s.id, req.userId, false)).username;
+                        }
+                        let password = yield (0, credentialVault_1.readCredential)(ais, s.id);
+                        if (!password) {
+                            if (!issueMissing) {
+                                skipped.push({ id: s.id, reason: 'No stored password (changed by the student, or issued before credentials were stored).' });
+                                continue;
+                            }
+                            password = (yield studentPassword(s.id)).password;
+                            if (s.instituteEmail && s.gsuiteSynced) {
+                                const gs = yield (0, gsuite_1.updateGsuitePassword)({ email: s.instituteEmail, password });
+                                if (!gs.ok && !gs.skipped)
+                                    yield ais.log.create({ data: { action: `STUDENT_GSUITE_SYNC_FAILED`, user: req.userId, student: s.id, meta: { instituteEmail: s.instituteEmail, error: gs.error } } });
+                            }
+                        }
+                        const google = s.instituteEmail && s.gsuiteSynced ? ` (also your Google account ${s.instituteEmail})` : '';
+                        const result = yield sms.safe(s.phone, `Hi${s.fname ? ` ${s.fname}` : ''}! Your student portal login${google} -- username: ${username}, password: ${password}`);
+                        if (result === null || result === void 0 ? void 0 : result.accepted) {
+                            yield (0, credentialVault_1.markCredentialSent)(ais, s.id);
+                            sent.push(s.id);
+                        }
+                        else
+                            failed.push({ id: s.id, reason: (result === null || result === void 0 ? void 0 : result.message) || 'SMS was not submitted.' });
+                    }
+                    catch (sendError) {
+                        failed.push({ id: s.id, reason: (0, helper_1.errorMessage)(sendError, 'Failed to send credentials') });
+                    }
+                }
+                // Never log credentials -- only who was texted.
+                yield ais.log.create({ data: { action: 'STUDENT_CREDENTIALS_SENT', user: req.userId, meta: { scope: ids.length ? { studentIds: ids } : { programId: body.programId || null, yearGroup: body.yearGroup || null, unsentOnly: !!body.unsentOnly }, issueMissing, sent, skipped, failed } } });
+                res.status(200).json({ total, processed: students.length, sent: sent.length, skipped, failed, next });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
+            }
+        });
+    }
+    // Bulk institutional email + Google Workspace accounts for a scope (see
+    // bulkStudentWhere), a page per request: students without an email get
+    // one (generateStudentEmail), and students whose Google account never
+    // synced are retried with their stored password.
+    generateStudentEmails(req, res) {
+        return __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
+            try {
+                if (!(0, gsuite_1.isConfigured)())
+                    return res.status(400).json({ message: 'Google Workspace integration is not configured (GSUITE_SERVICE_ACCOUNT_KEY_JSON / GSUITE_ADMIN_EMAIL).' });
+                (0, credentialVault_1.assertVaultConfigured)();
+                const body = req.body || {};
+                const notify = body.notify !== false;
+                const where = Object.assign(Object.assign({}, bulkStudentWhere(body)), { OR: [{ instituteEmail: null }, { gsuiteSynced: false }] });
+                const { total, students, next } = yield bulkStudentPage(where, body, 20, { id: true, fname: true, mname: true, lname: true, phone: true, email: true, indexno: true, entryDate: true, instituteEmail: true, program: { select: { longName: true } } });
+                const accounts = yield ais.user.findMany({ where: { tag: { in: students.map((s) => s.id) } }, select: { tag: true } });
+                const hasAccount = new Set(accounts.map((a) => a.tag));
+                let created = 0, synced = 0;
+                const skipped = [];
+                const failed = [];
+                for (const s of students) {
+                    try {
+                        if (!hasAccount.has(s.id)) {
+                            skipped.push({ id: s.id, reason: 'No portal account -- stage student access first.' });
+                            continue;
+                        }
+                        if (!s.instituteEmail) {
+                            const r = yield generateStudentEmail(s.id, req.userId, notify);
+                            if ((_a = r.gsuite) === null || _a === void 0 ? void 0 : _a.ok)
+                                created++;
+                            else
+                                failed.push({ id: s.id, reason: `Email ${r.instituteEmail} assigned, but the Google account failed: ${((_b = r.gsuite) === null || _b === void 0 ? void 0 : _b.error) || 'unknown error'}` });
+                        }
+                        else {
+                            const { gsuite } = yield resyncStudentGsuite(s, req.userId, notify);
+                            if (gsuite.ok)
+                                synced++;
+                            else
+                                failed.push({ id: s.id, reason: `Google account for ${s.instituteEmail} failed: ${gsuite.error || 'unknown error'}` });
+                        }
+                    }
+                    catch (genError) {
+                        failed.push({ id: s.id, reason: (0, helper_1.errorMessage)(genError, 'Failed to generate email') });
+                    }
+                }
+                yield ais.log.create({ data: { action: 'STUDENT_EMAILS_BULK_GENERATED', user: req.userId, meta: { scope: { programId: body.programId || null, yearGroup: body.yearGroup || null }, created, synced, skipped, failed } } });
+                res.status(200).json({ total, processed: students.length, created, synced, skipped, failed, next });
+            }
+            catch (error) {
+                console.log(error);
+                return res.status(500).json({ message: (0, helper_1.errorMessage)(error) });
             }
         });
     }
@@ -2949,14 +3147,19 @@ class AisController {
                     condition = false;
                     message = "No Major or Program or Level Set!";
                 }
-                // If Student is Owing Fees, Lock Registration - Before
-                // if(student?.accountNet > 0 && student?.accountNet < (Bill amount * Payment Percentage )) { condition = false; message = "No Index Number for Student!" }
+                // If Student is Owing Fees, Lock Registration - Before: the bill
+                // quota for this session must be paid (finance pardon exempts).
+                const fees = session ? yield (0, billing_1.feeQuotaStatus)(ais, student, session.id) : null;
+                if (condition && fees && !fees.ok) {
+                    condition = false;
+                    message = (0, billing_1.feeQuotaMessage)(fees);
+                }
                 // If Student is Pardoned by Finance, Allow Registration - Before
                 // If Registration Period is Inactive - Before
                 // If Registration Period is Active and Halt status is ON - Before
                 // If Registration Period is Extended for Late Finers - Before
                 if (courses === null || courses === void 0 ? void 0 : courses.length) {
-                    res.status(200).json({ session: session === null || session === void 0 ? void 0 : session.title, courses, meta, condition, message, registerStart: session === null || session === void 0 ? void 0 : session.registerStart, registerEnd: session === null || session === void 0 ? void 0 : session.registerEnd, registerEndLate: session === null || session === void 0 ? void 0 : session.registerEndLate });
+                    res.status(200).json({ session: session === null || session === void 0 ? void 0 : session.title, courses, meta, condition, message, fees, registerStart: session === null || session === void 0 ? void 0 : session.registerStart, registerEnd: session === null || session === void 0 ? void 0 : session.registerEnd, registerEndLate: session === null || session === void 0 ? void 0 : session.registerEndLate });
                 }
                 else {
                     res.status(202).json({ message: `no record found` });
@@ -2986,11 +3189,16 @@ class AisController {
                 // Get Active Session Info -- no more MAIN/January-SUB stream split,
                 // just the one default session.
                 const st = yield ais.student.findFirst({ include: { program: { select: { hasMajor: true } } }, where: { indexno: courses[0].indexno } });
+                if (!st)
+                    return res.status(404).json({ message: "Student record not found for this index number. Please contact the Registry." });
                 if (admissionLocked(st))
                     return res.status(403).json({ message: st.admissionStatus === 'ACCEPTED' ? "Please pay your fees before registering courses." : "Please accept your admission offer on the student portal before registering courses." });
                 const session = yield ais.session.findFirst({ where: { default: true } });
                 if (!session)
                     return res.status(400).json({ message: "No active registration session found. Please contact the registry." });
+                const fees = yield (0, billing_1.feeQuotaStatus)(ais, st, session.id);
+                if (!fees.ok)
+                    return res.status(403).json({ message: (0, billing_1.feeQuotaMessage)(fees), fees });
                 // Check If Registration Data exists
                 const slip = yield ais.assessment.findFirst({ where: { indexno: courses[0].indexno, sessionId: session.id } });
                 if (slip)
@@ -8111,7 +8319,7 @@ class AisController {
     }
     // "Activate Admission" on an admission letter: for the letter's freshers
     // (its cohort -- see admissionCohortWhere -- still in Year 1 Sem 1) not
-    // yet activated, create any missing portal account + institute email,
+    // yet activated, create any missing portal account (no institute email),
     // mark the offer PENDING and text each one that they've been admitted and
     // should log in to view the letter and accept or reject the offer.
     // Re-running only picks up freshers added since, so nobody is texted twice.
@@ -8141,11 +8349,11 @@ class AisController {
                 for (const s of freshers) {
                     try {
                         let notification = null;
+                        // Portal account only -- institutional emails are generated
+                        // separately (Students > Generate Emails).
                         if (!hasAccount.has(s.id))
-                            notification = (yield stageStudentAccess(s.id, userId, !!s.instituteEmail, credentials(s))).sms;
-                        if (!s.instituteEmail)
-                            notification = (yield generateStudentEmail(s.id, userId, true, credentials(s))).sms;
-                        else if (hasAccount.has(s.id))
+                            notification = (yield stageStudentAccess(s.id, userId, true, credentials(s))).sms;
+                        else
                             notification = yield sms.safe(s.phone, notice(s, 'Use your existing portal login.'));
                         if (notification === null || notification === void 0 ? void 0 : notification.accepted)
                             smsAccepted++;

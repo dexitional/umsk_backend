@@ -18,6 +18,8 @@ function load(file, mocks = {}) {
   vm.runInNewContext(code, { module, exports: module.exports, console, setTimeout, require: id => {
     if (Object.hasOwn(mocks, id)) return mocks[id];
     if (id === 'react') return React;
+    if (id.startsWith('react-icons/')) return frontendRequire(id);
+    if (id === '../management/ManagementUI') return load(path.join(front, 'src/components/management/ManagementUI.tsx'));
     if (id.startsWith('.')) throw new Error('Unmocked module: ' + id);
     return require(id);
   } }); return module.exports;

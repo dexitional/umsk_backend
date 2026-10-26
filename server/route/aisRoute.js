@@ -37,6 +37,8 @@ const STUDENT_FINANCE_ROLES = ['student::admin', 'student::finance'];
 // the same backend-enforced check (the single-create POST /students route
 // itself predates this and is left as-is).
 const STUDENT_UPLOAD_ROLES = ['student::admin'];
+// Bulk credentials SMS and bulk institutional email / Google accounts.
+const STUDENT_CREDENTIAL_ROLES = ['student::admin'];
 // Matches AISNav.tsx's gate on the System Reports page.
 const REPORT_ROLES = ['acareport::admin'];
 // Matches AISNav.tsx's gate on the User Roles (Access Control) page. A
@@ -95,6 +97,8 @@ class AisRoute {
         this.router.post('/students/forget', [verifyToken], this.controller.resetStudent);
         this.router.post('/students/indexgen', [verifyToken], this.controller.generateIndex);
         this.router.post('/students/mailgen', [verifyToken], this.controller.generateEmail);
+        this.router.post('/students/mailgen/bulk', [verifyToken, requireRole(STUDENT_CREDENTIAL_ROLES)], this.controller.generateStudentEmails);
+        this.router.post('/students/credentials/send', [verifyToken, requireRole(STUDENT_CREDENTIAL_ROLES)], this.controller.sendStudentCredentials);
         this.router.post('/students/gsuite-retry', [verifyToken], this.controller.retryGsuiteSync);
         this.router.post('/students/pardon', [verifyToken, requireRole(STUDENT_FINANCE_ROLES)], this.controller.pardonStudent);
         this.router.post('/students', [verifyToken], this.controller.postStudent);

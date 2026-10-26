@@ -18,6 +18,7 @@ function load(file, mocks = {}) {
   vm.runInNewContext(code, { module, exports: module.exports, console, setTimeout, clearTimeout, require: id => {
     if (Object.hasOwn(mocks, id)) return mocks[id];
     if (id === 'react') return React;
+    if (id.startsWith('react-icons/')) return frontendRequire(id);
     if (id.startsWith('.')) throw new Error('Unmocked module: ' + id);
     return require(id);
   } }); return module.exports;
@@ -77,7 +78,6 @@ test('utilities landing page exposes all eight modules and hides them from unaut
   const modules = Object.entries(rules.utilityModels).map(([key, meta]) => [key, meta.title]); modules.splice(2, 0, ['change-of-program', 'Change of program']);
   const make = allowed => load(path.join(front, 'src/pages/ais/PgAISUtilities.tsx'), {
     'react-router-dom': { useParams: () => ({ module: 'invalid' }), NavLink: ({ children, to }) => React.createElement('a', { href: to }, children) },
-    '../../components/ais/SubPageTitle': ({ title }) => React.createElement('h1', null, title),
     '../../components/utilities/UtilityForms': {}, '../../utils/utilitiesService': { utilityModules: modules, utilityRoles: rules.UTILITY_ROLES }, '../../utils/roles': { useHasRole: () => allowed },
   }).default;
   const html = renderToStaticMarkup(React.createElement(make(true)));

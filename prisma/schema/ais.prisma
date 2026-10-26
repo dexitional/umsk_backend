@@ -256,8 +256,27 @@ model student {
   courseEvaluations  courseEvaluation[]
 
   stsAssignments stsAssignment[]
+  credential     studentCredential?
 
   @@map("ais_student")
+}
+
+// The portal password last issued to a student by the system (staging,
+// admin reset, forgot-password), AES-256-GCM encrypted -- see
+// util/credentialVault.ts. Kept so credentials can be re-sent in bulk and
+// the same password pushed to Google Workspace when the institutional
+// email is generated later. Cleared once the student picks their own
+// password. A separate table so whole-student reads never carry it.
+model studentCredential {
+  studentId String    @id
+  cipher    String    @db.Text
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  student student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("ais_student_credential")
 }
 
 model session {

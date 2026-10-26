@@ -28,6 +28,7 @@ const path = require('path');
 const fs = require("fs");
 const sms = require("../config/sms");
 const gsuite_1 = require("../config/gsuite");
+const credentialVault_1 = require("../util/credentialVault");
 const Auth = new authModel_1.default();
 class AuthController {
     authenticateWithCredential(req, res) {
@@ -307,6 +308,8 @@ class AuthController {
                     // Keep the student's Google Workspace account password in sync too
                     // -- best-effort, never blocks an already-successful password change.
                     if ((isUser === null || isUser === void 0 ? void 0 : isUser.groupId) == 1) {
+                        // A password the student chose is never kept in the credential vault.
+                        yield (0, credentialVault_1.clearCredential)(sso, tag);
                         const st = yield sso.student.findFirst({ where: { id: tag } });
                         if (st === null || st === void 0 ? void 0 : st.instituteEmail) {
                             try {
@@ -382,6 +385,8 @@ class AuthController {
                     // Send Password By SMS -- quote the account's login username (login
                     // matches on sso_user.username); instituteEmail is null for most staff.
                     const smsResult = yield sms.safe(st.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`);
+                    if ((user === null || user === void 0 ? void 0 : user.groupId) == 1)
+                        yield (0, credentialVault_1.rememberCredential)(sso, st.id, password, !!(smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted));
                     // Log Login Response
                     // Self-service: the matched account is both actor and subject (`tag`
                     // may be a username/email, so log the resolved account tag).

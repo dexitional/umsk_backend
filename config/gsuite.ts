@@ -23,7 +23,7 @@ const SCOPES = [
 
 type GsuiteResult = { ok: boolean; skipped?: boolean; error?: string };
 
-function isConfigured(): boolean {
+export function isConfigured(): boolean {
   return !!(process.env.GSUITE_SERVICE_ACCOUNT_KEY_JSON && process.env.GSUITE_ADMIN_EMAIL);
 }
 
