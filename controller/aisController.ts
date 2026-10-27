@@ -78,7 +78,7 @@ const pin = customAlphabet("1234567890", 4);
 const sms = require('../config/sms');
 const ExcelJS = require('exceljs');
 import { createGsuiteUser, updateGsuitePassword, isConfigured as isGsuiteConfigured } from '../config/gsuite';
-import { assertVaultConfigured, isVaultConfigured, markCredentialSent, readCredential, rememberCredential, storeCredential } from '../util/credentialVault';
+import { assertVaultConfigured, markCredentialSent, readCredential, storeCredential } from '../util/credentialVault';
 import { feeQuotaMessage, feeQuotaStatus } from '../util/billing';
 
 // Students who have no ais_activity_register row for this session — the
@@ -127,7 +127,6 @@ async function unresolvedResitStudentsForSession(trailSessionId: string) {
 async function stageStudentAccess(studentId: string, userId?: string, sendSms: boolean = true, smsText?: (username: string, password: string) => string) {
    if (typeof studentId !== 'string' || !studentId.trim()) throw new Error('Student ID is required.');
    studentId = studentId.trim();
-   assertVaultConfigured();
    const st = await ais.student.findFirst({ where: { id: studentId } });
    if (!st) throw new Error('Student record not found.');
    const password = generateStrongPassword();
@@ -223,7 +222,6 @@ async function generateStudentEmail(studentId: string, userId?: string, sendSms:
    let smsResult: any = null;
    let count = 1;
    let isNew = true;
-   assertVaultConfigured();
    const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
    if (!st) throw new Error('Student record not found.');
    if (st?.instituteEmail) {
@@ -1679,7 +1677,7 @@ export default class AisController {
          }
 
          const smsResult = await sms.safe(st?.phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
-         await rememberCredential(ais, studentId, password, !!smsResult?.accepted);
+         await storeCredential(ais, studentId, password, !!smsResult?.accepted);
          // Log Login Response
          // Audit: who reset whose account (no credentials logged).
          await ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req?.userId, student: studentId, meta: { studentId, via: req?.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } })
@@ -1791,7 +1789,6 @@ export default class AisController {
          const st = await ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
          if (!st?.instituteEmail) return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
          if (!isGsuiteConfigured()) return res.status(202).json({ message: `GSuite integration is not configured yet.` });
-         assertVaultConfigured();
 
          const { gsuite, sms: smsResult } = await resyncStudentGsuite(st, req?.userId);
          if (gsuite.ok) return res.status(200).json({ success: true, sms: smsResult });

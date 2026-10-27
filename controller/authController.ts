@@ -16,8 +16,22 @@ const path = require('path');
 const fs = require("fs");
 const sms = require("../config/sms");
 import { updateGsuitePassword } from "../config/gsuite";
-import { clearCredential, rememberCredential } from "../util/credentialVault";
+import { clearCredential, storeCredential } from "../util/credentialVault";
+import { EXERCISE_ACTION, PHONE_RESET_HOLD_DAYS } from "./profileExerciseController";
 const Auth = new AuthModel();
+
+// The active account a person signs in (or recovers) with: its username, its
+// tag (staff number / student ID), or a student's index number. Usernames
+// often become institutional emails, but people know their own IDs.
+async function findAccount(identifier: string, include?: any) {
+  return await sso.user.findFirst({ where: { username: identifier, status: true }, include })
+    || await sso.user.findFirst({ where: { tag: identifier, status: true }, include })
+    || await (async () => {
+      const st = await sso.student.findFirst({ where: { indexno: identifier }, select: { id: true } });
+      return st ? sso.user.findFirst({ where: { tag: st.id, groupId: 1, status: true }, include }) : null;
+    })();
+}
+
 export default class AuthController {
 
   async authenticateWithCredential(req: Request, res: Response) {
@@ -35,7 +49,8 @@ export default class AuthController {
       // worth normalizing here, since collation doesn't cover that.
       username = username.trim();
 
-      const userByName: any = await sso.user.findFirst({ where: { username, status: true }, include: { group: { select: { title: true } } } });
+      // Username, staff number / student ID, or index number -- see findAccount.
+      const userByName: any = await findAccount(username, { group: { select: { title: true } } });
       const isUser: any = userByName && verifyPassword(userByName.password, password) ? userByName : null;
 
       if (isUser) {
@@ -325,8 +340,10 @@ export default class AuthController {
       let { tag, phone } = req.body;
       const password = generateStrongPassword();
       phone = sms.normalizePhone(phone);
+      tag = typeof tag === 'string' ? tag.trim() : '';
+      if (!tag) return res.status(400).json({ message: 'Enter your username, staff number, student ID or index number.' });
 
-      const user = await sso.user.findFirst({ where: { OR: [{ tag }, { username: tag }] } });
+      const user = await findAccount(tag);
       if (user) {
         let st;
         if (user?.groupId == 1) {
@@ -336,11 +353,28 @@ export default class AuthController {
         }
 
         if (!st?.phone || sms.normalizePhone(st.phone) !== phone) return res.status(202).json({ message: `No Record found for Phone No!` })
-        
-        // Return Response
-        const ups = await sso.user.updateMany({
-          where: { tag: user.tag }, data: { password: hashPassword(password) }
-        })
+
+        // The public profile exercise sets phone numbers without an identity
+        // check, so a number set there can't receive a self-service reset
+        // until it has stood for a while -- otherwise anyone could put their
+        // own number on a student's record and take the account over.
+        if (user?.groupId == 1) {
+          const recent = await sso.log.findFirst({ where: { action: EXERCISE_ACTION, student: (st as any).id, createdAt: { gte: new Date(Date.now() - PHONE_RESET_HOLD_DAYS * 864e5) }, meta: { path: '$.phoneChanged', equals: true } }, select: { id: true } });
+          if (recent) return res.status(403).json({ message: `Your phone number was updated recently, so password reset by SMS is paused for ${PHONE_RESET_HOLD_DAYS} days. Please visit the Registry to reset your password.` });
+        }
+
+        // Switch to the new password, then text it. If the SMS isn't
+        // accepted, put the old password back: nobody received the new one,
+        // so keeping it would lock the person out (and Google, the vault and
+        // the log only follow once the person actually has the password).
+        const ups = await sso.user.update({ where: { id: user.id }, data: { password: hashPassword(password) } });
+        // Send Password By SMS -- quote the account's login username.
+        const smsResult = await sms.safe(st.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`);
+        if (!smsResult.accepted) {
+          await sso.user.update({ where: { id: user.id }, data: { password: user.password } });
+          await sso.log.create({ data: { action: `FORGOT_PASSWORD_SMS_FAILED`, user: user.tag, meta: { identifier: tag, selfService: true, sms: smsResult }, ...user?.groupId == 1 && ({ student: user.tag }) } });
+          return res.status(502).json({ success: false, message: "We couldn't text you a new password, so your current password has not been changed. Please try again shortly, or contact the Registry.", sms: smsResult });
+        }
         // Keep the student's Google Workspace account password in sync too
         // -- best-effort, never blocks an already-successful password reset.
         if (user?.groupId == 1 && st?.instituteEmail) {
@@ -356,19 +390,14 @@ export default class AuthController {
             console.log('forgetPassword GSuite password sync threw:', gsError?.message)
           }
         }
-        // Send Password By SMS -- quote the account's login username (login
-        // matches on sso_user.username); instituteEmail is null for most staff.
-        const smsResult = await sms.safe(st.phone, `Hi! Your new credentials is username: ${user.username}, password: ${password}`);
-        if (user?.groupId == 1) await rememberCredential(sso, (st as any).id, password, !!smsResult?.accepted);
+        if (user?.groupId == 1) await storeCredential(sso, (st as any).id, password, true);
         // Log Login Response
         // Self-service: the matched account is both actor and subject (`tag`
         // may be a username/email, so log the resolved account tag).
         await sso.log.create({ data: { action: `FORGOT_PASSWORD_CHANGED`, user: user.tag, meta: { identifier: tag, selfService: true, smsSent: smsResult.accepted, sms: smsResult }, ...user?.groupId == 1 && ({ student: user.tag }) } })
-        // Response  
-        if (!smsResult.accepted) return res.status(502).json({ success: false, message: 'Your password was reset, but the SMS could not be confirmed. Contact the registry for help recovering access.', sms: smsResult });
-        res.status(200).json({ success: true, data: ups, sms: smsResult });
+        res.status(200).json({ success: true, data: { count: ups ? 1 : 0 }, sms: smsResult });
       } else {
-        res.status(202).json({ message: `Wrong password provided!` })
+        res.status(202).json({ message: `No active account found for that username or ID.` })
       }
 
     } catch (error: any) {

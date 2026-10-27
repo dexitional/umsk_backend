@@ -100,9 +100,27 @@ const voteLimiter: any = (req: Request & any, res: Response, next: NextFunction)
 
 
 
+// Public profile-update exercise. Searches are limited per IP but loosely --
+// a whole campus can sit behind one NAT address on the day; saves are limited
+// tightly per student record so no record can be churned by a stranger.
+// Like loginLimiter, a store error lets the request through.
+const keyedLimiter = (keyPrefix: string, points: number, duration: number, key: (req: any) => string, message: string) => {
+  const limiter: any = new RateLimiterMySQL({ storeClient: db, dbName: process.env.MYSQL_DB, tableName: 'rate', keyPrefix, points, duration,
+    insuranceLimiter: new RateLimiterMemory({ points, duration }) }, (err: any) => console.log(err));
+  return (req: Request & any, res: Response, next: NextFunction) => limiter.consume(key(req)).then(() => next()).catch((rej: any) => {
+    if (rej instanceof Error) { console.log(`${keyPrefix} limiter store error:`, rej.message); return next(); }
+    res.setHeader('Retry-After', String(Math.ceil((rej?.msBeforeNext || 0) / 1000)));
+    res.status(429).json({ message });
+  });
+};
+const profileSearchLimiter: any = keyedLimiter('profile-search', 120, 60, (req) => `ip:${req.ip}`, 'Too many searches from this network. Please wait a minute and try again.');
+const profileSaveLimiter: any = keyedLimiter('profile-save', 8, 86400, (req) => `student:${String(req.params?.id || '').slice(0, 64)}`, 'This record has been updated several times today. Contact the Registry for further changes.');
+
 module.exports = {
   voteLimiter,
-  loginLimiter
+  loginLimiter,
+  profileSearchLimiter,
+  profileSaveLimiter
 }
 
 

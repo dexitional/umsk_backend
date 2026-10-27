@@ -52,28 +52,49 @@ export function decryptCredential(studentId: string, value: string): string | nu
 }
 
 // A newly issued password replaces the old one and is "not yet sent".
-export async function storeCredential(db: any, studentId: string, password: string, sent = false) {
-  const cipher = encryptCredential(studentId, password);
-  const sentAt = sent ? new Date() : null;
-  await db.studentCredential.upsert({ where: { studentId }, create: { studentId, cipher, sentAt }, update: { cipher, sentAt } });
-}
+// Everything below is best-effort: the vault backs bulk re-sending and the
+// Google push, but must never break sign-in, staging or a password reset --
+// e.g. before CREDENTIAL_VAULT_KEY is set or the ais_student_credential
+// migration has run. Failures are logged and the caller carries on as it
+// did before the vault existed. Only the bulk actions require the vault
+// (assertVaultConfigured).
+const warn = (action: string, error: any) =>
+  console.warn(`Credential vault ${action} skipped: ${String(error?.message || error).trim().split("\n").pop()}`);
 
-// For password resets that must not fail over the vault: stores the new
-// password, or (vault not configured) drops the now-stale entry.
-export async function rememberCredential(db: any, studentId: string, password: string, sent = false) {
-  if (isVaultConfigured()) await storeCredential(db, studentId, password, sent);
-  else await clearCredential(db, studentId);
+// Saves a newly issued password as "not yet sent" (or sent). Without a
+// usable vault the stale entry is dropped instead, so a stored password
+// never outlives the one actually in use. Returns whether it was saved.
+export async function storeCredential(db: any, studentId: string, password: string, sent = false): Promise<boolean> {
+  if (!isVaultConfigured()) { await clearCredential(db, studentId); return false; }
+  try {
+    const cipher = encryptCredential(studentId, password);
+    const sentAt = sent ? new Date() : null;
+    await db.studentCredential.upsert({ where: { studentId }, create: { studentId, cipher, sentAt }, update: { cipher, sentAt } });
+    return true;
+  } catch (error) {
+    warn("store", error);
+    await clearCredential(db, studentId);
+    return false;
+  }
 }
 
 export async function readCredential(db: any, studentId: string): Promise<string | null> {
-  const row = await db.studentCredential.findUnique({ where: { studentId } });
-  return row ? decryptCredential(studentId, row.cipher) : null;
+  if (!isVaultConfigured()) return null;
+  try {
+    const row = await db.studentCredential.findUnique({ where: { studentId } });
+    return row ? decryptCredential(studentId, row.cipher) : null;
+  } catch (error) {
+    warn("read", error);
+    return null;
+  }
 }
 
 export async function markCredentialSent(db: any, studentId: string) {
-  await db.studentCredential.updateMany({ where: { studentId }, data: { sentAt: new Date() } });
+  try { await db.studentCredential.updateMany({ where: { studentId }, data: { sentAt: new Date() } }); }
+  catch (error) { warn("mark-sent", error); }
 }
 
 export async function clearCredential(db: any, studentId: string) {
-  await db.studentCredential.deleteMany({ where: { studentId } });
+  try { await db.studentCredential.deleteMany({ where: { studentId } }); }
+  catch (error) { warn("clear", error); }
 }

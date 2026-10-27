@@ -10,6 +10,7 @@ import evsRoute from './route/evsRoute';
 import fmsRoute from './route/fmsRoute';
 import hrsRoute from './route/hrsRoute';
 import logRoute from './route/logRoute';
+import profileExerciseRoute from './route/profileExerciseRoute';
 
 import { createServer } from 'node:http';
 import fileUpload from 'express-fileupload';
@@ -84,6 +85,7 @@ export default class Routes {
     app.use("/api/evs", evsRoute);      /** Electa API **/
     app.use("/api/eva", evaRoute);      /** Evaluation API **/
     app.use("/api/v1", apiRoute);       /** Bank API **/
+    app.use("/api/public/profile", profileExerciseRoute); /** Public profile update exercise (no sign-in) **/
 
     // Database Backup Route
     app.get('/api/backup', [verifyToken, voteLimiter], async (req: Request, res: Response) => {

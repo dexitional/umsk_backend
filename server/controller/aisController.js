@@ -153,7 +153,6 @@ function stageStudentAccess(studentId_1, userId_1) {
         if (typeof studentId !== 'string' || !studentId.trim())
             throw new Error('Student ID is required.');
         studentId = studentId.trim();
-        (0, credentialVault_1.assertVaultConfigured)();
         const st = yield ais.student.findFirst({ where: { id: studentId } });
         if (!st)
             throw new Error('Student record not found.');
@@ -260,7 +259,6 @@ function generateStudentEmail(studentId_1, userId_1) {
         let smsResult = null;
         let count = 1;
         let isNew = true;
-        (0, credentialVault_1.assertVaultConfigured)();
         const st = yield ais.student.findFirst({ where: { id: studentId }, include: { program: { select: { longName: true } } } });
         if (!st)
             throw new Error('Student record not found.');
@@ -1743,7 +1741,7 @@ class AisController {
                     }
                 }
                 const smsResult = yield sms.safe(st === null || st === void 0 ? void 0 : st.phone, `Hi! Your new credentials is username: ${account.username}, password: ${password}`);
-                yield (0, credentialVault_1.rememberCredential)(ais, studentId, password, !!(smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted));
+                yield (0, credentialVault_1.storeCredential)(ais, studentId, password, !!(smsResult === null || smsResult === void 0 ? void 0 : smsResult.accepted));
                 // Log Login Response
                 // Audit: who reset whose account (no credentials logged).
                 yield ais.log.create({ data: { action: `STUDENT_ACCOUNT_RESET`, user: req === null || req === void 0 ? void 0 : req.userId, student: studentId, meta: { studentId, via: req === null || req === void 0 ? void 0 : req.originalUrl, smsSent: smsResult.accepted, sms: smsResult } } });
@@ -1862,7 +1860,6 @@ class AisController {
                     return res.status(202).json({ message: `Student has no institutional email yet -- generate one first.` });
                 if (!(0, gsuite_1.isConfigured)())
                     return res.status(202).json({ message: `GSuite integration is not configured yet.` });
-                (0, credentialVault_1.assertVaultConfigured)();
                 const { gsuite, sms: smsResult } = yield resyncStudentGsuite(st, req === null || req === void 0 ? void 0 : req.userId);
                 if (gsuite.ok)
                     return res.status(200).json({ success: true, sms: smsResult });

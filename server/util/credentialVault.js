@@ -30,7 +30,6 @@ exports.assertVaultConfigured = exports.isVaultConfigured = exports.CredentialVa
 exports.encryptCredential = encryptCredential;
 exports.decryptCredential = decryptCredential;
 exports.storeCredential = storeCredential;
-exports.rememberCredential = rememberCredential;
 exports.readCredential = readCredential;
 exports.markCredentialSent = markCredentialSent;
 exports.clearCredential = clearCredential;
@@ -74,36 +73,66 @@ function decryptCredential(studentId, value) {
     }
 }
 // A newly issued password replaces the old one and is "not yet sent".
+// Everything below is best-effort: the vault backs bulk re-sending and the
+// Google push, but must never break sign-in, staging or a password reset --
+// e.g. before CREDENTIAL_VAULT_KEY is set or the ais_student_credential
+// migration has run. Failures are logged and the caller carries on as it
+// did before the vault existed. Only the bulk actions require the vault
+// (assertVaultConfigured).
+const warn = (action, error) => console.warn(`Credential vault ${action} skipped: ${String((error === null || error === void 0 ? void 0 : error.message) || error).trim().split("\n").pop()}`);
+// Saves a newly issued password as "not yet sent" (or sent). Without a
+// usable vault the stale entry is dropped instead, so a stored password
+// never outlives the one actually in use. Returns whether it was saved.
 function storeCredential(db_1, studentId_1, password_1) {
     return __awaiter(this, arguments, void 0, function* (db, studentId, password, sent = false) {
-        const cipher = encryptCredential(studentId, password);
-        const sentAt = sent ? new Date() : null;
-        yield db.studentCredential.upsert({ where: { studentId }, create: { studentId, cipher, sentAt }, update: { cipher, sentAt } });
-    });
-}
-// For password resets that must not fail over the vault: stores the new
-// password, or (vault not configured) drops the now-stale entry.
-function rememberCredential(db_1, studentId_1, password_1) {
-    return __awaiter(this, arguments, void 0, function* (db, studentId, password, sent = false) {
-        if ((0, exports.isVaultConfigured)())
-            yield storeCredential(db, studentId, password, sent);
-        else
+        if (!(0, exports.isVaultConfigured)()) {
             yield clearCredential(db, studentId);
+            return false;
+        }
+        try {
+            const cipher = encryptCredential(studentId, password);
+            const sentAt = sent ? new Date() : null;
+            yield db.studentCredential.upsert({ where: { studentId }, create: { studentId, cipher, sentAt }, update: { cipher, sentAt } });
+            return true;
+        }
+        catch (error) {
+            warn("store", error);
+            yield clearCredential(db, studentId);
+            return false;
+        }
     });
 }
 function readCredential(db, studentId) {
     return __awaiter(this, void 0, void 0, function* () {
-        const row = yield db.studentCredential.findUnique({ where: { studentId } });
-        return row ? decryptCredential(studentId, row.cipher) : null;
+        if (!(0, exports.isVaultConfigured)())
+            return null;
+        try {
+            const row = yield db.studentCredential.findUnique({ where: { studentId } });
+            return row ? decryptCredential(studentId, row.cipher) : null;
+        }
+        catch (error) {
+            warn("read", error);
+            return null;
+        }
     });
 }
 function markCredentialSent(db, studentId) {
     return __awaiter(this, void 0, void 0, function* () {
-        yield db.studentCredential.updateMany({ where: { studentId }, data: { sentAt: new Date() } });
+        try {
+            yield db.studentCredential.updateMany({ where: { studentId }, data: { sentAt: new Date() } });
+        }
+        catch (error) {
+            warn("mark-sent", error);
+        }
     });
 }
 function clearCredential(db, studentId) {
     return __awaiter(this, void 0, void 0, function* () {
-        yield db.studentCredential.deleteMany({ where: { studentId } });
+        try {
+            yield db.studentCredential.deleteMany({ where: { studentId } });
+        }
+        catch (error) {
+            warn("clear", error);
+        }
     });
 }

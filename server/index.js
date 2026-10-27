@@ -24,6 +24,7 @@ const evsRoute_1 = __importDefault(require("./route/evsRoute"));
 const fmsRoute_1 = __importDefault(require("./route/fmsRoute"));
 const hrsRoute_1 = __importDefault(require("./route/hrsRoute"));
 const logRoute_1 = __importDefault(require("./route/logRoute"));
+const profileExerciseRoute_1 = __importDefault(require("./route/profileExerciseRoute"));
 const node_http_1 = require("node:http");
 const express_fileupload_1 = __importDefault(require("express-fileupload"));
 // @ts-ignore: No type definitions available
@@ -88,6 +89,7 @@ class Routes {
         app.use("/api/evs", evsRoute_1.default); /** Electa API **/
         app.use("/api/eva", evaRoute_1.default); /** Evaluation API **/
         app.use("/api/v1", apiRoute_1.default); /** Bank API **/
+        app.use("/api/public/profile", profileExerciseRoute_1.default); /** Public profile update exercise (no sign-in) **/
         // Database Backup Route
         app.get('/api/backup', [verifyToken, voteLimiter], (req, res) => __awaiter(this, void 0, void 0, function* () {
             const result = yield (0, backup_1.performBackup)();
